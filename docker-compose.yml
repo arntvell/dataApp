@@ -1,0 +1,43 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      - postgres
+      - redis
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://dataapp:password@postgres:5432/dataapp
+      REDIS_URL: redis://redis:6379
+      SAMESYSTEM_EMAIL: ${SAMESYSTEM_EMAIL:-}
+      SAMESYSTEM_PASSWORD: ${SAMESYSTEM_PASSWORD:-}
+      SAMESYSTEM_DEPARTMENTS: ${SAMESYSTEM_DEPARTMENTS:-{}}
+      CIN7_ACCOUNT_ID: ${CIN7_ACCOUNT_ID:-}
+      CIN7_API_KEY: ${CIN7_API_KEY:-}
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-false}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+
+  postgres:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=dataapp
+      - POSTGRES_USER=dataapp
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:

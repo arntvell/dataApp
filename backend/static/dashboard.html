@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Livid Sales Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .card { @apply bg-white rounded-xl shadow-md p-6; }
+        .metric-value { @apply text-3xl font-bold text-gray-900; }
+        .metric-label { @apply text-sm text-gray-500 uppercase tracking-wide; }
+        .loading { @apply animate-pulse bg-gray-200 rounded; }
+        .yoy-positive { @apply text-green-600; }
+        .yoy-negative { @apply text-red-600; }
+        .filter-btn { @apply px-3 py-1 text-sm rounded-lg transition; }
+        .filter-btn.active { @apply bg-blue-600 text-white; }
+        .filter-btn:not(.active) { @apply bg-gray-200 text-gray-700 hover:bg-gray-300; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <div class="flex flex-wrap justify-between items-center mb-8 gap-4">
+            <div>
+                <h1 class="text-3xl font-bold text-gray-900">Livid Sales Dashboard</h1>
+                <p class="text-gray-500" id="dateDisplay">Loading...</p>
+            </div>
+            <div class="flex flex-wrap gap-3 items-center">
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-gray-600">From:</label>
+                    <input type="date" id="startDate" class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                </div>
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-gray-600">To:</label>
+                    <input type="date" id="endDate" class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                </div>
+                <button onclick="syncData()" id="syncBtn" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    Sync Data
+                </button>
+                <button onclick="refreshDashboard()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
+                    Refresh View
+                </button>
+            </div>
+        </div>
+
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+            <div class="card">
+                <div class="metric-label">Net Revenue</div>
+                <div class="metric-value text-green-600" id="totalRevenue">-</div>
+                <div class="flex items-center gap-2 mt-1">
+                    <span class="text-sm text-gray-400">NOK</span>
+                    <span class="text-xs" id="revenueYoY"></span>
+                </div>
+                <div class="text-xs text-gray-400 mt-1" id="refundedInfo"></div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Orders</div>
+                <div class="metric-value" id="totalOrders">-</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Items Sold</div>
+                <div class="metric-value" id="totalItems">-</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Avg Order Value</div>
+                <div class="metric-value text-blue-600" id="avgOrderValue">-</div>
+                <div class="text-sm text-gray-400">NOK</div>
+            </div>
+            <div class="card">
+                <div class="metric-label">Avg Item Value</div>
+                <div class="metric-value text-purple-600" id="avgItemValue">-</div>
+                <div class="text-sm text-gray-400">NOK</div>
+            </div>
+        </div>
+
+        <!-- Location Breakdown - Bar Chart with Table -->
+        <div class="card mb-8">
+            <h2 class="text-xl font-semibold mb-4">Revenue by Location</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="h-80">
+                    <canvas id="locationChart"></canvas>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="border-b bg-gray-50">
+                                <th class="text-left py-3 px-4">Location</th>
+                                <th class="text-right py-3 px-4">Revenue</th>
+                                <th class="text-right py-3 px-4">Orders</th>
+                                <th class="text-right py-3 px-4">vs LY</th>
+                            </tr>
+                        </thead>
+                        <tbody id="locationTable">
+                            <tr><td colspan="4" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Staff Performance -->
+        <div class="card mb-8">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Staff Performance</h2>
+                <div class="flex gap-2" id="staffFilters">
+                    <!-- Filters populated by JS -->
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b bg-gray-50">
+                            <th class="text-left py-3 px-4">Rank</th>
+                            <th class="text-left py-3 px-4">Staff</th>
+                            <th class="text-left py-3 px-4">Location</th>
+                            <th class="text-right py-3 px-4">Revenue</th>
+                            <th class="text-right py-3 px-4">Orders</th>
+                            <th class="text-right py-3 px-4">Items Sold</th>
+                            <th class="text-right py-3 px-4">Avg Order</th>
+                        </tr>
+                    </thead>
+                    <tbody id="staffTable">
+                        <tr><td colspan="7" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Top Selling Products - Full Width -->
+        <div class="card mb-8">
+            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
+                <h2 class="text-xl font-semibold">Top Selling Products</h2>
+                <div class="flex flex-wrap gap-3 items-center">
+                    <!-- Location Filter -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Location:</label>
+                        <select id="productLocationSelect" onchange="onProductFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                            <!-- Options populated by JS -->
+                        </select>
+                    </div>
+                    <!-- Category Filter -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Category:</label>
+                        <select id="productCategorySelect" onchange="onProductFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                            <!-- Options populated by JS -->
+                        </select>
+                    </div>
+                    <!-- Vendor Filter -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Vendor:</label>
+                        <select id="productVendorSelect" onchange="onProductFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                            <!-- Options populated by JS -->
+                        </select>
+                    </div>
+                    <!-- Compare Toggle -->
+                    <div class="flex items-center gap-2 border-l pl-3">
+                        <label class="text-sm text-gray-600">Compare:</label>
+                        <input type="checkbox" id="productCompareToggle" onchange="onProductFilterChange()" class="w-4 h-4 rounded">
+                        <select id="productComparePeriod" onchange="onProductFilterChange()" class="px-2 py-1.5 text-sm border rounded-lg bg-white">
+                            <option value="previous_period">vs Prev Period</option>
+                            <option value="previous_year">vs Prev Year</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="sticky top-0 bg-white">
+                        <tr class="border-b bg-gray-50" id="productsTableHeader">
+                            <th class="text-left py-3 px-4">Product</th>
+                            <th class="text-left py-3 px-4">Category</th>
+                            <th class="text-right py-3 px-4">Qty</th>
+                            <th class="text-right py-3 px-4">Sizes</th>
+                            <th class="text-right py-3 px-4">Revenue</th>
+                        </tr>
+                    </thead>
+                    <tbody id="productsTable">
+                        <tr><td colspan="5" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Top Selling Categories - Full Width -->
+        <div class="card mb-8">
+            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
+                <h2 class="text-xl font-semibold">Top Selling Categories</h2>
+                <div class="flex flex-wrap gap-3 items-center">
+                    <!-- Location Filter -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Location:</label>
+                        <select id="categoryLocationSelect" onchange="onCategoryFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                            <!-- Options populated by JS -->
+                        </select>
+                    </div>
+                    <!-- Vendor Filter -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Vendor:</label>
+                        <select id="categoryVendorSelect" onchange="onCategoryFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                            <!-- Options populated by JS -->
+                        </select>
+                    </div>
+                    <!-- Compare Toggle -->
+                    <div class="flex items-center gap-2 border-l pl-3">
+                        <label class="text-sm text-gray-600">Compare:</label>
+                        <input type="checkbox" id="categoryCompareToggle" onchange="onCategoryFilterChange()" class="w-4 h-4 rounded">
+                        <select id="categoryComparePeriod" onchange="onCategoryFilterChange()" class="px-2 py-1.5 text-sm border rounded-lg bg-white">
+                            <option value="previous_period">vs Prev Period</option>
+                            <option value="previous_year">vs Prev Year</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="sticky top-0 bg-white">
+                        <tr class="border-b bg-gray-50" id="categoriesTableHeader">
+                            <th class="text-left py-3 px-4">Category</th>
+                            <th class="text-right py-3 px-4">Qty</th>
+                            <th class="text-right py-3 px-4">Orders</th>
+                            <th class="text-right py-3 px-4">Revenue</th>
+                        </tr>
+                    </thead>
+                    <tbody id="categoriesTable">
+                        <tr><td colspan="4" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Budget vs Actual -->
+        <div class="card mb-8">
+            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
+                <h2 class="text-xl font-semibold">Budget vs Actual</h2>
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-gray-600">Store:</label>
+                    <select id="budgetStoreSelect" onchange="onBudgetFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                        <option value="">All Stores</option>
+                    </select>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b bg-gray-50">
+                            <th class="text-left py-3 px-4">Store</th>
+                            <th class="text-right py-3 px-4">Budget Sales</th>
+                            <th class="text-right py-3 px-4">Actual Sales</th>
+                            <th class="text-right py-3 px-4">Achievement %</th>
+                            <th class="text-right py-3 px-4">Budget Salary</th>
+                            <th class="text-right py-3 px-4">Actual Salary</th>
+                            <th class="text-right py-3 px-4">Paygrade %</th>
+                        </tr>
+                    </thead>
+                    <tbody id="budgetTable">
+                        <tr><td colspan="7" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Stock Overview -->
+        <div class="card mb-8">
+            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
+                <h2 class="text-xl font-semibold">Stock Overview</h2>
+                <div class="flex items-center gap-2">
+                    <label class="text-sm text-gray-600">Location:</label>
+                    <select id="stockLocationSelect" onchange="onStockFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                        <option value="">All Locations</option>
+                    </select>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b bg-gray-50">
+                            <th class="text-left py-3 px-4">Location</th>
+                            <th class="text-right py-3 px-4">SKUs</th>
+                            <th class="text-right py-3 px-4">On Hand</th>
+                            <th class="text-right py-3 px-4">Allocated</th>
+                            <th class="text-right py-3 px-4">Available</th>
+                            <th class="text-right py-3 px-4">On Order</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stockTable">
+                        <tr><td colspan="6" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Top Stock Products -->
+        <div class="card mb-8">
+            <h2 class="text-xl font-semibold mb-4">Top Products by Stock</h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="border-b bg-gray-50">
+                            <th class="text-left py-3 px-4">SKU</th>
+                            <th class="text-left py-3 px-4">Location</th>
+                            <th class="text-right py-3 px-4">On Hand</th>
+                            <th class="text-right py-3 px-4">Available</th>
+                            <th class="text-right py-3 px-4">On Order</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stockProductsTable">
+                        <tr><td colspan="5" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Sync Status -->
+        <div class="mt-8 text-center text-sm text-gray-400" id="syncStatus">
+            Loading sync status...
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1/dashboard';
+        let locationChart = null;
+        let currentStartDate = new Date().toISOString().split('T')[0];
+        let currentEndDate = currentStartDate;
+        let locationsList = ['All', 'Stores', 'Online'];
+        let categoriesList = ['All'];
+        let vendorsList = ['All'];
+        let currentStaffFilter = 'ALL';
+
+        // Format currency
+        function formatCurrency(value) {
+            return new Intl.NumberFormat('nb-NO', { 
+                minimumFractionDigits: 0,
+                maximumFractionDigits: 0 
+            }).format(value);
+        }
+
+        // Format date for display
+        function formatDate(startStr, endStr) {
+            const start = new Date(startStr);
+            const end = new Date(endStr);
+            const opts = { year: 'numeric', month: 'short', day: 'numeric' };
+            if (startStr === endStr) {
+                return start.toLocaleDateString('nb-NO', { weekday: 'long', ...opts });
+            }
+            return `${start.toLocaleDateString('nb-NO', opts)} - ${end.toLocaleDateString('nb-NO', opts)}`;
+        }
+
+        // Format YoY change
+        function formatYoY(change) {
+            if (change === 0 || change === null || change === undefined) return '';
+            const sign = change > 0 ? '+' : '';
+            const cls = change > 0 ? 'yoy-positive' : 'yoy-negative';
+            return `<span class="${cls}">${sign}${change.toFixed(1)}%</span>`;
+        }
+
+        // Format change for comparison
+        function formatChange(current, previous) {
+            if (!previous || previous === 0) return { change: null, formatted: '-' };
+            const change = ((current - previous) / previous) * 100;
+            return { change, formatted: formatYoY(change) };
+        }
+
+        // Fetch summary data
+        async function fetchSummary() {
+            try {
+                const response = await fetch(`${API_BASE}/summary?start_date=${currentStartDate}&end_date=${currentEndDate}`);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching summary:', error);
+                return null;
+            }
+        }
+
+        // Fetch staff data
+        async function fetchStaff(location = 'ALL') {
+            try {
+                const url = `${API_BASE}/staff?start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(location)}`;
+                const response = await fetch(url);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching staff:', error);
+                return [];
+            }
+        }
+
+        // Fetch top products with comparison support
+        async function fetchProducts(location = 'All', category = 'All', vendor = 'All', compareTo = null) {
+            try {
+                let url = `${API_BASE}/products?start_date=${currentStartDate}&end_date=${currentEndDate}&aggregate_by=parent&limit=20`;
+                if (location && location !== 'All') {
+                    url += `&location=${encodeURIComponent(location)}`;
+                }
+                if (category && category !== 'All') {
+                    url += `&category=${encodeURIComponent(category)}`;
+                }
+                if (vendor && vendor !== 'All') {
+                    url += `&vendor=${encodeURIComponent(vendor)}`;
+                }
+                if (compareTo) {
+                    url += `&compare_to=${encodeURIComponent(compareTo)}`;
+                }
+                const response = await fetch(url);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching products:', error);
+                return [];
+            }
+        }
+
+        // Fetch top categories with comparison support
+        async function fetchCategories(location = 'All', vendor = 'All', compareTo = null) {
+            try {
+                let url = `${API_BASE}/categories?start_date=${currentStartDate}&end_date=${currentEndDate}&limit=20`;
+                if (location && location !== 'All') {
+                    url += `&location=${encodeURIComponent(location)}`;
+                }
+                if (vendor && vendor !== 'All') {
+                    url += `&vendor=${encodeURIComponent(vendor)}`;
+                }
+                if (compareTo) {
+                    url += `&compare_to=${encodeURIComponent(compareTo)}`;
+                }
+                const response = await fetch(url);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching categories:', error);
+                return [];
+            }
+        }
+
+        // Fetch locations list
+        async function fetchLocationsList() {
+            try {
+                const response = await fetch(`${API_BASE}/locations/list`);
+                const locs = await response.json();
+                locationsList = ['All', 'Stores', 'Online', ...locs.filter(l => l !== 'Online')];
+                return locationsList;
+            } catch (error) {
+                console.error('Error fetching locations:', error);
+                return ['All', 'Stores', 'Online'];
+            }
+        }
+
+        // Fetch categories list
+        async function fetchCategoriesList() {
+            try {
+                const response = await fetch(`${API_BASE}/categories/list`);
+                const cats = await response.json();
+                categoriesList = ['All', ...cats.filter(c => c && c !== 'Uncategorized')];
+                return categoriesList;
+            } catch (error) {
+                console.error('Error fetching categories:', error);
+                return ['All'];
+            }
+        }
+
+        // Fetch vendors list
+        async function fetchVendorsList() {
+            try {
+                const response = await fetch(`${API_BASE}/vendors/list`);
+                const vendors = await response.json();
+                vendorsList = ['All', ...vendors.filter(v => v && v !== '')];
+                return vendorsList;
+            } catch (error) {
+                console.error('Error fetching vendors:', error);
+                return ['All'];
+            }
+        }
+
+        // Populate a dropdown
+        function populateDropdown(selectId, options, selectedValue = 'All') {
+            const select = document.getElementById(selectId);
+            if (!select) return;
+            select.innerHTML = options.map(opt => 
+                `<option value="${opt}" ${opt === selectedValue ? 'selected' : ''}>${opt}</option>`
+            ).join('');
+        }
+
+        // Get filter values for products
+        function getProductFilters() {
+            return {
+                location: document.getElementById('productLocationSelect')?.value || 'All',
+                category: document.getElementById('productCategorySelect')?.value || 'All',
+                vendor: document.getElementById('productVendorSelect')?.value || 'All',
+                compare: document.getElementById('productCompareToggle')?.checked || false,
+                comparePeriod: document.getElementById('productComparePeriod')?.value || 'previous_period'
+            };
+        }
+
+        // Get filter values for categories
+        function getCategoryFilters() {
+            return {
+                location: document.getElementById('categoryLocationSelect')?.value || 'All',
+                vendor: document.getElementById('categoryVendorSelect')?.value || 'All',
+                compare: document.getElementById('categoryCompareToggle')?.checked || false,
+                comparePeriod: document.getElementById('categoryComparePeriod')?.value || 'previous_period'
+            };
+        }
+
+        // Handle product filter change
+        async function onProductFilterChange() {
+            const filters = getProductFilters();
+            const compareTo = filters.compare ? filters.comparePeriod : null;
+            const products = await fetchProducts(filters.location, filters.category, filters.vendor, compareTo);
+            updateProductsTable(products, filters.compare);
+        }
+
+        // Handle category filter change
+        async function onCategoryFilterChange() {
+            const filters = getCategoryFilters();
+            const compareTo = filters.compare ? filters.comparePeriod : null;
+            const categories = await fetchCategories(filters.location, filters.vendor, compareTo);
+            updateCategoriesTable(categories, filters.compare);
+        }
+
+        // Fetch sync status
+        async function fetchSyncStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/sync-status`);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching sync status:', error);
+                return null;
+            }
+        }
+
+        // Update summary cards
+        function updateSummaryCards(data) {
+            document.getElementById('totalRevenue').textContent = formatCurrency(data.total_revenue);
+            document.getElementById('totalOrders').textContent = formatCurrency(data.total_orders);
+            document.getElementById('totalItems').textContent = formatCurrency(data.total_items);
+            document.getElementById('avgOrderValue').textContent = formatCurrency(data.avg_order_value);
+            document.getElementById('avgItemValue').textContent = formatCurrency(data.avg_item_value);
+            document.getElementById('revenueYoY').innerHTML = formatYoY(data.yoy_change);
+
+            const refundedEl = document.getElementById('refundedInfo');
+            if (data.total_refunded > 0) {
+                refundedEl.textContent = `After ${formatCurrency(data.total_refunded)} NOK in returns`;
+            } else {
+                refundedEl.textContent = '';
+            }
+        }
+
+        // Generate blue gradient colors
+        function generateBlueGradient(count, maxRevenue, revenues) {
+            const baseColor = [0, 174, 239]; // #00AEEF
+            return revenues.map(rev => {
+                const intensity = 0.3 + (rev / maxRevenue) * 0.7; // 30% to 100% intensity
+                return `rgba(${baseColor[0]}, ${baseColor[1]}, ${baseColor[2]}, ${intensity})`;
+            });
+        }
+
+        // Update location chart - Bar chart with gradient
+        function updateLocationChart(locations) {
+            const ctx = document.getElementById('locationChart').getContext('2d');
+            
+            if (locationChart) {
+                locationChart.destroy();
+            }
+
+            const sortedLocations = [...locations].sort((a, b) => b.revenue - a.revenue);
+            const maxRevenue = Math.max(...sortedLocations.map(l => l.revenue));
+            const colors = generateBlueGradient(
+                sortedLocations.length, 
+                maxRevenue, 
+                sortedLocations.map(l => l.revenue)
+            );
+
+            locationChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: sortedLocations.map(l => l.location),
+                    datasets: [{
+                        label: 'Revenue',
+                        data: sortedLocations.map(l => l.revenue),
+                        backgroundColor: colors,
+                        borderColor: '#00AEEF',
+                        borderWidth: 1,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${formatCurrency(context.raw)} NOK`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                callback: function(value) {
+                                    return formatCurrency(value);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update location table
+        function updateLocationTable(locations) {
+            const tbody = document.getElementById('locationTable');
+            
+            if (locations.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">No data for this period</td></tr>';
+                return;
+            }
+
+            const sortedLocations = [...locations].sort((a, b) => b.revenue - a.revenue);
+            tbody.innerHTML = sortedLocations.map(loc => `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="py-3 px-4 font-medium">${loc.location}</td>
+                    <td class="text-right py-3 px-4 font-semibold">${formatCurrency(loc.revenue)} NOK</td>
+                    <td class="text-right py-3 px-4">${formatCurrency(loc.order_count)}</td>
+                    <td class="text-right py-3 px-4">${formatYoY(loc.yoy_change)}</td>
+                </tr>
+            `).join('');
+        }
+
+        // Update staff table - no emoji
+        function updateStaffTable(staff) {
+            const tbody = document.getElementById('staffTable');
+            
+            if (staff.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="py-4 text-center text-gray-400">No staff data for this period</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = staff.map((s, index) => `
+                <tr class="border-b hover:bg-gray-50 ${index === 0 ? 'bg-blue-50' : ''}">
+                    <td class="py-3 px-4 font-semibold ${index === 0 ? 'text-blue-600' : ''}">#${index + 1}</td>
+                    <td class="py-3 px-4 font-medium">${s.staff_name}</td>
+                    <td class="py-3 px-4 text-gray-500">${s.location}</td>
+                    <td class="text-right py-3 px-4 font-semibold text-green-600">${formatCurrency(s.revenue)} NOK</td>
+                    <td class="text-right py-3 px-4">${s.orders}</td>
+                    <td class="text-right py-3 px-4">${s.items_sold}</td>
+                    <td class="text-right py-3 px-4">${formatCurrency(s.avg_order)} NOK</td>
+                </tr>
+            `).join('');
+        }
+
+        // Create filter buttons for staff
+        function createStaffFilterButtons() {
+            const container = document.getElementById('staffFilters');
+            let filters = ['ALL', 'Stores', ...locationsList.filter(l => !['All', 'Stores', 'Online'].includes(l))];
+            filters = filters.slice(0, 7);
+            
+            container.innerHTML = filters.map(f => `
+                <button class="filter-btn ${currentStaffFilter === f ? 'active' : ''}" 
+                        onclick="setStaffFilter('${f}')">
+                    ${f === 'ALL' ? 'All' : f === 'Stores' ? 'Stores' : f.replace('Livid ', '')}
+                </button>
+            `).join('');
+        }
+
+        // Set staff filter
+        async function setStaffFilter(filter) {
+            currentStaffFilter = filter;
+            document.querySelectorAll('#staffFilters .filter-btn').forEach(btn => {
+                const btnText = btn.textContent.trim();
+                btn.classList.toggle('active', 
+                    btnText === filter || 
+                    (filter === 'ALL' && btnText === 'All') ||
+                    btnText === filter.replace('Livid ', ''));
+            });
+            const staff = await fetchStaff(currentStaffFilter);
+            updateStaffTable(staff);
+        }
+
+        // Clean up product name (remove trailing " -")
+        function cleanProductName(name) {
+            if (!name) return '-';
+            return name.replace(/\s*-\s*$/, '').trim();
+        }
+
+        // Update products table header based on compare mode
+        function updateProductsTableHeader(showCompare) {
+            const header = document.getElementById('productsTableHeader');
+            if (showCompare) {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Product</th>
+                    <th class="text-left py-3 px-4">Category</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Prev</th>
+                    <th class="text-right py-3 px-4">Chg</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                    <th class="text-right py-3 px-4">Prev</th>
+                    <th class="text-right py-3 px-4">Chg</th>
+                `;
+            } else {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Product</th>
+                    <th class="text-left py-3 px-4">Category</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Sizes</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                `;
+            }
+        }
+
+        // Update products table
+        function updateProductsTable(products, showCompare = false) {
+            const tbody = document.getElementById('productsTable');
+            updateProductsTableHeader(showCompare);
+            
+            if (products.length === 0) {
+                const cols = showCompare ? 8 : 5;
+                tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No product data</td></tr>`;
+                return;
+            }
+
+            if (showCompare) {
+                tbody.innerHTML = products.map(p => {
+                    const qtyChange = formatChange(p.quantity_sold, p.prev_quantity_sold);
+                    const revChange = formatChange(p.revenue, p.prev_revenue);
+                    return `
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="py-2 px-4">
+                                <div class="font-medium text-gray-900">${cleanProductName(p.name)}</div>
+                                <div class="text-xs text-gray-400 font-mono">${p.sku || '-'}</div>
+                            </td>
+                            <td class="py-2 px-4 text-gray-500 text-xs">${p.category || '-'}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${p.quantity_sold}</td>
+                            <td class="text-right py-2 px-4 text-gray-400">${p.prev_quantity_sold || '-'}</td>
+                            <td class="text-right py-2 px-4">${qtyChange.formatted}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
+                            <td class="text-right py-2 px-4 text-gray-400">${p.prev_revenue ? formatCurrency(p.prev_revenue) : '-'}</td>
+                            <td class="text-right py-2 px-4">${revChange.formatted}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tbody.innerHTML = products.map(p => `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="py-2 px-4">
+                            <div class="font-medium text-gray-900">${cleanProductName(p.name)}</div>
+                            <div class="text-xs text-gray-400 font-mono">${p.sku || '-'}</div>
+                        </td>
+                        <td class="py-2 px-4 text-gray-500 text-xs">${p.category || '-'}</td>
+                        <td class="text-right py-2 px-4">${p.quantity_sold}</td>
+                        <td class="text-right py-2 px-4 text-gray-400">${p.variants || 1}</td>
+                        <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // Update categories table header based on compare mode
+        function updateCategoriesTableHeader(showCompare) {
+            const header = document.getElementById('categoriesTableHeader');
+            if (showCompare) {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Category</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Prev</th>
+                    <th class="text-right py-3 px-4">Chg</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                    <th class="text-right py-3 px-4">Prev</th>
+                    <th class="text-right py-3 px-4">Chg</th>
+                `;
+            } else {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Category</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Orders</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                `;
+            }
+        }
+
+        // Update categories table
+        function updateCategoriesTable(categories, showCompare = false) {
+            const tbody = document.getElementById('categoriesTable');
+            updateCategoriesTableHeader(showCompare);
+            
+            if (categories.length === 0) {
+                const cols = showCompare ? 7 : 4;
+                tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No category data</td></tr>`;
+                return;
+            }
+
+            if (showCompare) {
+                tbody.innerHTML = categories.map(c => {
+                    const qtyChange = formatChange(c.quantity_sold, c.prev_quantity_sold);
+                    const revChange = formatChange(c.revenue, c.prev_revenue);
+                    return `
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="py-2 px-4 font-medium">${c.category}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${c.quantity_sold}</td>
+                            <td class="text-right py-2 px-4 text-gray-400">${c.prev_quantity_sold || '-'}</td>
+                            <td class="text-right py-2 px-4">${qtyChange.formatted}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                            <td class="text-right py-2 px-4 text-gray-400">${c.prev_revenue ? formatCurrency(c.prev_revenue) : '-'}</td>
+                            <td class="text-right py-2 px-4">${revChange.formatted}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tbody.innerHTML = categories.map(c => `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="py-2 px-4 font-medium">${c.category}</td>
+                        <td class="text-right py-2 px-4">${c.quantity_sold}</td>
+                        <td class="text-right py-2 px-4">${c.order_count}</td>
+                        <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        // Update sync status
+        function updateSyncStatus(status) {
+            const el = document.getElementById('syncStatus');
+            if (status) {
+                const lastSync = status.last_sync ? new Date(status.last_sync).toLocaleString('nb-NO') : 'Never';
+                el.textContent = `Last sync: ${lastSync} | Total orders: ${formatCurrency(status.total_orders)}`;
+            } else {
+                el.textContent = 'Unable to fetch sync status';
+            }
+        }
+
+        // Populate all filter dropdowns
+        function populateFilterDropdowns() {
+            // Product filters
+            populateDropdown('productLocationSelect', locationsList);
+            populateDropdown('productCategorySelect', categoriesList);
+            populateDropdown('productVendorSelect', vendorsList);
+            
+            // Category filters
+            populateDropdown('categoryLocationSelect', locationsList);
+            populateDropdown('categoryVendorSelect', vendorsList);
+        }
+
+        // Main refresh function
+        async function refreshDashboard() {
+            currentStartDate = document.getElementById('startDate').value || currentStartDate;
+            currentEndDate = document.getElementById('endDate').value || currentEndDate;
+            document.getElementById('dateDisplay').textContent = formatDate(currentStartDate, currentEndDate);
+
+            // Get current filter values
+            const productFilters = getProductFilters();
+            const categoryFilters = getCategoryFilters();
+            const productCompareTo = productFilters.compare ? productFilters.comparePeriod : null;
+            const categoryCompareTo = categoryFilters.compare ? categoryFilters.comparePeriod : null;
+
+            // Fetch all data in parallel
+            const [summary, staff, products, categories, syncStatus] = await Promise.all([
+                fetchSummary(),
+                fetchStaff(currentStaffFilter),
+                fetchProducts(productFilters.location, productFilters.category, productFilters.vendor, productCompareTo),
+                fetchCategories(categoryFilters.location, categoryFilters.vendor, categoryCompareTo),
+                fetchSyncStatus()
+            ]);
+
+            if (summary) {
+                updateSummaryCards(summary);
+                updateLocationChart(summary.locations);
+                updateLocationTable(summary.locations);
+            }
+
+            updateStaffTable(staff);
+            updateProductsTable(products, productFilters.compare);
+            updateCategoriesTable(categories, categoryFilters.compare);
+            updateSyncStatus(syncStatus);
+            
+            // Update staff filter buttons
+            createStaffFilterButtons();
+        }
+
+        // Sync data
+        async function syncData() {
+            const btn = document.getElementById('syncBtn');
+            btn.disabled = true;
+            btn.innerHTML = `
+                <svg class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" stroke-width="4" class="opacity-25"></circle>
+                    <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" class="opacity-75"></path>
+                </svg>
+                Syncing...
+            `;
+
+            try {
+                const response = await fetch(`${API_BASE}/sync`, { method: 'POST' });
+                const result = await response.json();
+                
+                // Wait a moment for sync to complete
+                await new Promise(r => setTimeout(r, 3000));
+                await refreshDashboard();
+                
+            } catch (error) {
+                alert('Sync failed: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                    Sync Data
+                `;
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Set date pickers to today
+            document.getElementById('startDate').value = currentStartDate;
+            document.getElementById('endDate').value = currentEndDate;
+            
+            // Fetch locations, categories, and vendors first
+            await Promise.all([
+                fetchLocationsList(),
+                fetchCategoriesList(),
+                fetchVendorsList()
+            ]);
+            
+            // Populate filter dropdowns
+            populateFilterDropdowns();
+            
+            // Add date change listeners
+            document.getElementById('startDate').addEventListener('change', (e) => {
+                currentStartDate = e.target.value;
+                if (currentStartDate > currentEndDate) {
+                    currentEndDate = currentStartDate;
+                    document.getElementById('endDate').value = currentEndDate;
+                }
+                refreshDashboard();
+            });
+            
+            document.getElementById('endDate').addEventListener('change', (e) => {
+                currentEndDate = e.target.value;
+                if (currentEndDate < currentStartDate) {
+                    currentStartDate = currentEndDate;
+                    document.getElementById('startDate').value = currentStartDate;
+                }
+                refreshDashboard();
+            });
+
+            // Initial load
+            refreshDashboard();
+
+            // Auto-refresh every 5 minutes
+            setInterval(refreshDashboard, 5 * 60 * 1000);
+        });
+
+        // ============== Budget vs Actual ==============
+
+        async function fetchBudgetVsActual(store = '') {
+            try {
+                let url = `${API_BASE}/budget/vs-actual?start_date=${currentStartDate}&end_date=${currentEndDate}`;
+                if (store) url += `&store=${encodeURIComponent(store)}`;
+                const response = await fetch(url);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching budget data:', error);
+                return [];
+            }
+        }
+
+        function updateBudgetTable(data) {
+            const tbody = document.getElementById('budgetTable');
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="py-4 text-center text-gray-400">No budget data available</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(row => {
+                const achCls = row.achievement_pct >= 100 ? 'text-green-600' : row.achievement_pct >= 80 ? 'text-yellow-600' : 'text-red-600';
+                const pgCls = row.paygrade_pct <= 15 ? 'text-green-600' : row.paygrade_pct <= 20 ? 'text-yellow-600' : 'text-red-600';
+                return `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="py-3 px-4 font-medium">${row.store}</td>
+                        <td class="text-right py-3 px-4">${formatCurrency(row.budget_sales)} NOK</td>
+                        <td class="text-right py-3 px-4 font-semibold">${formatCurrency(row.actual_sales)} NOK</td>
+                        <td class="text-right py-3 px-4 font-semibold ${achCls}">${row.achievement_pct.toFixed(1)}%</td>
+                        <td class="text-right py-3 px-4">${formatCurrency(row.budget_salary)} NOK</td>
+                        <td class="text-right py-3 px-4">${formatCurrency(row.actual_salary)} NOK</td>
+                        <td class="text-right py-3 px-4 font-semibold ${pgCls}">${row.paygrade_pct.toFixed(1)}%</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function onBudgetFilterChange() {
+            const store = document.getElementById('budgetStoreSelect')?.value || '';
+            const data = await fetchBudgetVsActual(store);
+            updateBudgetTable(data);
+        }
+
+        function populateBudgetStoreDropdown(stores) {
+            const select = document.getElementById('budgetStoreSelect');
+            if (!select) return;
+            const options = ['<option value="">All Stores</option>'];
+            stores.forEach(s => {
+                options.push(`<option value="${s}">${s}</option>`);
+            });
+            select.innerHTML = options.join('');
+        }
+
+        // ============== Stock Overview ==============
+
+        async function fetchStockOverview(location = '') {
+            try {
+                let url = `${API_BASE}/stock/overview`;
+                if (location) url += `?location=${encodeURIComponent(location)}`;
+                const response = await fetch(url);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching stock overview:', error);
+                return [];
+            }
+        }
+
+        async function fetchStockProducts(location = '') {
+            try {
+                let url = `${API_BASE}/stock/by-product?limit=20`;
+                if (location) url += `&location=${encodeURIComponent(location)}`;
+                const response = await fetch(url);
+                return await response.json();
+            } catch (error) {
+                console.error('Error fetching stock products:', error);
+                return [];
+            }
+        }
+
+        function updateStockTable(data) {
+            const tbody = document.getElementById('stockTable');
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">No stock data available</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(row => `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="py-3 px-4 font-medium">${row.location}</td>
+                    <td class="text-right py-3 px-4">${formatCurrency(row.sku_count)}</td>
+                    <td class="text-right py-3 px-4 font-semibold">${formatCurrency(row.on_hand)}</td>
+                    <td class="text-right py-3 px-4">${formatCurrency(row.allocated)}</td>
+                    <td class="text-right py-3 px-4 text-green-600 font-semibold">${formatCurrency(row.available)}</td>
+                    <td class="text-right py-3 px-4 text-blue-600">${formatCurrency(row.on_order)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function updateStockProductsTable(data) {
+            const tbody = document.getElementById('stockProductsTable');
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">No stock data available</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(row => `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="py-2 px-4 font-mono text-xs">${row.sku}</td>
+                    <td class="py-2 px-4 text-gray-500">${row.location}</td>
+                    <td class="text-right py-2 px-4 font-semibold">${formatCurrency(row.on_hand)}</td>
+                    <td class="text-right py-2 px-4 text-green-600">${formatCurrency(row.available)}</td>
+                    <td class="text-right py-2 px-4 text-blue-600">${formatCurrency(row.on_order)}</td>
+                </tr>
+            `).join('');
+        }
+
+        function populateStockLocationDropdown(locations) {
+            const select = document.getElementById('stockLocationSelect');
+            if (!select) return;
+            const options = ['<option value="">All Locations</option>'];
+            locations.forEach(l => {
+                options.push(`<option value="${l}">${l}</option>`);
+            });
+            select.innerHTML = options.join('');
+        }
+
+        async function onStockFilterChange() {
+            const location = document.getElementById('stockLocationSelect')?.value || '';
+            const [overview, products] = await Promise.all([
+                fetchStockOverview(location),
+                fetchStockProducts(location),
+            ]);
+            updateStockTable(overview);
+            updateStockProductsTable(products);
+        }
+
+        // ============== Enhanced refresh with new sections ==============
+
+        // Extend the original refreshDashboard to also load budget + stock
+        const _originalRefresh = refreshDashboard;
+        refreshDashboard = async function() {
+            await _originalRefresh();
+
+            // Load budget and stock data in parallel
+            const [budgetData, stockOverview, stockProducts] = await Promise.all([
+                fetchBudgetVsActual(),
+                fetchStockOverview(),
+                fetchStockProducts(),
+            ]);
+
+            updateBudgetTable(budgetData);
+            updateStockTable(stockOverview);
+            updateStockProductsTable(stockProducts);
+
+            // Populate store dropdown from budget data
+            if (budgetData && budgetData.length > 0) {
+                const stores = budgetData.map(r => r.store);
+                populateBudgetStoreDropdown(stores);
+            }
+
+            // Populate stock location dropdown from overview data
+            if (stockOverview && stockOverview.length > 0) {
+                const locs = stockOverview.map(r => r.location);
+                populateStockLocationDropdown(locs);
+            }
+        };
+    </script>
+</body>
+</html>

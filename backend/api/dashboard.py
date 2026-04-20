@@ -721,12 +721,14 @@ async def export_sales(
             SalesOrderItem.product_name,
             SalesOrderItem.product_category,
             SalesOrderItem.vendor,
+            CategoryMapping.designed_for,
             SalesOrderItem.quantity,
             SalesOrderItem.unit_price,
             SalesOrderItem.discount_amount,
             SalesOrderItem.line_total,
         )
         .join(SalesOrder)
+        .outerjoin(CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku)
         .filter(and_(*filters))
         .order_by(SalesOrder.order_date.desc())
         .all()
@@ -734,7 +736,7 @@ async def export_sales(
 
     headers = [
         "order_date", "source", "location", "order_id", "staff",
-        "sku", "product", "category", "vendor",
+        "sku", "product", "category", "vendor", "designed_for",
         "qty", "unit_price", "discount", "line_total",
     ]
     return _csv_response(rows, headers, f"sales_{start_date}_{end_date}.csv")

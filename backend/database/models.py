@@ -198,6 +198,9 @@ class CategoryMapping(Base):
     # Standardized category
     standard_category = Column(String, index=True)  # Unified category
     
+    # Gender / target audience based on Sitoo vendor classification
+    designed_for = Column(String, nullable=True, index=True)  # 'men', 'women', 'unisex'
+
     # Mapping metadata
     mapping_source = Column(String)  # 'shopify', 'keyword_inference', 'manual'
     confidence = Column(Float, default=1.0)  # 1.0 for shopify, 0.8 for keyword inference

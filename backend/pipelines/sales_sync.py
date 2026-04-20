@@ -323,7 +323,7 @@ class SalesSyncPipeline:
             'staff_by_extid': {},
             'categories': {},
             'existing_skus': set(),
-            'unisex_skus': set(),  # SKUs sold as "Livid Unisex" on Shopify
+            'unisex_skus': set(),
         }
         
         # Load staff mappings
@@ -349,15 +349,12 @@ class SalesSyncPipeline:
         except Exception as e:
             logger.warning(f"Could not load category mappings: {e}")
 
-        # Load unisex SKU set from category_mappings.sold_as_vendor.
-        # Used to unify vendor labels across channels so filtering by
-        # "Livid Unisex" shows combined Sitoo + Shopify revenue.
+        # Load unisex SKU set (from current Shopify catalog via category_mappings)
         try:
             unisex_rows = db.query(CategoryMapping.sku).filter(
                 CategoryMapping.sold_as_vendor == 'Livid Unisex',
             ).all()
             mappings['unisex_skus'] = {r.sku for r in unisex_rows}
-            logger.info(f"Loaded {len(mappings['unisex_skus'])} unisex SKUs")
         except Exception as e:
             logger.warning(f"Could not load unisex SKUs: {e}")
 
@@ -509,11 +506,10 @@ class SalesSyncPipeline:
             if item.get('vendor'):
                 item['vendor'] = standardize_vendor(item['vendor'])
 
-            # Unify vendor to "Livid Unisex" for SKUs that Shopify sells
-            # as unisex, so cross-channel filtering works consistently.
+            # Apply unified "Livid Unisex" label for SKUs marked as such
+            # in category_mappings (sourced from current Shopify catalog).
             if sku and sku in mappings.get('unisex_skus', set()):
-                if item.get('vendor') in ('Livid Femme', 'Livid Men'):
-                    item['vendor'] = 'Livid Unisex'
+                item['vendor'] = 'Livid Unisex'
         
         return order_data
     

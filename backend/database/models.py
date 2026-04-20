@@ -200,6 +200,8 @@ class CategoryMapping(Base):
     
     # Gender / target audience based on Sitoo vendor classification
     designed_for = Column(String, nullable=True, index=True)  # 'men', 'women', 'unisex'
+    # Unified vendor label for cross-channel consistency
+    sold_as_vendor = Column(String, nullable=True)  # e.g. 'Livid Unisex'
 
     # Mapping metadata
     mapping_source = Column(String)  # 'shopify', 'keyword_inference', 'manual'

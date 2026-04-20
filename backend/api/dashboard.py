@@ -329,6 +329,7 @@ async def get_top_products(
     location: str = Query(default="All", description="Filter: All, Stores, Online, or specific location"),
     category: str = Query(default=None, description="Filter by category"),
     vendor: str = Query(default=None, description="Filter by vendor"),
+    designed_for: str = Query(default=None, description="Filter by designed_for: men, women, unisex"),
     aggregate_by: str = Query(default="parent", description="Aggregate by: 'sku' or 'parent'"),
     compare_to: str = Query(default=None, description="Compare to: 'previous_period' or 'previous_year'"),
     limit: int = Query(default=20),
@@ -357,14 +358,20 @@ async def get_top_products(
     vendor_filter = True
     if vendor and vendor not in ['ALL', 'All', '']:
         vendor_filter = SalesOrderItem.vendor == vendor
-    
+
+    # Build designed_for filter
+    gender_filter = True
+    if designed_for and designed_for not in ['ALL', 'All', '']:
+        gender_filter = CategoryMapping.designed_for == designed_for
+
     # Helper function to get product data for a period
-    def get_products_data(d_filter, l_filter, c_filter, v_filter):
+    def get_products_data(d_filter, l_filter, c_filter, v_filter, g_filter):
         if aggregate_by == "parent":
             return db.query(
                 func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku).label('sku'),
                 func.coalesce(ParentSkuMapping.base_product_name, SalesOrderItem.product_name).label('name'),
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
+                CategoryMapping.designed_for,
                 func.sum(SalesOrderItem.quantity).label('quantity_sold'),
                 func.sum(SalesOrderItem.line_total).label('revenue'),
                 func.count(func.distinct(SalesOrderItem.sku)).label('variant_count')
@@ -373,11 +380,12 @@ async def get_top_products(
             ).outerjoin(
                 CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
             ).filter(
-                and_(d_filter, l_filter, c_filter, v_filter)
+                and_(d_filter, l_filter, c_filter, v_filter, g_filter)
             ).group_by(
                 func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku),
                 func.coalesce(ParentSkuMapping.base_product_name, SalesOrderItem.product_name),
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category)
+                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category),
+                CategoryMapping.designed_for
             ).order_by(
                 func.sum(SalesOrderItem.line_total).desc()
             ).limit(limit).all()
@@ -386,29 +394,31 @@ async def get_top_products(
                 SalesOrderItem.sku,
                 SalesOrderItem.product_name.label('name'),
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
+                CategoryMapping.designed_for,
                 func.sum(SalesOrderItem.quantity).label('quantity_sold'),
                 func.sum(SalesOrderItem.line_total).label('revenue')
             ).join(SalesOrder).outerjoin(
                 CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
             ).filter(
-                and_(d_filter, l_filter, c_filter, v_filter)
+                and_(d_filter, l_filter, c_filter, v_filter, g_filter)
             ).group_by(
                 SalesOrderItem.sku, SalesOrderItem.product_name,
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category)
+                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category),
+                CategoryMapping.designed_for
             ).order_by(
                 func.sum(SalesOrderItem.line_total).desc()
             ).limit(limit).all()
     
     # Get current period data
-    products = get_products_data(date_filter, loc_filter, cat_filter, vendor_filter)
-    
+    products = get_products_data(date_filter, loc_filter, cat_filter, vendor_filter, gender_filter)
+
     # Get comparison data if requested
     compare_data = {}
     if compare_to:
         compare_start, compare_end = get_comparison_period(start_date, end_date, compare_to)
         if compare_start and compare_end:
             compare_date_filter = get_date_filter(compare_start, compare_end)
-            compare_products = get_products_data(compare_date_filter, loc_filter, cat_filter, vendor_filter)
+            compare_products = get_products_data(compare_date_filter, loc_filter, cat_filter, vendor_filter, gender_filter)
             compare_data = {p.sku: {'qty': p.quantity_sold, 'rev': float(p.revenue or 0)} for p in compare_products}
     
     # Build result
@@ -418,6 +428,7 @@ async def get_top_products(
             'sku': p.sku,
             'name': p.name,
             'category': p.category,
+            'designed_for': p.designed_for,
             'quantity_sold': p.quantity_sold,
             'revenue': float(p.revenue or 0),
         }

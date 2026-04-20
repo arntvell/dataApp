@@ -349,15 +349,13 @@ class SalesSyncPipeline:
         except Exception as e:
             logger.warning(f"Could not load category mappings: {e}")
 
-        # Load unisex SKU set — SKUs sold as "Livid Unisex" on Shopify.
+        # Load unisex SKU set from category_mappings.sold_as_vendor.
         # Used to unify vendor labels across channels so filtering by
         # "Livid Unisex" shows combined Sitoo + Shopify revenue.
         try:
-            unisex_rows = db.query(SalesOrderItem.sku).join(SalesOrder).filter(
-                SalesOrder.source_system == 'shopify',
-                SalesOrderItem.vendor == 'Livid Unisex',
-                SalesOrderItem.sku.isnot(None),
-            ).distinct().all()
+            unisex_rows = db.query(CategoryMapping.sku).filter(
+                CategoryMapping.sold_as_vendor == 'Livid Unisex',
+            ).all()
             mappings['unisex_skus'] = {r.sku for r in unisex_rows}
             logger.info(f"Loaded {len(mappings['unisex_skus'])} unisex SKUs")
         except Exception as e:

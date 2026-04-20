@@ -157,6 +157,16 @@
                             <!-- Options populated by JS -->
                         </select>
                     </div>
+                    <!-- Designed For Filter -->
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Designed for:</label>
+                        <select id="productDesignedForSelect" onchange="onProductFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-24">
+                            <option value="All">All</option>
+                            <option value="men">Men</option>
+                            <option value="women">Women</option>
+                            <option value="unisex">Unisex</option>
+                        </select>
+                    </div>
                     <!-- Compare Toggle -->
                     <div class="flex items-center gap-2 border-l pl-3">
                         <label class="text-sm text-gray-600">Compare:</label>
@@ -389,7 +399,7 @@
         }
 
         // Fetch top products with comparison support
-        async function fetchProducts(location = 'All', category = 'All', vendor = 'All', compareTo = null) {
+        async function fetchProducts(location = 'All', category = 'All', vendor = 'All', designedFor = 'All', compareTo = null) {
             try {
                 let url = `${API_BASE}/products?start_date=${currentStartDate}&end_date=${currentEndDate}&aggregate_by=parent&limit=20`;
                 if (location && location !== 'All') {
@@ -400,6 +410,9 @@
                 }
                 if (vendor && vendor !== 'All') {
                     url += `&vendor=${encodeURIComponent(vendor)}`;
+                }
+                if (designedFor && designedFor !== 'All') {
+                    url += `&designed_for=${encodeURIComponent(designedFor)}`;
                 }
                 if (compareTo) {
                     url += `&compare_to=${encodeURIComponent(compareTo)}`;
@@ -487,6 +500,7 @@
                 location: document.getElementById('productLocationSelect')?.value || 'All',
                 category: document.getElementById('productCategorySelect')?.value || 'All',
                 vendor: document.getElementById('productVendorSelect')?.value || 'All',
+                designedFor: document.getElementById('productDesignedForSelect')?.value || 'All',
                 compare: document.getElementById('productCompareToggle')?.checked || false,
                 comparePeriod: document.getElementById('productComparePeriod')?.value || 'previous_period'
             };
@@ -506,7 +520,7 @@
         async function onProductFilterChange() {
             const filters = getProductFilters();
             const compareTo = filters.compare ? filters.comparePeriod : null;
-            const products = await fetchProducts(filters.location, filters.category, filters.vendor, compareTo);
+            const products = await fetchProducts(filters.location, filters.category, filters.vendor, filters.designedFor, compareTo);
             updateProductsTable(products, filters.compare);
         }
 
@@ -862,7 +876,7 @@
             const [summary, staff, products, categories, syncStatus] = await Promise.all([
                 fetchSummary(),
                 fetchStaff(currentStaffFilter),
-                fetchProducts(productFilters.location, productFilters.category, productFilters.vendor, productCompareTo),
+                fetchProducts(productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor, productCompareTo),
                 fetchCategories(categoryFilters.location, categoryFilters.vendor, categoryCompareTo),
                 fetchSyncStatus()
             ]);

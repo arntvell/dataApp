@@ -1,12 +1,15 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+import secrets
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 from datetime import datetime
 import logging
 import os
+import base64
 from api.endpoints import router as api_router
 from api.dashboard import router as dashboard_router
 from api.budget import router as budget_router
@@ -40,10 +43,48 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# ---- HTTP Basic Auth middleware ----
+# Set APP_USERNAME and APP_PASSWORD env vars to enable.
+# The /health endpoint is excluded so Railway/uptime monitors work.
+
+APP_USERNAME = os.getenv("APP_USERNAME", "livid")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+
+
+class BasicAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth for health check
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        auth = request.headers.get("Authorization")
+        if auth and auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                username, password = decoded.split(":", 1)
+                if (secrets.compare_digest(username, APP_USERNAME)
+                        and secrets.compare_digest(password, APP_PASSWORD)):
+                    return await call_next(request)
+            except Exception:
+                pass
+
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="DataApp"'},
+            content="Unauthorized",
+        )
+
+
+if APP_PASSWORD:
+    app.add_middleware(BasicAuthMiddleware)
+    logger.info("Basic auth enabled (set APP_PASSWORD to disable)")
+
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -3,8 +3,11 @@ Sales Dashboard API Endpoints
 Updated with date range filtering, location filters, categories, and YoY comparison
 """
 
+import csv
+import io
 import logging
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, cast, Date
 from typing import Optional, List
@@ -667,3 +670,159 @@ async def trigger_full_sync(
         "status": "started",
         "message": "Full historical sync started in background. Check /sync-status for progress."
     }
+
+
+# ============== CSV EXPORT ENDPOINTS ==============
+
+def _csv_response(rows: list, headers: list, filename: str) -> StreamingResponse:
+    """Build a CSV StreamingResponse from rows and headers."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/export/sales")
+async def export_sales(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    location: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Export all sales order line items as CSV for the given date range."""
+    if start_date is None:
+        start_date = date.today().replace(day=1)
+    if end_date is None:
+        end_date = date.today()
+
+    filters = [get_date_filter(start_date, end_date)]
+    if location and location not in ("ALL",):
+        if location == "Online":
+            filters.append(SalesOrder.source_system == "shopify")
+        elif location == "Stores":
+            filters.append(SalesOrder.source_system == "sitoo")
+        else:
+            filters.append(SalesOrder.location == location)
+
+    rows = (
+        db.query(
+            SalesOrder.order_date,
+            SalesOrder.source_system,
+            SalesOrder.location,
+            SalesOrder.source_id,
+            SalesOrder.staff_name,
+            SalesOrderItem.sku,
+            SalesOrderItem.product_name,
+            SalesOrderItem.product_category,
+            SalesOrderItem.vendor,
+            SalesOrderItem.quantity,
+            SalesOrderItem.unit_price,
+            SalesOrderItem.discount_amount,
+            SalesOrderItem.line_total,
+        )
+        .join(SalesOrder)
+        .filter(and_(*filters))
+        .order_by(SalesOrder.order_date.desc())
+        .all()
+    )
+
+    headers = [
+        "order_date", "source", "location", "order_id", "staff",
+        "sku", "product", "category", "vendor",
+        "qty", "unit_price", "discount", "line_total",
+    ]
+    return _csv_response(rows, headers, f"sales_{start_date}_{end_date}.csv")
+
+
+@router.get("/export/staff")
+async def export_staff_performance(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    location: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Export staff performance summary as CSV."""
+    if start_date is None:
+        start_date = date.today().replace(day=1)
+    if end_date is None:
+        end_date = date.today()
+
+    filters = [
+        get_date_filter(start_date, end_date),
+        SalesOrder.staff_name.isnot(None),
+        SalesOrder.staff_name != "",
+    ]
+    if location and location not in ("ALL",):
+        filters.append(SalesOrder.location == location)
+
+    rows = (
+        db.query(
+            SalesOrder.staff_name,
+            SalesOrder.location,
+            func.count(SalesOrder.id).label("orders"),
+            func.sum(SalesOrder.total_amount).label("revenue"),
+            func.avg(SalesOrder.total_amount).label("avg_order"),
+        )
+        .filter(and_(*filters))
+        .group_by(SalesOrder.staff_name, SalesOrder.location)
+        .order_by(func.sum(SalesOrder.total_amount).desc())
+        .all()
+    )
+
+    headers = ["staff_name", "location", "orders", "revenue", "avg_order"]
+    return _csv_response(
+        [(r.staff_name, r.location, r.orders, f"{r.revenue:.2f}", f"{r.avg_order:.2f}") for r in rows],
+        headers,
+        f"staff_{start_date}_{end_date}.csv",
+    )
+
+
+@router.get("/export/categories")
+async def export_categories(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    location: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Export category breakdown as CSV."""
+    if start_date is None:
+        start_date = date.today().replace(day=1)
+    if end_date is None:
+        end_date = date.today()
+
+    filters = [get_date_filter(start_date, end_date)]
+    if location and location not in ("ALL",):
+        if location == "Online":
+            filters.append(SalesOrder.source_system == "shopify")
+        elif location == "Stores":
+            filters.append(SalesOrder.source_system == "sitoo")
+        else:
+            filters.append(SalesOrder.location == location)
+
+    rows = (
+        db.query(
+            SalesOrderItem.product_category,
+            SalesOrder.location,
+            func.count(SalesOrderItem.id).label("items_sold"),
+            func.sum(SalesOrderItem.quantity).label("quantity"),
+            func.sum(SalesOrderItem.line_total).label("revenue"),
+        )
+        .join(SalesOrder)
+        .filter(and_(*filters))
+        .group_by(SalesOrderItem.product_category, SalesOrder.location)
+        .order_by(func.sum(SalesOrderItem.line_total).desc())
+        .all()
+    )
+
+    headers = ["category", "location", "items_sold", "quantity", "revenue"]
+    return _csv_response(
+        [(r.product_category, r.location, r.items_sold, r.quantity, f"{r.revenue:.2f}") for r in rows],
+        headers,
+        f"categories_{start_date}_{end_date}.csv",
+    )

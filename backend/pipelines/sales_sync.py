@@ -322,7 +322,8 @@ class SalesSyncPipeline:
             'staff_by_userid': {},
             'staff_by_extid': {},
             'categories': {},
-            'existing_skus': set()
+            'existing_skus': set(),
+            'unisex_skus': set(),  # SKUs sold as "Livid Unisex" on Shopify
         }
         
         # Load staff mappings
@@ -347,7 +348,21 @@ class SalesSyncPipeline:
             logger.info(f"Loaded {len(category_records)} category mappings")
         except Exception as e:
             logger.warning(f"Could not load category mappings: {e}")
-        
+
+        # Load unisex SKU set — SKUs sold as "Livid Unisex" on Shopify.
+        # Used to unify vendor labels across channels so filtering by
+        # "Livid Unisex" shows combined Sitoo + Shopify revenue.
+        try:
+            unisex_rows = db.query(SalesOrderItem.sku).join(SalesOrder).filter(
+                SalesOrder.source_system == 'shopify',
+                SalesOrderItem.vendor == 'Livid Unisex',
+                SalesOrderItem.sku.isnot(None),
+            ).distinct().all()
+            mappings['unisex_skus'] = {r.sku for r in unisex_rows}
+            logger.info(f"Loaded {len(mappings['unisex_skus'])} unisex SKUs")
+        except Exception as e:
+            logger.warning(f"Could not load unisex SKUs: {e}")
+
         return mappings
     
     def _create_sku_mappings(self, db: Session, orders: List[Dict[str, Any]], existing_skus: set):
@@ -491,10 +506,16 @@ class SalesSyncPipeline:
             sku = item.get('sku')
             if sku and sku in mappings['categories']:
                 item['product_category'] = mappings['categories'][sku]
-            
+
             # Standardize vendor name
             if item.get('vendor'):
                 item['vendor'] = standardize_vendor(item['vendor'])
+
+            # Unify vendor to "Livid Unisex" for SKUs that Shopify sells
+            # as unisex, so cross-channel filtering works consistently.
+            if sku and sku in mappings.get('unisex_skus', set()):
+                if item.get('vendor') in ('Livid Femme', 'Livid Men'):
+                    item['vendor'] = 'Livid Unisex'
         
         return order_data
     

@@ -269,10 +269,13 @@ async def get_staff_performance(
     if end_date is None:
         end_date = start_date
     
-    # Build filters
+    # Build filters — use staff_name (enriched from staff_mappings) rather
+    # than staff_id (Sitoo externalid) since not all POS users have an
+    # external ID assigned.
     filters = [
         get_date_filter(start_date, end_date),
-        SalesOrder.staff_id.isnot(None)
+        SalesOrder.staff_name.isnot(None),
+        SalesOrder.staff_name != '',
     ]
     
     # Location filter (staff are only in Sitoo/POS)
@@ -285,27 +288,26 @@ async def get_staff_performance(
     date_filter = and_(*filters)
     
     staff = db.query(
-        SalesOrder.staff_id,
         SalesOrder.staff_name,
         SalesOrder.location,
         func.sum(SalesOrder.total_amount).label('revenue'),
         func.count(SalesOrder.id).label('orders'),
         func.avg(SalesOrder.total_amount).label('avg_order')
     ).filter(date_filter).group_by(
-        SalesOrder.staff_id, SalesOrder.staff_name, SalesOrder.location
+        SalesOrder.staff_name, SalesOrder.location
     ).order_by(func.sum(SalesOrder.total_amount).desc()).all()
-    
+
     result = []
     for s in staff:
         items_sold = db.query(
             func.coalesce(func.sum(SalesOrderItem.quantity), 0)
         ).join(SalesOrder).filter(
-            and_(get_date_filter(start_date, end_date), SalesOrder.staff_id == s.staff_id)
+            and_(get_date_filter(start_date, end_date), SalesOrder.staff_name == s.staff_name)
         ).scalar() or 0
-        
+
         result.append({
-            'staff_id': s.staff_id,
-            'staff_name': s.staff_name or f'Staff {s.staff_id}',
+            'staff_id': s.staff_name,  # use name as identifier
+            'staff_name': s.staff_name,
             'location': s.location,
             'revenue': float(s.revenue or 0),
             'orders': s.orders,

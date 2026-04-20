@@ -1,11 +1,16 @@
 import requests
 import base64
+import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from .base_connector import BaseConnector
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class SitooRateLimitError(Exception):
+    """Raised when Sitoo rate limiting cannot be recovered from after retries."""
 
 class SitooConnector(BaseConnector):
     """Connector for Sitoo POS system"""
@@ -28,6 +33,43 @@ class SitooConnector(BaseConnector):
         self._manufacturer_lookup = None  # {externalcompanyid: name}
         self._sku_manufacturer_lookup = None  # {sku: manufacturer_name}
     
+    def _get_with_retry(self, url: str, max_retries: int = 8,
+                        initial_backoff: float = 5.0,
+                        max_backoff: float = 120.0) -> requests.Response:
+        """
+        GET with exponential backoff on HTTP 429 (rate limit).
+        Honors Retry-After header if present, otherwise uses exponential
+        backoff capped at max_backoff. Total wait time across the default
+        8 retries is roughly 5+10+20+40+80+120+120+120 = ~8.5 minutes,
+        enough to ride out most short rate-limit windows without giving up.
+        Raises SitooRateLimitError if still rate-limited after max_retries.
+        Non-429 responses are returned as-is for the caller to handle.
+        """
+        backoff = initial_backoff
+        for attempt in range(max_retries + 1):
+            response = requests.get(url, headers=self.headers)
+            if response.status_code != 429:
+                return response
+
+            if attempt == max_retries:
+                self.logger.error(
+                    f"Sitoo rate limit not cleared after {max_retries} retries: {url}"
+                )
+                raise SitooRateLimitError(
+                    f"Rate limited after {max_retries} retries on {url}"
+                )
+
+            retry_after = response.headers.get('Retry-After')
+            try:
+                wait = float(retry_after) if retry_after else backoff
+            except ValueError:
+                wait = backoff
+            self.logger.warning(
+                f"Sitoo 429 (attempt {attempt + 1}/{max_retries}); sleeping {wait:.1f}s"
+            )
+            time.sleep(wait)
+            backoff = min(backoff * 2, max_backoff)
+
     def authenticate(self) -> bool:
         """Test API connection"""
         try:
@@ -265,7 +307,65 @@ class SitooConnector(BaseConnector):
             return sku_lookup
     
     # ============== SALES DASHBOARD METHODS ==============
-    
+
+    def get_order_count(self) -> int:
+        """Get total order count with a single lightweight API call."""
+        url = f"{self.base_url}/sites/1/orders.json?num=1"
+        response = self._get_with_retry(url)
+        if response.status_code == 200:
+            return response.json().get('totalcount', 0)
+        return 0
+
+    def get_recent_orders(self, count: int, batch_size: int = 500) -> List[Dict[str, Any]]:
+        """Fetch the N most recent orders.
+
+        Sitoo returns orders newest-first (start=0 = most recent) and its
+        date filter parameters are ignored, so the only reliable way to get
+        recent orders is positional: fetch from start=0 up to *count*.
+
+        For daily incremental sync, *count* should be the delta between the
+        current API totalcount and the last-known total from SyncStatus,
+        plus a small overlap buffer.
+        """
+        all_orders = []
+
+        # Pre-load vendor lookup (shared across batches)
+        self.logger.info("Pre-loading manufacturer/vendor lookup...")
+        sku_vendor_lookup = self.get_sku_manufacturer_lookup()
+        self.logger.info(f"Vendor lookup ready with {len(sku_vendor_lookup)} SKU mappings")
+
+        start = 0
+        remaining = count
+        while remaining > 0:
+            fetch = min(remaining, batch_size)
+            url = f"{self.base_url}/sites/1/orders.json?num={fetch}&start={start}"
+            response = self._get_with_retry(url)
+
+            if response.status_code != 200:
+                msg = f"Sitoo recent orders fetch failed at offset {start}: {response.status_code}"
+                self.logger.error(msg)
+                raise RuntimeError(msg)
+
+            data = response.json()
+            items = data.get('items', [])
+            if not items:
+                break
+
+            transformed = self._transform_detailed_orders(items, sku_vendor_lookup)
+            all_orders.extend(transformed)
+            self.logger.info(f"Sitoo recent: fetched {len(all_orders)}/{count} orders")
+
+            if len(items) < fetch:
+                break
+
+            start += fetch
+            remaining -= len(items)
+
+            if remaining > 0:
+                time.sleep(0.5)  # same throttle as paginated fetch
+
+        return all_orders
+
     def get_detailed_orders(self, from_date: datetime = None, to_date: datetime = None, limit: int = 500) -> List[Dict[str, Any]]:
         """Retrieve detailed orders for sales dashboard (single batch)"""
         try:
@@ -295,9 +395,10 @@ class SitooConnector(BaseConnector):
             self.logger.error(f"Error getting detailed orders: {e}")
             return []
     
-    def get_all_detailed_orders(self, from_date: datetime = None, to_date: datetime = None, 
+    def get_all_detailed_orders(self, from_date: datetime = None, to_date: datetime = None,
                                  batch_size: int = 500, max_orders: int = None,
-                                 progress_callback=None) -> List[Dict[str, Any]]:
+                                 progress_callback=None,
+                                 inter_batch_sleep: float = 0.5) -> List[Dict[str, Any]]:
         """Retrieve ALL detailed orders with pagination"""
         all_orders = []
         start = 0
@@ -308,57 +409,67 @@ class SitooConnector(BaseConnector):
         sku_vendor_lookup = self.get_sku_manufacturer_lookup()
         self.logger.info(f"Vendor lookup ready with {len(sku_vendor_lookup)} SKU mappings")
         
-        try:
-            while True:
-                # Build query params
-                params = f"num={batch_size}&start={start}"
-                
-                if from_date:
-                    params += f"&datelastmodified-from={int(from_date.timestamp())}"
-                if to_date:
-                    params += f"&datelastmodified-to={int(to_date.timestamp())}"
-                
-                url = f"{self.base_url}/sites/1/orders.json?{params}"
-                response = requests.get(url, headers=self.headers)
-                
-                if response.status_code != 200:
-                    self.logger.error(f"Failed to get orders at offset {start}: {response.status_code}")
-                    break
-                
-                data = response.json()
-                items = data.get('items', [])
-                
-                if total_count is None:
-                    total_count = data.get('totalcount', 0)
-                    self.logger.info(f"Sitoo has {total_count} total orders to fetch")
-                
-                if not items:
-                    break
-                
-                transformed = self._transform_detailed_orders(items, sku_vendor_lookup)
-                all_orders.extend(transformed)
-                
-                # Progress callback
-                if progress_callback:
-                    progress_callback(len(all_orders), total_count, 'sitoo')
-                
-                self.logger.info(f"Sitoo: Fetched {len(all_orders)}/{total_count} orders")
-                
-                # Check if we've reached the limit or end
-                if max_orders and len(all_orders) >= max_orders:
-                    all_orders = all_orders[:max_orders]
-                    break
-                
-                if len(items) < batch_size:
-                    break  # No more items
-                
-                start += batch_size
-            
-            return all_orders
-            
-        except Exception as e:
-            self.logger.error(f"Error in paginated order fetch: {e}")
-            return all_orders  # Return what we have so far
+        # NOTE: do not catch-and-return-partial here. The pipeline advances a
+        # high watermark from the returned set, so a partial fetch silently
+        # creates a data gap. Let exceptions propagate to the caller.
+        while True:
+            # Build query params
+            params = f"num={batch_size}&start={start}"
+
+            if from_date:
+                params += f"&datelastmodified-from={int(from_date.timestamp())}"
+            if to_date:
+                params += f"&datelastmodified-to={int(to_date.timestamp())}"
+
+            url = f"{self.base_url}/sites/1/orders.json?{params}"
+            response = self._get_with_retry(url)
+
+            if response.status_code != 200:
+                # Non-429 failure (e.g. 5xx). Raise rather than silently
+                # truncate — the caller advances a high watermark based on
+                # the returned set, so a partial fetch corrupts state.
+                msg = (
+                    f"Sitoo orders fetch failed at offset {start}: "
+                    f"{response.status_code} {response.text[:200]}"
+                )
+                self.logger.error(msg)
+                raise RuntimeError(msg)
+
+            data = response.json()
+            items = data.get('items', [])
+
+            if total_count is None:
+                total_count = data.get('totalcount', 0)
+                self.logger.info(f"Sitoo has {total_count} total orders to fetch")
+
+            if not items:
+                break
+
+            transformed = self._transform_detailed_orders(items, sku_vendor_lookup)
+            all_orders.extend(transformed)
+
+            # Progress callback
+            if progress_callback:
+                progress_callback(len(all_orders), total_count, 'sitoo')
+
+            self.logger.info(f"Sitoo: Fetched {len(all_orders)}/{total_count} orders")
+
+            # Check if we've reached the limit or end
+            if max_orders and len(all_orders) >= max_orders:
+                all_orders = all_orders[:max_orders]
+                break
+
+            if len(items) < batch_size:
+                break  # No more items
+
+            start += batch_size
+
+            # Preventive throttle: stay under Sitoo's rate limit instead of
+            # bursting through and getting blocked deep into the fetch.
+            if inter_batch_sleep > 0:
+                time.sleep(inter_batch_sleep)
+
+        return all_orders
     
     def get_staff_list(self) -> Dict[str, str]:
         """Get mapping of staff IDs to names"""
@@ -376,6 +487,33 @@ class SitooConnector(BaseConnector):
             return {}
         except Exception as e:
             self.logger.error(f"Error getting staff list: {e}")
+            return {}
+
+    def get_users_by_userid(self) -> Dict[str, Dict[str, str]]:
+        """Get full user list keyed by userid (GUID).
+
+        Returns {userid: {'name': ..., 'externalid': ...}} for every
+        Sitoo user, so the sync pipeline can auto-create staff_mappings
+        for newly added POS users.
+        """
+        try:
+            response = self._get_with_retry(
+                f"{self.base_url}/sites/1/users.json?num=500"
+            )
+            if response.status_code != 200:
+                self.logger.error(f"Failed to get users: {response.status_code}")
+                return {}
+            users = {}
+            for user in response.json().get('items', []):
+                uid = user.get('userid', '')
+                name = f"{user.get('namefirst', '')} {user.get('namelast', '')}".strip()
+                users[uid] = {
+                    'name': name or f"User {uid[:8]}",
+                    'externalid': user.get('externalid', ''),
+                }
+            return users
+        except Exception as e:
+            self.logger.error(f"Error getting users by userid: {e}")
             return {}
     
     def _transform_detailed_orders(self, orders: List[Dict[str, Any]], 

@@ -45,75 +45,100 @@ class SalesSyncPipeline:
         db.commit()
     
     # ============== INCREMENTAL SYNC (Daily Use) ==============
-    
+
+    # Sitoo's date filter parameters (datelastmodified-from etc.) are
+    # silently ignored by the API — every query returns the full order
+    # history regardless of date range.  However, orders are returned
+    # newest-first (start=0 = most recent), so we can do a fast daily
+    # sync by fetching only the delta between the current API totalcount
+    # and the last-known total, plus a small overlap buffer.
+    SITOO_OVERLAP_BUFFER = 200  # extra orders to re-fetch for safety
+
     def sync_incremental(self, progress_callback: Callable = None):
         """
-        Smart incremental sync - only fetches orders since last sync.
-        This is the recommended method for daily dashboard updates.
+        Smart incremental sync — fast daily updates.
+
+        Sitoo: count-based delta (Sitoo date filters don't work).
+        Shopify: date-based with pagination (Shopify filters work fine).
         """
         logger.info("Starting incremental sync...")
-        
+
         db = SessionLocal()
         try:
             results = {'sitoo': 0, 'shopify': 0}
-            
-            # Sync Sitoo
+
+            # ---- Sitoo (count-based delta) ----
             if self.sitoo.authenticate():
                 sitoo_status = self._get_sync_status(db, 'sitoo')
-                
-                # Determine start date
-                from_date = sitoo_status.last_order_date
-                if from_date:
-                    # Go back 1 day to catch any late updates
-                    from_date = from_date - timedelta(days=1)
-                else:
-                    # First sync - get last 30 days
-                    from_date = datetime.now() - timedelta(days=30)
-                
                 self._update_sync_status(db, 'sitoo', sync_in_progress=True, last_error=None)
-                
+
                 try:
-                    orders = self.sitoo.get_detailed_orders(from_date=from_date, limit=500)
+                    api_total = self.sitoo.get_order_count()
+                    last_total = sitoo_status.total_orders_synced or 0
+
+                    if last_total == 0:
+                        # Cold start — fall back to full history
+                        logger.info("Sitoo: no prior sync, falling back to full history")
+                        orders = self.sitoo.get_all_detailed_orders(
+                            progress_callback=progress_callback
+                        )
+                    else:
+                        delta = max(api_total - last_total, 0)
+                        fetch_count = delta + self.SITOO_OVERLAP_BUFFER
+                        logger.info(
+                            f"Sitoo: api_total={api_total}, last_total={last_total}, "
+                            f"delta={delta}, fetching {fetch_count} most recent orders"
+                        )
+                        orders = self.sitoo.get_recent_orders(fetch_count)
+
                     self._save_sales_orders(db, orders)
                     results['sitoo'] = len(orders)
-                    
-                    # Update status
-                    max_date = max([o['order_date'] for o in orders if o.get('order_date')], default=None)
+
+                    max_date = max(
+                        [o['order_date'] for o in orders if o.get('order_date')],
+                        default=None,
+                    )
                     self._update_sync_status(db, 'sitoo',
                         sync_in_progress=False,
                         last_incremental_sync=datetime.now(),
                         last_order_date=max_date or sitoo_status.last_order_date,
-                        last_sync_orders_count=len(orders)
+                        total_orders_synced=api_total,
+                        last_sync_orders_count=len(orders),
                     )
                     logger.info(f"Incremental sync: {len(orders)} orders from Sitoo")
                 except Exception as e:
                     self._update_sync_status(db, 'sitoo', sync_in_progress=False, last_error=str(e))
                     logger.error(f"Sitoo incremental sync error: {e}")
-            
-            # Sync Shopify
+
+            # ---- Shopify (date-based, paginated) ----
             if self.shopify.authenticate():
                 shopify_status = self._get_sync_status(db, 'shopify')
-                
-                # Determine start date
+
                 from_date = shopify_status.last_order_date
                 if from_date:
                     from_date = from_date - timedelta(days=1)
                 else:
                     from_date = datetime.now() - timedelta(days=30)
-                
+
                 self._update_sync_status(db, 'shopify', sync_in_progress=True, last_error=None)
-                
+
                 try:
-                    orders = self.shopify.get_detailed_orders(from_date=from_date, limit=250)
+                    orders = self.shopify.get_all_detailed_orders(
+                        from_date=from_date,
+                        progress_callback=progress_callback,
+                    )
                     self._save_sales_orders(db, orders)
                     results['shopify'] = len(orders)
-                    
-                    max_date = max([o['order_date'] for o in orders if o.get('order_date')], default=None)
+
+                    max_date = max(
+                        [o['order_date'] for o in orders if o.get('order_date')],
+                        default=None,
+                    )
                     self._update_sync_status(db, 'shopify',
                         sync_in_progress=False,
                         last_incremental_sync=datetime.now(),
                         last_order_date=max_date or shopify_status.last_order_date,
-                        last_sync_orders_count=len(orders)
+                        last_sync_orders_count=len(orders),
                     )
                     logger.info(f"Incremental sync: {len(orders)} orders from Shopify")
                 except Exception as e:
@@ -473,15 +498,60 @@ class SalesSyncPipeline:
         
         return order_data
     
+    def _create_staff_mappings(self, db: Session, orders: List[Dict[str, Any]],
+                               known_userids: set):
+        """Auto-create staff_mappings for unknown Sitoo user GUIDs.
+
+        When new staff members are added to the POS, their orders would
+        otherwise appear with no staff_name until someone manually rebuilds
+        the staff mapping table. This detects unknown GUIDs in the current
+        batch and resolves them from the Sitoo users API.
+        """
+        unknown_guids = set()
+        for order in orders:
+            if order.get('source_system') != 'sitoo':
+                continue
+            guid = order.get('staff_userid')
+            if guid and guid not in known_userids:
+                unknown_guids.add(guid)
+
+        if not unknown_guids:
+            return
+
+        logger.info(f"Found {len(unknown_guids)} unknown staff GUIDs, resolving from Sitoo API...")
+        try:
+            all_users = self.sitoo.get_users_by_userid()
+        except Exception as e:
+            logger.warning(f"Could not fetch Sitoo users for staff mapping: {e}")
+            return
+
+        created = 0
+        for guid in unknown_guids:
+            user_info = all_users.get(guid)
+            if not user_info:
+                logger.warning(f"Staff GUID {guid} not found in Sitoo users API")
+                continue
+            db.add(StaffMapping(
+                staff_userid=guid,
+                staff_externalid=user_info['externalid'] or None,
+                full_name=user_info['name'],
+            ))
+            created += 1
+
+        if created:
+            db.commit()
+            logger.info(f"Auto-created {created} new staff mappings")
+
     def _save_sales_orders(self, db: Session, orders: List[Dict[str, Any]]):
         """Save sales orders to database with enrichment from mapping tables"""
-        
+
         # Load mappings once for the batch
         mappings = self._load_mappings(db)
-        
-        # Create mappings for any new SKUs first
+
+        # Auto-create mappings for unknown staff and SKUs
+        self._create_staff_mappings(db, orders, set(mappings['staff_by_userid'].keys()))
         self._create_sku_mappings(db, orders, mappings['existing_skus'])
-        
+
         # Reload mappings to include newly created ones
         mappings = self._load_mappings(db)
         

@@ -15,7 +15,8 @@ from database.models import (
     SalesOrder, SalesOrderItem, SalesRefund, SyncStatus,
     CategoryMapping, ParentSkuMapping, StaffMapping,
     SameSystemBudget, SameSystemWorktime,
-    Cin7Stock, Cin7Sale, Cin7SaleItem, Cin7Purchase, Cin7PurchaseItem,
+    Cin7Stock, Cin7Sale, Cin7SaleItem, Cin7Invoice, Cin7InvoiceItem,
+    Cin7Purchase, Cin7PurchaseItem,
 )
 
 def init_database():

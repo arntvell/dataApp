@@ -96,11 +96,20 @@ class StockSyncPipeline:
             logger.error("Cin7 authentication failed")
             return
 
-        if from_date is None:
-            from_date = datetime.now() - timedelta(days=7)
-
         db = SessionLocal()
         try:
+            # Default from_date: resume from last successful sync, with 1 day
+            # of overlap to catch late updates. Falls back to 30 days for a
+            # cold start. The previous default of "now - 7 days" silently
+            # truncated history when the scheduler had been down longer.
+            if from_date is None:
+                status = self._get_sync_status(db, "cin7_sales")
+                if status.last_incremental_sync:
+                    from_date = status.last_incremental_sync - timedelta(days=1)
+                else:
+                    from_date = datetime.now() - timedelta(days=30)
+                logger.info(f"cin7_sales: resuming from {from_date.isoformat()}")
+
             self._update_sync_status(db, "cin7_sales", sync_in_progress=True, last_error=None)
 
             sale_list = self.connector.get_sale_list(from_date)
@@ -142,11 +151,17 @@ class StockSyncPipeline:
             logger.error("Cin7 authentication failed")
             return
 
-        if from_date is None:
-            from_date = datetime.now() - timedelta(days=7)
-
         db = SessionLocal()
         try:
+            # See sync_wholesale_orders for rationale on the resume logic.
+            if from_date is None:
+                status = self._get_sync_status(db, "cin7_purchases")
+                if status.last_incremental_sync:
+                    from_date = status.last_incremental_sync - timedelta(days=1)
+                else:
+                    from_date = datetime.now() - timedelta(days=30)
+                logger.info(f"cin7_purchases: resuming from {from_date.isoformat()}")
+
             self._update_sync_status(db, "cin7_purchases", sync_in_progress=True, last_error=None)
 
             purchase_list = self.connector.get_purchase_list(from_date)

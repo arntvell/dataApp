@@ -369,7 +369,7 @@ async def get_top_products(
         if aggregate_by == "parent":
             return db.query(
                 func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku).label('sku'),
-                func.coalesce(ParentSkuMapping.base_product_name, SalesOrderItem.product_name).label('name'),
+                func.min(SalesOrderItem.product_name).label('name'),
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
                 CategoryMapping.designed_for,
                 func.sum(SalesOrderItem.quantity).label('quantity_sold'),
@@ -383,7 +383,6 @@ async def get_top_products(
                 and_(d_filter, l_filter, c_filter, v_filter, g_filter)
             ).group_by(
                 func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku),
-                func.coalesce(ParentSkuMapping.base_product_name, SalesOrderItem.product_name),
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category),
                 CategoryMapping.designed_for
             ).order_by(
@@ -446,6 +445,63 @@ async def get_top_products(
         result.append(item)
     
     return result
+
+
+@router.get("/products/variants")
+async def get_product_variants(
+    parent_sku: str = Query(..., description="Parent SKU to get variants for"),
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    db: Session = Depends(get_db),
+):
+    """Get variant-level breakdown for a parent product."""
+    from database.models import ParentSkuMapping
+
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    date_filter = get_date_filter(start_date, end_date)
+    loc_filter = get_location_filter(location)
+
+    # Get all variant SKUs for this parent
+    variant_skus = [r.sku for r in db.query(ParentSkuMapping.sku).filter(
+        ParentSkuMapping.parent_sku == parent_sku
+    ).all()]
+
+    # If no parent mapping, treat the SKU itself as the only variant
+    if not variant_skus:
+        variant_skus = [parent_sku]
+
+    rows = (
+        db.query(
+            SalesOrderItem.sku,
+            func.min(SalesOrderItem.product_name).label('name'),
+            func.coalesce(ParentSkuMapping.size_code, SalesOrderItem.sku).label('size'),
+            func.sum(SalesOrderItem.quantity).label('quantity_sold'),
+            func.sum(SalesOrderItem.line_total).label('revenue'),
+        )
+        .join(SalesOrder)
+        .outerjoin(ParentSkuMapping, SalesOrderItem.sku == ParentSkuMapping.sku)
+        .filter(
+            and_(date_filter, loc_filter, SalesOrderItem.sku.in_(variant_skus))
+        )
+        .group_by(SalesOrderItem.sku, ParentSkuMapping.size_code)
+        .order_by(func.sum(SalesOrderItem.line_total).desc())
+        .all()
+    )
+
+    return [
+        {
+            'sku': r.sku,
+            'size': r.size,
+            'quantity_sold': r.quantity_sold,
+            'revenue': float(r.revenue or 0),
+        }
+        for r in rows
+    ]
 
 
 @router.get("/categories/list")

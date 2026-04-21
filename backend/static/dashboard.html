@@ -118,14 +118,15 @@
                             <th class="text-left py-3 px-4">Rank</th>
                             <th class="text-left py-3 px-4">Staff</th>
                             <th class="text-left py-3 px-4">Location</th>
-                            <th class="text-right py-3 px-4">Revenue</th>
-                            <th class="text-right py-3 px-4">Orders</th>
-                            <th class="text-right py-3 px-4">Items Sold</th>
-                            <th class="text-right py-3 px-4">Avg Order</th>
+                            <th class="text-right py-3 px-4 cursor-pointer hover:text-blue-600 select-none" onclick="sortStaff('revenue')">Revenue <span id="staffSort_revenue" class="text-xs">▼</span></th>
+                            <th class="text-right py-3 px-4 cursor-pointer hover:text-blue-600 select-none" onclick="sortStaff('orders')">Orders <span id="staffSort_orders" class="text-xs"></span></th>
+                            <th class="text-right py-3 px-4 cursor-pointer hover:text-blue-600 select-none" onclick="sortStaff('items_sold')">Items <span id="staffSort_items_sold" class="text-xs"></span></th>
+                            <th class="text-right py-3 px-4 cursor-pointer hover:text-blue-600 select-none" onclick="sortStaff('avg_order')">Avg Order <span id="staffSort_avg_order" class="text-xs"></span></th>
+                            <th class="text-right py-3 px-4 cursor-pointer hover:text-blue-600 select-none" onclick="sortStaff('avg_items')">Avg Items <span id="staffSort_avg_items" class="text-xs"></span></th>
                         </tr>
                     </thead>
                     <tbody id="staffTable">
-                        <tr><td colspan="7" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                        <tr><td colspan="8" class="py-4 text-center text-gray-400">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -524,6 +525,50 @@
             updateProductsTable(products, filters.compare);
         }
 
+        // Drill down: toggle variant rows for a parent product
+        async function toggleVariants(row) {
+            const parentSku = decodeURIComponent(row.dataset.sku);
+
+            // If variant rows already shown, remove them
+            const existing = [...row.parentElement.querySelectorAll('tr[data-parent]')].filter(
+                r => r.dataset.parent === parentSku
+            );
+            if (existing.length > 0) {
+                existing.forEach(r => r.remove());
+                return;
+            }
+
+            // Fetch variants from API
+            const filters = getProductFilters();
+            const location = filters.location && filters.location !== 'All' ? `&location=${encodeURIComponent(filters.location)}` : '';
+            const url = `${API_BASE}/products/variants?parent_sku=${encodeURIComponent(parentSku)}&start_date=${currentStartDate}&end_date=${currentEndDate}${location}`;
+
+            try {
+                const response = await fetch(url);
+                const variants = await response.json();
+
+                if (variants.length === 0) return;
+
+                // Extract size from SKU (last segment after -)
+                const escapedSku = parentSku.replace(/"/g, '&quot;');
+                const variantRows = variants.map(v => `
+                    <tr class="bg-blue-50/50 border-b border-blue-100" data-parent="${escapedSku}">
+                        <td class="py-1.5 px-4 pl-8">
+                            <span class="text-sm text-gray-600">${v.size || v.sku}</span>
+                        </td>
+                        <td class="py-1.5 px-4"></td>
+                        <td class="text-right py-1.5 px-4 text-sm">${v.quantity_sold}</td>
+                        <td class="text-right py-1.5 px-4"></td>
+                        <td class="text-right py-1.5 px-4 text-sm">${formatCurrency(v.revenue)}</td>
+                    </tr>
+                `).join('');
+
+                row.insertAdjacentHTML('afterend', variantRows);
+            } catch (error) {
+                console.error('Error fetching variants:', error);
+            }
+        }
+
         // Handle category filter change
         async function onCategoryFilterChange() {
             const filters = getCategoryFilters();
@@ -648,13 +693,41 @@
         }
 
         // Update staff table - no emoji
+        let currentStaffData = [];
+        let staffSortField = 'revenue';
+        let staffSortAsc = false;
+
         function updateStaffTable(staff) {
+            currentStaffData = staff;
+            renderStaffTable();
+        }
+
+        function renderStaffTable() {
             const tbody = document.getElementById('staffTable');
-            
+            const staff = [...currentStaffData];
+
             if (staff.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="py-4 text-center text-gray-400">No staff data for this period</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" class="py-4 text-center text-gray-400">No staff data for this period</td></tr>';
                 return;
             }
+
+            // Add computed fields
+            staff.forEach(s => {
+                s.avg_items = s.orders > 0 ? s.items_sold / s.orders : 0;
+            });
+
+            // Sort
+            staff.sort((a, b) => {
+                const va = a[staffSortField] || 0;
+                const vb = b[staffSortField] || 0;
+                return staffSortAsc ? va - vb : vb - va;
+            });
+
+            // Update sort indicators
+            ['revenue', 'orders', 'items_sold', 'avg_order', 'avg_items'].forEach(f => {
+                const el = document.getElementById('staffSort_' + f);
+                if (el) el.textContent = f === staffSortField ? (staffSortAsc ? '▲' : '▼') : '';
+            });
 
             tbody.innerHTML = staff.map((s, index) => `
                 <tr class="border-b hover:bg-gray-50 ${index === 0 ? 'bg-blue-50' : ''}">
@@ -665,8 +738,19 @@
                     <td class="text-right py-3 px-4">${s.orders}</td>
                     <td class="text-right py-3 px-4">${s.items_sold}</td>
                     <td class="text-right py-3 px-4">${formatCurrency(s.avg_order)} NOK</td>
+                    <td class="text-right py-3 px-4">${s.avg_items.toFixed(1)}</td>
                 </tr>
             `).join('');
+        }
+
+        function sortStaff(field) {
+            if (staffSortField === field) {
+                staffSortAsc = !staffSortAsc;
+            } else {
+                staffSortField = field;
+                staffSortAsc = false;
+            }
+            renderStaffTable();
         }
 
         // Create filter buttons for staff
@@ -739,7 +823,16 @@
                 return;
             }
 
+            // Calculate totals
+            const totalQty = products.reduce((s, p) => s + (p.quantity_sold || 0), 0);
+            const totalRevenue = products.reduce((s, p) => s + (p.revenue || 0), 0);
+            const totalProducts = products.length;
+
             if (showCompare) {
+                const totalPrevQty = products.reduce((s, p) => s + (p.prev_quantity_sold || 0), 0);
+                const totalPrevRevenue = products.reduce((s, p) => s + (p.prev_revenue || 0), 0);
+                const totalQtyChange = formatChange(totalQty, totalPrevQty);
+                const totalRevChange = formatChange(totalRevenue, totalPrevRevenue);
                 tbody.innerHTML = products.map(p => {
                     const qtyChange = formatChange(p.quantity_sold, p.prev_quantity_sold);
                     const revChange = formatChange(p.revenue, p.prev_revenue);
@@ -758,10 +851,20 @@
                             <td class="text-right py-2 px-4">${revChange.formatted}</td>
                         </tr>
                     `;
-                }).join('');
+                }).join('') + `
+                    <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold">
+                        <td class="py-3 px-4">${totalProducts} products</td>
+                        <td class="py-3 px-4"></td>
+                        <td class="text-right py-3 px-4">${totalQty}</td>
+                        <td class="text-right py-3 px-4 text-gray-400">${totalPrevQty || '-'}</td>
+                        <td class="text-right py-3 px-4">${totalQtyChange.formatted}</td>
+                        <td class="text-right py-3 px-4">${formatCurrency(totalRevenue)}</td>
+                        <td class="text-right py-3 px-4 text-gray-400">${totalPrevRevenue ? formatCurrency(totalPrevRevenue) : '-'}</td>
+                        <td class="text-right py-3 px-4">${totalRevChange.formatted}</td>
+                    </tr>`;
             } else {
-                tbody.innerHTML = products.map(p => `
-                    <tr class="border-b hover:bg-gray-50">
+                tbody.innerHTML = products.map((p, idx) => `
+                    <tr class="border-b hover:bg-gray-50 cursor-pointer" data-sku="${encodeURIComponent(p.sku)}" onclick="toggleVariants(this)">
                         <td class="py-2 px-4">
                             <div class="font-medium text-gray-900">${cleanProductName(p.name)}</div>
                             <div class="text-xs text-gray-400 font-mono">${p.sku || '-'}</div>
@@ -771,7 +874,14 @@
                         <td class="text-right py-2 px-4 text-gray-400">${p.variants || 1}</td>
                         <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
                     </tr>
-                `).join('');
+                `).join('') + `
+                    <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold">
+                        <td class="py-3 px-4">${totalProducts} products</td>
+                        <td class="py-3 px-4"></td>
+                        <td class="text-right py-3 px-4">${totalQty}</td>
+                        <td class="text-right py-3 px-4"></td>
+                        <td class="text-right py-3 px-4">${formatCurrency(totalRevenue)}</td>
+                    </tr>`;
             }
         }
 

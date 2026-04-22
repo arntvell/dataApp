@@ -707,11 +707,13 @@ async def trigger_full_sync(
     max_orders: int = Query(default=None),
     db: Session = Depends(get_db)
 ):
-    """Trigger a FULL historical sync"""
+    """Trigger a FULL historical sync for all sources (Sitoo, Shopify, Cin7, SameSystem)"""
     from pipelines.sales_sync import SalesSyncPipeline
+    from pipelines.stock_sync import StockSyncPipeline
+    from pipelines.budget_sync import BudgetSyncPipeline
     import os
-    
-    config = {
+
+    sales_config = {
         'sitoo': {
             'base_url': os.environ.get('SITOO_BASE_URL'),
             'api_id': os.environ.get('SITOO_API_ID'),
@@ -722,21 +724,115 @@ async def trigger_full_sync(
             'api_key': os.environ.get('SHOPIFY_API_KEY')
         }
     }
-    
-    pipeline = SalesSyncPipeline(config)
-    
+    stock_config = {
+        'cin7': {
+            'account_id': os.environ.get('CIN7_ACCOUNT_ID'),
+            'api_key': os.environ.get('CIN7_API_KEY')
+        }
+    }
+    budget_config = {
+        'samesystem': {
+            'email': os.environ.get('SAMESYSTEM_EMAIL'),
+            'password': os.environ.get('SAMESYSTEM_PASSWORD'),
+            'departments': os.environ.get('SAMESYSTEM_DEPARTMENTS', '{}')
+        }
+    }
+
+    import json
+    raw_depts = os.environ.get('SAMESYSTEM_DEPARTMENTS', '{}')
+    try:
+        budget_config['samesystem']['departments'] = json.loads(raw_depts)
+    except Exception:
+        budget_config['samesystem']['departments'] = {}
+
+    sales_pipeline = SalesSyncPipeline(sales_config)
+    stock_pipeline = StockSyncPipeline(stock_config)
+    budget_pipeline = BudgetSyncPipeline(budget_config)
+
     def run_full_sync():
         try:
-            pipeline.sync_full_history(max_orders=max_orders)
+            logger.info("Full sync: starting Sitoo + Shopify...")
+            sales_pipeline.sync_full_history(max_orders=max_orders)
         except Exception as e:
-            logger.error(f"Full sync error: {e}")
-    
+            logger.error(f"Sales sync error: {e}")
+        try:
+            logger.info("Full sync: starting Cin7 stock + wholesale...")
+            stock_pipeline.sync_stock_levels()
+            stock_pipeline.sync_wholesale_orders()
+            stock_pipeline.sync_purchase_orders()
+        except Exception as e:
+            logger.error(f"Stock sync error: {e}")
+        try:
+            logger.info("Full sync: starting SameSystem budgets + worktime...")
+            budget_pipeline.sync_budgets()
+            budget_pipeline.sync_worktime()
+        except Exception as e:
+            logger.error(f"Budget sync error: {e}")
+        logger.info("Full sync complete.")
+
     background_tasks.add_task(run_full_sync)
-    
+
     return {
         "status": "started",
-        "message": "Full historical sync started in background. Check /sync-status for progress."
+        "message": "Full sync started (Sitoo, Shopify, Cin7, SameSystem). Check /sync-status for progress."
     }
+
+
+@router.post("/sync-stock")
+async def trigger_stock_sync(background_tasks: BackgroundTasks):
+    """Trigger Cin7 stock + wholesale sync"""
+    from pipelines.stock_sync import StockSyncPipeline
+    import os
+
+    pipeline = StockSyncPipeline({
+        'cin7': {
+            'account_id': os.environ.get('CIN7_ACCOUNT_ID'),
+            'api_key': os.environ.get('CIN7_API_KEY')
+        }
+    })
+
+    def run():
+        try:
+            pipeline.sync_stock_levels()
+            pipeline.sync_wholesale_orders()
+            pipeline.sync_purchase_orders()
+        except Exception as e:
+            logger.error(f"Stock sync error: {e}")
+
+    background_tasks.add_task(run)
+    return {"status": "started", "message": "Cin7 stock sync started."}
+
+
+@router.post("/sync-budget")
+async def trigger_budget_sync(background_tasks: BackgroundTasks):
+    """Trigger SameSystem budget + worktime sync"""
+    from pipelines.budget_sync import BudgetSyncPipeline
+    import os
+    import json
+
+    raw = os.environ.get('SAMESYSTEM_DEPARTMENTS', '{}')
+    try:
+        departments = json.loads(raw)
+    except Exception:
+        departments = {}
+
+    pipeline = BudgetSyncPipeline({
+        'samesystem': {
+            'email': os.environ.get('SAMESYSTEM_EMAIL'),
+            'password': os.environ.get('SAMESYSTEM_PASSWORD'),
+            'departments': departments
+        }
+    })
+
+    def run():
+        try:
+            pipeline.sync_budgets()
+            pipeline.sync_worktime()
+        except Exception as e:
+            logger.error(f"Budget sync error: {e}")
+
+    background_tasks.add_task(run)
+    return {"status": "started", "message": "SameSystem budget sync started."}
 
 
 # ============== CSV EXPORT ENDPOINTS ==============

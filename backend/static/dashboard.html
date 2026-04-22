@@ -19,32 +19,43 @@
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8 max-w-7xl">
-        <!-- Header -->
-        <div class="flex flex-wrap justify-between items-center mb-8 gap-4">
-            <div>
-                <h1 class="text-3xl font-bold text-gray-900">Livid Sales Dashboard</h1>
-                <p class="text-gray-500" id="dateDisplay">Loading...</p>
-            </div>
-            <div class="flex flex-wrap gap-3 items-center">
-                <div class="flex items-center gap-2">
-                    <label class="text-sm text-gray-600">From:</label>
-                    <input type="date" id="startDate" class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+
+    <!-- Sticky header bar -->
+    <div class="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
+        <div class="container mx-auto px-4 max-w-7xl">
+            <div class="flex flex-wrap justify-between items-center py-3 gap-3">
+                <div class="flex items-center gap-3">
+                    <span class="font-bold text-gray-900 text-lg">Livid</span>
+                    <span class="text-gray-300">|</span>
+                    <span class="text-sm text-gray-500" id="dateDisplay">Loading...</span>
                 </div>
-                <div class="flex items-center gap-2">
-                    <label class="text-sm text-gray-600">To:</label>
-                    <input type="date" id="endDate" class="px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                <div class="flex flex-wrap gap-2 items-center">
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-500">From:</label>
+                        <input type="date" id="startDate" class="px-2 py-1.5 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-500">To:</label>
+                        <input type="date" id="endDate" class="px-2 py-1.5 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                    </div>
+                    <button onclick="syncData()" id="syncBtn" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-1.5 text-sm">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                        </svg>
+                        Sync
+                    </button>
+                    <button onclick="refreshDashboard()" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
+                        Refresh
+                    </button>
                 </div>
-                <button onclick="syncData()" id="syncBtn" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                    </svg>
-                    Sync Data
-                </button>
-                <button onclick="refreshDashboard()" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition">
-                    Refresh View
-                </button>
             </div>
+        </div>
+    </div>
+
+    <div class="container mx-auto px-4 py-6 max-w-7xl">
+        <!-- Page title -->
+        <div class="mb-6">
+            <h1 class="text-2xl font-bold text-gray-900">Sales Dashboard</h1>
         </div>
 
         <!-- Summary Cards -->
@@ -78,6 +89,25 @@
             </div>
         </div>
 
+        <!-- Tab Navigation -->
+        <div class="flex gap-1 mb-6 border-b border-gray-200">
+            <button onclick="showTab('sales')" id="tab-btn-sales"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-blue-600 text-blue-600 -mb-px transition">
+                Sales
+            </button>
+            <button onclick="showTab('staff')" id="tab-btn-staff"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition">
+                Staff
+            </button>
+            <button onclick="showTab('stock')" id="tab-btn-stock"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition">
+                Stock
+            </button>
+        </div>
+
+        <!-- TAB: Sales -->
+        <div id="tab-sales">
+
         <!-- Location Breakdown - Bar Chart with Table -->
         <div class="card mb-8">
             <h2 class="text-xl font-semibold mb-4">Revenue by Location</h2>
@@ -102,6 +132,11 @@
                 </div>
             </div>
         </div>
+
+        </div> <!-- end tab-sales -->
+
+        <!-- TAB: Staff -->
+        <div id="tab-staff" class="hidden">
 
         <!-- Staff Performance -->
         <div class="card mb-8">
@@ -131,6 +166,11 @@
                 </table>
             </div>
         </div>
+
+        </div> <!-- end tab-staff -->
+
+        <!-- TAB: Sales (continued) - Products & Categories -->
+        <div id="tab-sales-bottom">
 
         <!-- Top Selling Products - Full Width -->
         <div class="card mb-8">
@@ -275,6 +315,11 @@
             </div>
         </div>
 
+        </div> <!-- end tab-sales-bottom -->
+
+        <!-- TAB: Stock -->
+        <div id="tab-stock" class="hidden">
+
         <!-- Stock Overview -->
         <div class="card mb-8">
             <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
@@ -325,6 +370,8 @@
                 </table>
             </div>
         </div>
+
+        </div> <!-- end tab-stock -->
 
         <!-- Sync Status -->
         <div class="mt-8 text-center text-sm text-gray-400" id="syncStatus">
@@ -1080,6 +1127,42 @@
             // Auto-refresh every 5 minutes
             setInterval(refreshDashboard, 5 * 60 * 1000);
         });
+
+        // ============== Tab Navigation ==============
+
+        let currentTab = 'sales';
+
+        function showTab(tab) {
+            currentTab = tab;
+
+            // Sales panels
+            const salesTop = document.getElementById('tab-sales');
+            const salesBottom = document.getElementById('tab-sales-bottom');
+            const staffPanel = document.getElementById('tab-staff');
+            const stockPanel = document.getElementById('tab-stock');
+
+            salesTop.classList.toggle('hidden', tab !== 'sales');
+            salesBottom.classList.toggle('hidden', tab !== 'sales');
+            staffPanel.classList.toggle('hidden', tab !== 'staff');
+            stockPanel.classList.toggle('hidden', tab !== 'stock');
+
+            // Update tab button styles
+            ['sales', 'staff', 'stock'].forEach(t => {
+                const btn = document.getElementById('tab-btn-' + t);
+                if (t === tab) {
+                    btn.classList.add('border-blue-600', 'text-blue-600');
+                    btn.classList.remove('border-transparent', 'text-gray-500');
+                } else {
+                    btn.classList.remove('border-blue-600', 'text-blue-600');
+                    btn.classList.add('border-transparent', 'text-gray-500');
+                }
+            });
+
+            // Redraw chart when switching to sales (canvas visibility issue)
+            if (tab === 'sales' && locationChart) {
+                setTimeout(() => locationChart.resize(), 50);
+            }
+        }
 
         // ============== Budget vs Actual ==============
 

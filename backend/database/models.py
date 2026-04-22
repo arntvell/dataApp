@@ -111,6 +111,9 @@ class SalesOrder(Base):
     __table_args__ = (
         Index('ix_sales_orders_source', 'source_system', 'source_id', unique=True),
         Index('ix_sales_orders_date_location', 'order_date', 'location'),
+        Index('ix_sales_orders_date_source', 'order_date', 'source_system'),
+        Index('ix_sales_orders_staff_name', 'staff_name'),
+        Index('ix_sales_orders_date_staff', 'order_date', 'staff_name'),
     )
 
 
@@ -159,6 +162,10 @@ class SalesOrderItem(Base):
     source_product_id = Column(String, nullable=True)
     
     order = relationship("SalesOrder", back_populates="items")
+
+    __table_args__ = (
+        Index('ix_sales_order_items_order_sku', 'order_id', 'sku'),
+    )
 
 
 class SyncStatus(Base):

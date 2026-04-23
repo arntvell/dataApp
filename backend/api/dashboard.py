@@ -180,20 +180,37 @@ async def get_summary(
     total_revenue = gross_revenue - total_refunded
 
     # Last year metrics
-    ly_gross = db.query(
-        func.coalesce(func.sum(SalesOrder.total_amount), 0).label('revenue')
+    ly_totals = db.query(
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label('revenue'),
+        func.count(SalesOrder.id).label('order_count')
     ).filter(ly_filter).first()
     ly_refunded = get_refunds_total(db, ly_start, ly_end)
-    ly_revenue = float(ly_gross.revenue or 0) - ly_refunded
-    
-    # Get total items sold
+    ly_revenue = float(ly_totals.revenue or 0) - ly_refunded
+    ly_orders = ly_totals.order_count or 0
+
+    # Get total items sold (current and LY)
     total_items = db.query(
         func.coalesce(func.sum(SalesOrderItem.quantity), 0)
     ).join(SalesOrder).filter(date_filter).scalar() or 0
-    
+
+    ly_items = db.query(
+        func.coalesce(func.sum(SalesOrderItem.quantity), 0)
+    ).join(SalesOrder).filter(ly_filter).scalar() or 0
+
     avg_order_value = total_revenue / total_orders if total_orders > 0 else 0
-    avg_item_value = total_revenue / total_items if total_items > 0 else 0
-    yoy_change = ((total_revenue - ly_revenue) / ly_revenue * 100) if ly_revenue > 0 else 0
+    ly_avg_order_value = ly_revenue / ly_orders if ly_orders > 0 else 0
+
+    avg_items_per_order = total_items / total_orders if total_orders > 0 else 0
+    ly_avg_items_per_order = ly_items / ly_orders if ly_orders > 0 else 0
+
+    def yoy(current, last):
+        return round((current - last) / last * 100, 1) if last else 0
+
+    yoy_change = yoy(total_revenue, ly_revenue)
+    orders_yoy = yoy(total_orders, ly_orders)
+    items_yoy = yoy(total_items, ly_items)
+    avg_order_value_yoy = yoy(avg_order_value, ly_avg_order_value)
+    avg_items_per_order_yoy = yoy(avg_items_per_order, ly_avg_items_per_order)
     
     # Metrics by location (gross from orders; Online refunds subtracted below)
     location_data = db.query(
@@ -248,9 +265,13 @@ async def get_summary(
         "total_orders": total_orders,
         "total_items": total_items,
         "avg_order_value": avg_order_value,
-        "avg_item_value": avg_item_value,
+        "avg_items_per_order": round(avg_items_per_order, 2),
         "revenue_last_year": ly_revenue,
-        "yoy_change": round(yoy_change, 1),
+        "yoy_change": yoy_change,
+        "orders_yoy": orders_yoy,
+        "items_yoy": items_yoy,
+        "avg_order_value_yoy": avg_order_value_yoy,
+        "avg_items_per_order_yoy": avg_items_per_order_yoy,
         "locations": [loc.dict() for loc in locations]
     }
 
@@ -332,6 +353,7 @@ async def get_top_products(
     designed_for: str = Query(default=None, description="Filter by designed_for: men, women, unisex"),
     aggregate_by: str = Query(default="parent", description="Aggregate by: 'sku' or 'parent'"),
     compare_to: str = Query(default=None, description="Compare to: 'previous_period' or 'previous_year'"),
+    sort_by: str = Query(default="revenue", description="Sort by: 'revenue' or 'quantity'"),
     limit: int = Query(default=20),
     db: Session = Depends(get_db)
 ):
@@ -349,10 +371,10 @@ async def get_top_products(
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
     
-    # Build category filter
+    # Build category filter — match on group first, fall back to standard_category
     cat_filter = True
     if category and category not in ['ALL', 'All', '']:
-        cat_filter = func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category) == category
+        cat_filter = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category) == category
     
     # Build vendor filter
     vendor_filter = True
@@ -364,14 +386,22 @@ async def get_top_products(
     if designed_for and designed_for not in ['ALL', 'All', '']:
         gender_filter = CategoryMapping.designed_for == designed_for
 
+    sort_expr = func.sum(SalesOrderItem.quantity).desc() if sort_by == "quantity" else func.sum(SalesOrderItem.line_total).desc()
+
+    def apply_limit(q):
+        return q.all() if limit == 0 else q.limit(limit).all()
+
     # Helper function to get product data for a period
     def get_products_data(d_filter, l_filter, c_filter, v_filter, g_filter):
         if aggregate_by == "parent":
-            return db.query(
+            q_parent = db.query(
                 func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku).label('sku'),
-                func.min(SalesOrderItem.product_name).label('name'),
+                func.coalesce(
+                    func.min(ParentSkuMapping.base_product_name),
+                    func.min(SalesOrderItem.product_name)
+                ).label('name'),
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
-                CategoryMapping.designed_for,
+                func.min(CategoryMapping.designed_for).label('designed_for'),
                 func.sum(SalesOrderItem.quantity).label('quantity_sold'),
                 func.sum(SalesOrderItem.line_total).label('revenue'),
                 func.count(func.distinct(SalesOrderItem.sku)).label('variant_count')
@@ -383,13 +413,11 @@ async def get_top_products(
                 and_(d_filter, l_filter, c_filter, v_filter, g_filter)
             ).group_by(
                 func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku),
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category),
-                CategoryMapping.designed_for
-            ).order_by(
-                func.sum(SalesOrderItem.line_total).desc()
-            ).limit(limit).all()
+                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category)
+            ).order_by(sort_expr)
+            return apply_limit(q_parent)
         else:
-            return db.query(
+            q_sku = db.query(
                 SalesOrderItem.sku,
                 SalesOrderItem.product_name.label('name'),
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
@@ -404,9 +432,9 @@ async def get_top_products(
                 SalesOrderItem.sku, SalesOrderItem.product_name,
                 func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category),
                 CategoryMapping.designed_for
-            ).order_by(
-                func.sum(SalesOrderItem.line_total).desc()
-            ).limit(limit).all()
+            ).order_by(sort_expr
+            )
+            return apply_limit(q_sku)
     
     # Get current period data
     products = get_products_data(date_filter, loc_filter, cat_filter, vendor_filter, gender_filter)
@@ -512,8 +540,19 @@ async def get_categories_list(db: Session = Depends(get_db)):
     ).distinct().filter(
         CategoryMapping.standard_category.isnot(None)
     ).order_by(CategoryMapping.standard_category).all()
-    
+
     return [cat.standard_category for cat in categories]
+
+
+@router.get("/categories/groups")
+async def get_category_groups(db: Session = Depends(get_db)):
+    """Get distinct category groups for filter dropdowns"""
+    rows = db.query(
+        func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category).label('group')
+    ).distinct().filter(
+        CategoryMapping.standard_category.isnot(None)
+    ).order_by('group').all()
+    return [r.group for r in rows if r.group]
 
 
 @router.get("/categories")
@@ -524,10 +563,15 @@ async def get_top_categories(
     location: str = Query(default="All", description="Filter: All, Stores, Online, or specific location"),
     vendor: str = Query(default=None, description="Filter by vendor"),
     compare_to: str = Query(default=None, description="Compare to: 'previous_period' or 'previous_year'"),
+    category_group: str = Query(default=None, description="Drill into subcategories of this group"),
     limit: int = Query(default=20),
     db: Session = Depends(get_db)
 ):
-    """Get top selling categories with filters and optional comparison"""
+    """Get top selling categories with filters and optional comparison.
+
+    Without category_group: groups by category_group (rolled-up view).
+    With category_group: shows standard_category breakdown within that group.
+    """
     if target_date and not start_date:
         start_date = target_date
         end_date = target_date
@@ -535,29 +579,37 @@ async def get_top_categories(
         start_date = date.today()
     if end_date is None:
         end_date = start_date
-    
+
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
-    
-    # Build vendor filter
+
     vendor_filter = True
     if vendor and vendor not in ['ALL', 'All', '']:
         vendor_filter = SalesOrderItem.vendor == vendor
-    
-    # Helper function to get category data for a period
+
+    # group_expr: the label used for aggregation
+    # In drill-down mode we filter to the chosen group and break out by standard_category
+    group_col = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category, 'Uncategorized')
+    std_col   = func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category, 'Uncategorized')
+
+    if category_group:
+        agg_col   = std_col
+        group_filter = group_col == category_group
+    else:
+        agg_col   = group_col
+        group_filter = True
+
     def get_category_data(d_filter, l_filter, v_filter):
         return db.query(
-            func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category, 'Uncategorized').label('category'),
+            agg_col.label('category'),
             func.sum(SalesOrderItem.quantity).label('quantity_sold'),
             func.sum(SalesOrderItem.line_total).label('revenue'),
             func.count(func.distinct(SalesOrder.id)).label('order_count')
         ).join(SalesOrder).outerjoin(
             CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
         ).filter(
-            and_(d_filter, l_filter, v_filter)
-        ).group_by(
-            func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category, 'Uncategorized')
-        ).order_by(
+            and_(d_filter, l_filter, v_filter, group_filter)
+        ).group_by(agg_col).order_by(
             func.sum(SalesOrderItem.line_total).desc()
         ).limit(limit).all()
     
@@ -1018,3 +1070,190 @@ async def export_categories(
         headers,
         f"categories_{start_date}_{end_date}.csv",
     )
+
+
+# ============== SALES TAB ANALYTICS ==============
+
+@router.get("/revenue/daily")
+async def get_daily_revenue(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    group_by: str = Query(default="day", description="day, week, month, quarter"),
+    db: Session = Depends(get_db),
+):
+    """Revenue grouped by day/week/month/quarter with last-year overlay."""
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    trunc = group_by if group_by in ("day", "week", "month", "quarter") else "day"
+
+    date_filter = get_date_filter(start_date, end_date)
+    ly_start = start_date.replace(year=start_date.year - 1)
+    ly_end = end_date.replace(year=end_date.year - 1)
+    ly_filter = get_date_filter(ly_start, ly_end)
+
+    from database.models import SameSystemBudget
+
+    period_expr = func.date_trunc(trunc, SalesOrder.order_date)
+
+    current = db.query(
+        period_expr.label("period"),
+        func.sum(SalesOrder.total_amount).label("revenue"),
+    ).filter(date_filter).group_by(period_expr).order_by(period_expr).all()
+
+    ly = db.query(
+        period_expr.label("period"),
+        func.sum(SalesOrder.total_amount).label("revenue"),
+    ).filter(ly_filter).group_by(period_expr).order_by(period_expr).all()
+
+    # Budget grouped by the same truncation
+    budget_period_expr = func.date_trunc(trunc, SameSystemBudget.date)
+    budget_rows = db.query(
+        budget_period_expr.label("period"),
+        func.sum(SameSystemBudget.amount).label("budget"),
+    ).filter(
+        SameSystemBudget.date >= start_date,
+        SameSystemBudget.date <= end_date,
+        SameSystemBudget.budget_type == "sales",
+        SameSystemBudget.granularity == "daily",
+    ).group_by(budget_period_expr).all()
+
+    # Budget is ex VAT; multiply by 1.25 to make it comparable to revenue (inc VAT)
+    budget_map = {
+        row.period.date().isoformat(): float(row.budget or 0) * 1.25
+        for row in budget_rows
+    }
+
+    # Align LY by position — nth period of current ↔ nth period of LY.
+    # Date-key matching breaks for week/quarter grouping because truncated
+    # period boundaries don't shift by exactly one year across years.
+    return [
+        {
+            "date": row.period.date().isoformat(),
+            "revenue": float(row.revenue or 0),
+            "revenue_last_year": float(ly[i].revenue or 0) if i < len(ly) else 0,
+            "budget": budget_map.get(row.period.date().isoformat(), None),
+        }
+        for i, row in enumerate(current)
+    ]
+
+
+@router.get("/revenue/by-weekday")
+async def get_revenue_by_weekday(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Average revenue by day of week split by Online vs Stores (Monday–Sunday)."""
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    date_filter = get_date_filter(start_date, end_date)
+
+    # Day counts per weekday (used for averaging, regardless of channel)
+    day_counts = db.query(
+        func.extract("dow", SalesOrder.order_date).label("weekday"),
+        func.count(func.distinct(cast(SalesOrder.order_date, Date))).label("day_count"),
+    ).filter(date_filter).group_by(
+        func.extract("dow", SalesOrder.order_date)
+    ).all()
+    day_count_map = {int(r.weekday): int(r.day_count) for r in day_counts}
+
+    # Revenue per weekday per channel
+    rows = db.query(
+        func.extract("dow", SalesOrder.order_date).label("weekday"),
+        SalesOrder.source_system,
+        func.sum(SalesOrder.total_amount).label("total_revenue"),
+    ).filter(date_filter).group_by(
+        func.extract("dow", SalesOrder.order_date),
+        SalesOrder.source_system,
+    ).all()
+
+    # Build lookup: {dow: {source: total}}
+    revenue_map: dict = {}
+    for r in rows:
+        dow = int(r.weekday)
+        revenue_map.setdefault(dow, {})
+        revenue_map[dow][r.source_system] = float(r.total_revenue or 0)
+
+    day_names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+    result = []
+    for dow in [1, 2, 3, 4, 5, 6, 0]:
+        counts = max(day_count_map.get(dow, 1), 1)
+        online = revenue_map.get(dow, {}).get("shopify", 0)
+        stores = revenue_map.get(dow, {}).get("sitoo", 0)
+        result.append({
+            "weekday": dow,
+            "name": day_names[dow],
+            "online_revenue": online,
+            "store_revenue": stores,
+            "total_revenue": online + stores,
+            "online_avg": online / counts,
+            "store_avg": stores / counts,
+            "avg_revenue": (online + stores) / counts,
+            "day_count": counts,
+        })
+    return result
+
+
+@router.get("/revenue/running-total")
+async def get_running_total(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Cumulative revenue vs cumulative budget for the selected period."""
+    from database.models import SameSystemBudget
+
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    date_filter = get_date_filter(start_date, end_date)
+
+    daily = db.query(
+        cast(SalesOrder.order_date, Date).label("day"),
+        func.sum(SalesOrder.total_amount).label("revenue"),
+    ).filter(date_filter).group_by(
+        cast(SalesOrder.order_date, Date)
+    ).order_by(cast(SalesOrder.order_date, Date)).all()
+
+    budget_rows = db.query(
+        SameSystemBudget.date,
+        func.sum(SameSystemBudget.amount).label("budget"),
+    ).filter(
+        SameSystemBudget.date >= start_date,
+        SameSystemBudget.date <= end_date,
+        SameSystemBudget.budget_type == "sales",
+        SameSystemBudget.granularity == "daily",
+    ).group_by(SameSystemBudget.date).all()
+
+    revenue_map = {row.day.isoformat(): float(row.revenue or 0) for row in daily}
+    # Budget is ex VAT; multiply by 1.25 to make it comparable to revenue (inc VAT)
+    budget_map = {row.date.isoformat(): float(row.budget or 0) * 1.25 for row in budget_rows}
+
+    result = []
+    cum_revenue = 0.0
+    cum_budget = 0.0
+    current = start_date
+    while current <= end_date:
+        day_str = current.isoformat()
+        day_rev = revenue_map.get(day_str, 0)
+        day_budget = budget_map.get(day_str, 0)
+        cum_revenue += day_rev
+        cum_budget += day_budget
+        result.append({
+            "date": day_str,
+            "daily_revenue": day_rev,
+            "daily_budget": day_budget,
+            "cumulative_revenue": cum_revenue,
+            "cumulative_budget": cum_budget,
+        })
+        current += timedelta(days=1)
+
+    return result

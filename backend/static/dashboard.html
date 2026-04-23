@@ -30,22 +30,28 @@
                     <span class="text-sm text-gray-500" id="dateDisplay">Loading...</span>
                 </div>
                 <div class="flex flex-wrap gap-2 items-center">
-                    <div class="flex items-center gap-2">
-                        <label class="text-sm text-gray-500">From:</label>
-                        <input type="date" id="startDate" class="px-2 py-1.5 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                    <!-- Period presets -->
+                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                        <button onclick="setPreset('today')"     id="preset-today"     class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition whitespace-nowrap">Today</button>
+                        <button onclick="setPreset('yesterday')" id="preset-yesterday" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Yesterday</button>
+                        <button onclick="setPreset('week')"      id="preset-week"      class="px-3 py-1.5 bg-blue-600 text-white font-medium border-l border-gray-200 transition whitespace-nowrap">This Week</button>
+                        <button onclick="setPreset('month')"     id="preset-month"     class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">This Month</button>
+                        <button onclick="setPreset('last30')"    id="preset-last30"    class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Last 30d</button>
+                        <button onclick="setPreset('ytd')"       id="preset-ytd"       class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">YTD</button>
+                        <button onclick="setPreset('custom')"    id="preset-custom"    class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Custom</button>
                     </div>
-                    <div class="flex items-center gap-2">
-                        <label class="text-sm text-gray-500">To:</label>
+                    <!-- Custom date range — hidden until Custom is selected -->
+                    <div id="customDateRange" class="hidden flex items-center gap-2">
+                        <input type="date" id="startDate" class="px-2 py-1.5 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                        <span class="text-gray-400 text-sm">→</span>
                         <input type="date" id="endDate" class="px-2 py-1.5 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
                     </div>
-                    <button onclick="syncData()" id="syncBtn" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-1.5 text-sm">
+                    <!-- Sync: pulls fresh data from POS/Shopify, distinct from date refresh -->
+                    <button onclick="syncData()" id="syncBtn" class="px-3 py-1.5 border border-gray-200 text-gray-500 rounded-lg hover:bg-gray-50 transition flex items-center gap-1.5 text-sm">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                         </svg>
-                        Sync
-                    </button>
-                    <button onclick="refreshDashboard()" class="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm">
-                        Refresh
+                        Sync from POS
                     </button>
                 </div>
             </div>
@@ -61,7 +67,7 @@
         <!-- Summary Cards -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
             <div class="card">
-                <div class="metric-label">Net Revenue</div>
+                <div class="metric-label">Revenue inc</div>
                 <div class="metric-value text-green-600" id="totalRevenue">-</div>
                 <div class="flex items-center gap-2 mt-1">
                     <span class="text-sm text-gray-400">NOK</span>
@@ -72,35 +78,52 @@
             <div class="card">
                 <div class="metric-label">Orders</div>
                 <div class="metric-value" id="totalOrders">-</div>
+                <div class="text-xs mt-1" id="ordersYoY"></div>
             </div>
             <div class="card">
                 <div class="metric-label">Items Sold</div>
                 <div class="metric-value" id="totalItems">-</div>
+                <div class="text-xs mt-1" id="itemsYoY"></div>
             </div>
             <div class="card">
                 <div class="metric-label">Avg Order Value</div>
                 <div class="metric-value text-blue-600" id="avgOrderValue">-</div>
-                <div class="text-sm text-gray-400">NOK</div>
+                <div class="flex items-center gap-2 mt-1">
+                    <span class="text-sm text-gray-400">NOK</span>
+                    <span class="text-xs" id="avgOrderValueYoY"></span>
+                </div>
             </div>
             <div class="card">
-                <div class="metric-label">Avg Item Value</div>
-                <div class="metric-value text-purple-600" id="avgItemValue">-</div>
-                <div class="text-sm text-gray-400">NOK</div>
+                <div class="metric-label">Avg Items / Order</div>
+                <div class="metric-value text-purple-600" id="avgItemsPerOrder">-</div>
+                <div class="text-xs mt-1" id="avgItemsPerOrderYoY"></div>
             </div>
         </div>
 
         <!-- Tab Navigation -->
-        <div class="flex gap-1 mb-6 border-b border-gray-200">
+        <div class="flex gap-1 mb-6 border-b border-gray-200 overflow-x-auto">
             <button onclick="showTab('sales')" id="tab-btn-sales"
-                class="px-5 py-2.5 text-sm font-medium border-b-2 border-blue-600 text-blue-600 -mb-px transition">
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-blue-600 text-blue-600 -mb-px transition whitespace-nowrap">
                 Sales
             </button>
+            <button onclick="showTab('top-products')" id="tab-btn-top-products"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Top Products
+            </button>
+            <button onclick="showTab('categories')" id="tab-btn-categories"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Categories
+            </button>
+            <button onclick="showTab('budget')" id="tab-btn-budget"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Budget vs Actual
+            </button>
             <button onclick="showTab('staff')" id="tab-btn-staff"
-                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition">
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Staff
             </button>
             <button onclick="showTab('stock')" id="tab-btn-stock"
-                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition">
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Stock
             </button>
         </div>
@@ -108,19 +131,58 @@
         <!-- TAB: Sales -->
         <div id="tab-sales">
 
-        <!-- Location Breakdown - Bar Chart with Table -->
+        <!-- Daily Revenue Trend -->
+        <div class="card mb-6">
+            <div class="flex flex-wrap justify-between items-center mb-5 gap-3">
+                <h2 class="text-xl font-semibold">Revenue Trend</h2>
+                <div class="flex flex-wrap items-center gap-3">
+                    <!-- Group-by buttons -->
+                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                        <button onclick="setTrendGroupBy('day')"   id="trendGroup-day"     class="px-3 py-1.5 bg-blue-600 text-white font-medium transition">Day</button>
+                        <button onclick="setTrendGroupBy('week')"  id="trendGroup-week"    class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition border-l border-gray-200">Week</button>
+                        <button onclick="setTrendGroupBy('month')" id="trendGroup-month"   class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition border-l border-gray-200">Month</button>
+                        <button onclick="setTrendGroupBy('quarter')" id="trendGroup-quarter" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition border-l border-gray-200">Quarter</button>
+                    </div>
+                    <!-- Overlay toggles -->
+                    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input type="checkbox" id="trendBudgetToggle" onchange="onTrendToggle()" class="w-4 h-4 rounded accent-amber-500">
+                        Budget
+                    </label>
+                    <label class="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                        <input type="checkbox" id="trendYoYToggle" onchange="onTrendToggle()" class="w-4 h-4 rounded">
+                        vs Last Year
+                    </label>
+                </div>
+            </div>
+            <div class="h-80">
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Channel Split -->
+        <div class="card mb-6">
+            <h2 class="text-xl font-semibold mb-5">Channel Split</h2>
+            <div class="flex flex-col lg:flex-row items-center gap-8">
+                <div class="flex-shrink-0 w-44 h-44">
+                    <canvas id="channelChart"></canvas>
+                </div>
+                <div class="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 w-full" id="channelStats"></div>
+            </div>
+        </div>
+
+        <!-- Revenue by Location -->
         <div class="card mb-8">
-            <h2 class="text-xl font-semibold mb-4">Revenue by Location</h2>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div class="h-80">
+            <h2 class="text-xl font-semibold mb-5">Revenue by Location</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-5 gap-8 items-start">
+                <div class="lg:col-span-2 h-80">
                     <canvas id="locationChart"></canvas>
                 </div>
-                <div class="overflow-x-auto">
+                <div class="lg:col-span-3 overflow-x-auto">
                     <table class="w-full text-sm">
                         <thead>
                             <tr class="border-b bg-gray-50">
                                 <th class="text-left py-3 px-4">Location</th>
-                                <th class="text-right py-3 px-4">Revenue</th>
+                                <th class="text-right py-3 px-4">Revenue (NOK)</th>
                                 <th class="text-right py-3 px-4">Orders</th>
                                 <th class="text-right py-3 px-4">vs LY</th>
                             </tr>
@@ -131,6 +193,29 @@
                     </table>
                 </div>
             </div>
+        </div>
+
+        <!-- Day of Week + Running Total vs Budget -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+
+            <!-- Day of Week -->
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-1">Revenue by Day of Week</h2>
+                <p class="text-xs text-gray-400 mb-4">Average daily revenue per weekday in the selected period</p>
+                <div class="h-64">
+                    <canvas id="weekdayChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Running Total vs Budget -->
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-1">Running Total vs Budget</h2>
+                <p class="text-xs text-gray-400 mb-4" id="runningTotalNote">Cumulative revenue vs cumulative budget target</p>
+                <div class="h-64">
+                    <canvas id="runningTotalChart"></canvas>
+                </div>
+            </div>
+
         </div>
 
         </div> <!-- end tab-sales -->
@@ -169,14 +254,26 @@
 
         </div> <!-- end tab-staff -->
 
-        <!-- TAB: Sales (continued) - Products & Categories -->
-        <div id="tab-sales-bottom">
+        <!-- TAB: Top Products -->
+        <div id="tab-top-products" class="hidden">
 
-        <!-- Top Selling Products - Full Width -->
+        <!-- Top Selling Products -->
         <div class="card mb-8">
-            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
+            <div class="flex flex-wrap justify-between items-start mb-4 gap-4">
                 <h2 class="text-xl font-semibold">Top Selling Products</h2>
                 <div class="flex flex-wrap gap-3 items-center">
+                    <!-- Limit selector -->
+                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                        <button onclick="setProductLimit(20)" id="prodLimit-20" class="px-3 py-1.5 bg-blue-600 text-white font-medium transition">20</button>
+                        <button onclick="setProductLimit(50)" id="prodLimit-50" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition">50</button>
+                        <button onclick="setProductLimit(100)" id="prodLimit-100" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition">100</button>
+                        <button onclick="setProductLimit(0)" id="prodLimit-0" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition">All</button>
+                    </div>
+                    <!-- Sort selector -->
+                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                        <button onclick="setProductSort('revenue')" id="prodSort-revenue" class="px-3 py-1.5 bg-blue-600 text-white font-medium transition">Revenue</button>
+                        <button onclick="setProductSort('quantity')" id="prodSort-quantity" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition">Qty</button>
+                    </div>
                     <!-- Location Filter -->
                     <div class="flex items-center gap-2">
                         <label class="text-sm text-gray-600">Location:</label>
@@ -208,38 +305,60 @@
                             <option value="unisex">Unisex</option>
                         </select>
                     </div>
-                    <!-- Compare Toggle -->
-                    <div class="flex items-center gap-2 border-l pl-3">
-                        <label class="text-sm text-gray-600">Compare:</label>
-                        <input type="checkbox" id="productCompareToggle" onchange="onProductFilterChange()" class="w-4 h-4 rounded">
-                        <select id="productComparePeriod" onchange="onProductFilterChange()" class="px-2 py-1.5 text-sm border rounded-lg bg-white">
-                            <option value="previous_period">vs Prev Period</option>
-                            <option value="previous_year">vs Prev Year</option>
-                        </select>
+                </div>
+            </div>
+
+            <!-- Side-by-side tables -->
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <!-- Current period table -->
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-700 mb-2" id="productsCurrentTitle">This Period</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b bg-gray-50">
+                                    <th class="text-left py-3 px-3">Product</th>
+                                    <th class="text-right py-3 px-3">Qty</th>
+                                    <th class="text-right py-3 px-3">Revenue</th>
+                                    <th class="text-right py-3 px-3">vs LY</th>
+                                </tr>
+                            </thead>
+                            <tbody id="productsCurrentTable">
+                                <tr><td colspan="4" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- Last year table -->
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-700 mb-2" id="productsLYTitle">Same Period Last Year</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead>
+                                <tr class="border-b bg-gray-50">
+                                    <th class="text-left py-3 px-3">Product</th>
+                                    <th class="text-right py-3 px-3">Qty</th>
+                                    <th class="text-right py-3 px-3">Revenue</th>
+                                    <th class="text-right py-3 px-3">vs Now</th>
+                                </tr>
+                            </thead>
+                            <tbody id="productsLYTable">
+                                <tr><td colspan="4" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead class="sticky top-0 bg-white">
-                        <tr class="border-b bg-gray-50" id="productsTableHeader">
-                            <th class="text-left py-3 px-4">Product</th>
-                            <th class="text-left py-3 px-4">Category</th>
-                            <th class="text-right py-3 px-4">Qty</th>
-                            <th class="text-right py-3 px-4">Sizes</th>
-                            <th class="text-right py-3 px-4">Revenue</th>
-                        </tr>
-                    </thead>
-                    <tbody id="productsTable">
-                        <tr><td colspan="5" class="py-4 text-center text-gray-400">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
         </div>
+
+        </div> <!-- end tab-top-products -->
+
+        <!-- TAB: Categories -->
+        <div id="tab-categories" class="hidden">
 
         <!-- Top Selling Categories - Full Width -->
         <div class="card mb-8">
-            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
+            <div class="flex flex-wrap justify-between items-center mb-2 gap-4">
                 <h2 class="text-xl font-semibold">Top Selling Categories</h2>
                 <div class="flex flex-wrap gap-3 items-center">
                     <!-- Location Filter -->
@@ -267,6 +386,8 @@
                     </div>
                 </div>
             </div>
+            <!-- Breadcrumb for drill-down -->
+            <div id="categoryBreadcrumb" class="hidden flex items-center gap-2 mb-3"></div>
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead class="sticky top-0 bg-white">
@@ -283,6 +404,11 @@
                 </table>
             </div>
         </div>
+
+        </div> <!-- end tab-categories -->
+
+        <!-- TAB: Budget vs Actual -->
+        <div id="tab-budget" class="hidden">
 
         <!-- Budget vs Actual -->
         <div class="card mb-8">
@@ -315,7 +441,7 @@
             </div>
         </div>
 
-        </div> <!-- end tab-sales-bottom -->
+        </div> <!-- end tab-budget -->
 
         <!-- TAB: Stock -->
         <div id="tab-stock" class="hidden">
@@ -382,7 +508,11 @@
     <script>
         const API_BASE = '/api/v1/dashboard';
         let locationChart = null;
-        let currentStartDate = new Date().toISOString().split('T')[0];
+        function _todayStr() {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        }
+        let currentStartDate = _todayStr();
         let currentEndDate = currentStartDate;
         let locationsList = ['All', 'Stores', 'Online'];
         let categoriesList = ['All'];
@@ -446,25 +576,60 @@
             }
         }
 
-        // Fetch top products with comparison support
-        async function fetchProducts(location = 'All', category = 'All', vendor = 'All', designedFor = 'All', compareTo = null) {
+        let currentProductLimit = 20;
+        let currentProductSort = 'revenue';
+
+        function getLYDates() {
+            const [sy, sm, sd] = currentStartDate.split('-').map(Number);
+            const [ey, em, ed] = currentEndDate.split('-').map(Number);
+            const lyStart = `${sy - 1}-${String(sm).padStart(2, '0')}-${String(sd).padStart(2, '0')}`;
+            const lyEnd   = `${ey - 1}-${String(em).padStart(2, '0')}-${String(ed).padStart(2, '0')}`;
+            return { lyStart, lyEnd };
+        }
+
+        function setProductSort(sort) {
+            currentProductSort = sort;
+            ['revenue', 'quantity'].forEach(s => {
+                const btn = document.getElementById(`prodSort-${s}`);
+                if (btn) btn.className = s === sort
+                    ? 'px-3 py-1.5 bg-blue-600 text-white font-medium border-l border-gray-200 transition'
+                    : 'px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition';
+            });
+            const first = document.getElementById('prodSort-revenue');
+            if (first) first.className = (sort === 'revenue')
+                ? 'px-3 py-1.5 bg-blue-600 text-white font-medium transition'
+                : 'px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition';
+            onProductFilterChange();
+        }
+
+        function setProductLimit(limit) {
+            currentProductLimit = limit;
+            [20, 50, 100, 0].forEach(l => {
+                const btn = document.getElementById(`prodLimit-${l}`);
+                if (btn) {
+                    const active = l === limit;
+                    btn.className = active
+                        ? 'px-3 py-1.5 bg-blue-600 text-white font-medium border-l border-gray-200 transition'
+                        : 'px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition';
+                }
+            });
+            // Fix first button (no left border)
+            const first = document.getElementById('prodLimit-20');
+            if (first) first.className = (limit === 20)
+                ? 'px-3 py-1.5 bg-blue-600 text-white font-medium transition'
+                : 'px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition';
+            onProductFilterChange();
+        }
+
+        // Fetch top products
+        async function fetchProducts(startDate, endDate, location = 'All', category = 'All', vendor = 'All', designedFor = 'All') {
             try {
-                let url = `${API_BASE}/products?start_date=${currentStartDate}&end_date=${currentEndDate}&aggregate_by=parent&limit=20`;
-                if (location && location !== 'All') {
-                    url += `&location=${encodeURIComponent(location)}`;
-                }
-                if (category && category !== 'All') {
-                    url += `&category=${encodeURIComponent(category)}`;
-                }
-                if (vendor && vendor !== 'All') {
-                    url += `&vendor=${encodeURIComponent(vendor)}`;
-                }
-                if (designedFor && designedFor !== 'All') {
-                    url += `&designed_for=${encodeURIComponent(designedFor)}`;
-                }
-                if (compareTo) {
-                    url += `&compare_to=${encodeURIComponent(compareTo)}`;
-                }
+                const limitParam = currentProductLimit > 0 ? `&limit=${currentProductLimit}` : '&limit=0';
+                let url = `${API_BASE}/products?start_date=${startDate}&end_date=${endDate}&aggregate_by=parent${limitParam}&sort_by=${currentProductSort}`;
+                if (location && location !== 'All') url += `&location=${encodeURIComponent(location)}`;
+                if (category && category !== 'All') url += `&category=${encodeURIComponent(category)}`;
+                if (vendor && vendor !== 'All') url += `&vendor=${encodeURIComponent(vendor)}`;
+                if (designedFor && designedFor !== 'All') url += `&designed_for=${encodeURIComponent(designedFor)}`;
                 const response = await fetch(url);
                 return await response.json();
             } catch (error) {
@@ -474,18 +639,15 @@
         }
 
         // Fetch top categories with comparison support
-        async function fetchCategories(location = 'All', vendor = 'All', compareTo = null) {
+        let currentCategoryGroup = null;
+
+        async function fetchCategories(location = 'All', vendor = 'All', compareTo = null, categoryGroup = null) {
             try {
-                let url = `${API_BASE}/categories?start_date=${currentStartDate}&end_date=${currentEndDate}&limit=20`;
-                if (location && location !== 'All') {
-                    url += `&location=${encodeURIComponent(location)}`;
-                }
-                if (vendor && vendor !== 'All') {
-                    url += `&vendor=${encodeURIComponent(vendor)}`;
-                }
-                if (compareTo) {
-                    url += `&compare_to=${encodeURIComponent(compareTo)}`;
-                }
+                let url = `${API_BASE}/categories?start_date=${currentStartDate}&end_date=${currentEndDate}&limit=200`;
+                if (location && location !== 'All') url += `&location=${encodeURIComponent(location)}`;
+                if (vendor && vendor !== 'All') url += `&vendor=${encodeURIComponent(vendor)}`;
+                if (compareTo) url += `&compare_to=${encodeURIComponent(compareTo)}`;
+                if (categoryGroup) url += `&category_group=${encodeURIComponent(categoryGroup)}`;
                 const response = await fetch(url);
                 return await response.json();
             } catch (error) {
@@ -510,9 +672,9 @@
         // Fetch categories list
         async function fetchCategoriesList() {
             try {
-                const response = await fetch(`${API_BASE}/categories/list`);
-                const cats = await response.json();
-                categoriesList = ['All', ...cats.filter(c => c && c !== 'Uncategorized')];
+                const response = await fetch(`${API_BASE}/categories/groups`);
+                const groups = await response.json();
+                categoriesList = ['All', ...groups.filter(g => g && g !== 'Uncategorized')];
                 return categoriesList;
             } catch (error) {
                 console.error('Error fetching categories:', error);
@@ -549,8 +711,6 @@
                 category: document.getElementById('productCategorySelect')?.value || 'All',
                 vendor: document.getElementById('productVendorSelect')?.value || 'All',
                 designedFor: document.getElementById('productDesignedForSelect')?.value || 'All',
-                compare: document.getElementById('productCompareToggle')?.checked || false,
-                comparePeriod: document.getElementById('productComparePeriod')?.value || 'previous_period'
             };
         }
 
@@ -567,14 +727,19 @@
         // Handle product filter change
         async function onProductFilterChange() {
             const filters = getProductFilters();
-            const compareTo = filters.compare ? filters.comparePeriod : null;
-            const products = await fetchProducts(filters.location, filters.category, filters.vendor, filters.designedFor, compareTo);
-            updateProductsTable(products, filters.compare);
+            const { lyStart, lyEnd } = getLYDates();
+            const [currentProducts, lyProducts] = await Promise.all([
+                fetchProducts(currentStartDate, currentEndDate, filters.location, filters.category, filters.vendor, filters.designedFor),
+                fetchProducts(lyStart, lyEnd, filters.location, filters.category, filters.vendor, filters.designedFor),
+            ]);
+            updateProductsSideBySide(currentProducts, lyProducts, currentStartDate, currentEndDate, lyStart, lyEnd);
         }
 
         // Drill down: toggle variant rows for a parent product
         async function toggleVariants(row) {
             const parentSku = decodeURIComponent(row.dataset.sku);
+            const startDate = row.dataset.start || currentStartDate;
+            const endDate = row.dataset.end || currentEndDate;
 
             // If variant rows already shown, remove them
             const existing = [...row.parentElement.querySelectorAll('tr[data-parent]')].filter(
@@ -588,7 +753,7 @@
             // Fetch variants from API
             const filters = getProductFilters();
             const location = filters.location && filters.location !== 'All' ? `&location=${encodeURIComponent(filters.location)}` : '';
-            const url = `${API_BASE}/products/variants?parent_sku=${encodeURIComponent(parentSku)}&start_date=${currentStartDate}&end_date=${currentEndDate}${location}`;
+            const url = `${API_BASE}/products/variants?parent_sku=${encodeURIComponent(parentSku)}&start_date=${startDate}&end_date=${endDate}${location}`;
 
             try {
                 const response = await fetch(url);
@@ -596,17 +761,13 @@
 
                 if (variants.length === 0) return;
 
-                // Extract size from SKU (last segment after -)
                 const escapedSku = parentSku.replace(/"/g, '&quot;');
                 const variantRows = variants.map(v => `
                     <tr class="bg-blue-50/50 border-b border-blue-100" data-parent="${escapedSku}">
-                        <td class="py-1.5 px-4 pl-8">
-                            <span class="text-sm text-gray-600">${v.size || v.sku}</span>
-                        </td>
-                        <td class="py-1.5 px-4"></td>
-                        <td class="text-right py-1.5 px-4 text-sm">${v.quantity_sold}</td>
-                        <td class="text-right py-1.5 px-4"></td>
-                        <td class="text-right py-1.5 px-4 text-sm">${formatCurrency(v.revenue)}</td>
+                        <td class="py-1.5 px-3 pl-8 text-sm text-gray-600">${v.size || v.sku}</td>
+                        <td class="text-right py-1.5 px-3 text-sm">${v.quantity_sold}</td>
+                        <td class="text-right py-1.5 px-3 text-sm">${formatCurrency(v.revenue)}</td>
+                        <td></td>
                     </tr>
                 `).join('');
 
@@ -620,8 +781,38 @@
         async function onCategoryFilterChange() {
             const filters = getCategoryFilters();
             const compareTo = filters.compare ? filters.comparePeriod : null;
-            const categories = await fetchCategories(filters.location, filters.vendor, compareTo);
+            const categories = await fetchCategories(filters.location, filters.vendor, compareTo, currentCategoryGroup);
             updateCategoriesTable(categories, filters.compare);
+        }
+
+        async function drillIntoCategoryGroup(group) {
+            currentCategoryGroup = group;
+            updateCategoryBreadcrumb();
+            await onCategoryFilterChange();
+        }
+
+        async function resetCategoryGroup() {
+            currentCategoryGroup = null;
+            updateCategoryBreadcrumb();
+            await onCategoryFilterChange();
+        }
+
+        function updateCategoryBreadcrumb() {
+            const bc = document.getElementById('categoryBreadcrumb');
+            if (!bc) return;
+            if (currentCategoryGroup) {
+                bc.innerHTML = `
+                    <button onclick="resetCategoryGroup()" class="text-blue-600 hover:underline text-sm flex items-center gap-1">
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                        All Groups
+                    </button>
+                    <span class="text-gray-400 text-sm">›</span>
+                    <span class="text-sm font-medium text-gray-700">${currentCategoryGroup}</span>
+                `;
+                bc.classList.remove('hidden');
+            } else {
+                bc.classList.add('hidden');
+            }
         }
 
         // Fetch sync status
@@ -641,8 +832,14 @@
             document.getElementById('totalOrders').textContent = formatCurrency(data.total_orders);
             document.getElementById('totalItems').textContent = formatCurrency(data.total_items);
             document.getElementById('avgOrderValue').textContent = formatCurrency(data.avg_order_value);
-            document.getElementById('avgItemValue').textContent = formatCurrency(data.avg_item_value);
+            document.getElementById('avgItemsPerOrder').textContent =
+                (data.avg_items_per_order || 0).toFixed(1);
+
             document.getElementById('revenueYoY').innerHTML = formatYoY(data.yoy_change);
+            document.getElementById('ordersYoY').innerHTML = formatYoY(data.orders_yoy);
+            document.getElementById('itemsYoY').innerHTML = formatYoY(data.items_yoy);
+            document.getElementById('avgOrderValueYoY').innerHTML = formatYoY(data.avg_order_value_yoy);
+            document.getElementById('avgItemsPerOrderYoY').innerHTML = formatYoY(data.avg_items_per_order_yoy);
 
             const refundedEl = document.getElementById('refundedInfo');
             if (data.total_refunded > 0) {
@@ -731,10 +928,10 @@
             const sortedLocations = [...locations].sort((a, b) => b.revenue - a.revenue);
             tbody.innerHTML = sortedLocations.map(loc => `
                 <tr class="border-b hover:bg-gray-50">
-                    <td class="py-3 px-4 font-medium">${loc.location}</td>
-                    <td class="text-right py-3 px-4 font-semibold">${formatCurrency(loc.revenue)} NOK</td>
-                    <td class="text-right py-3 px-4">${formatCurrency(loc.order_count)}</td>
-                    <td class="text-right py-3 px-4">${formatYoY(loc.yoy_change)}</td>
+                    <td class="py-3 px-4 font-medium whitespace-nowrap">${loc.location}</td>
+                    <td class="text-right py-3 px-4 font-semibold whitespace-nowrap">${formatCurrency(loc.revenue)}</td>
+                    <td class="text-right py-3 px-4 whitespace-nowrap">${formatCurrency(loc.order_count)}</td>
+                    <td class="text-right py-3 px-4 whitespace-nowrap">${formatYoY(loc.yoy_change)}</td>
                 </tr>
             `).join('');
         }
@@ -831,105 +1028,72 @@
         // Clean up product name (remove trailing " -")
         function cleanProductName(name) {
             if (!name) return '-';
-            return name.replace(/\s*-\s*$/, '').trim();
+            return name
+                .replace(/\s*[-\/]\s*(XS|S|M|L|XL|XXL|2XL|3XL|XXXL|One Size)\s*$/i, '')
+                .replace(/\s*[-\/]\s*\d{2,3}\s*$/i, '')  // strip numeric sizes like 30, 32, 34, 100cm
+                .replace(/\s*-\s*$/, '')
+                .trim();
         }
 
-        // Update products table header based on compare mode
-        function updateProductsTableHeader(showCompare) {
-            const header = document.getElementById('productsTableHeader');
-            if (showCompare) {
-                header.innerHTML = `
-                    <th class="text-left py-3 px-4">Product</th>
-                    <th class="text-left py-3 px-4">Category</th>
-                    <th class="text-right py-3 px-4">Qty</th>
-                    <th class="text-right py-3 px-4">Prev</th>
-                    <th class="text-right py-3 px-4">Chg</th>
-                    <th class="text-right py-3 px-4">Revenue</th>
-                    <th class="text-right py-3 px-4">Prev</th>
-                    <th class="text-right py-3 px-4">Chg</th>
-                `;
-            } else {
-                header.innerHTML = `
-                    <th class="text-left py-3 px-4">Product</th>
-                    <th class="text-left py-3 px-4">Category</th>
-                    <th class="text-right py-3 px-4">Qty</th>
-                    <th class="text-right py-3 px-4">Sizes</th>
-                    <th class="text-right py-3 px-4">Revenue</th>
-                `;
+        function revChangePct(currentRev, lyRev) {
+            if (currentRev === null || currentRev === undefined || lyRev === null || lyRev === undefined || lyRev === 0) {
+                return '<span class="text-xs text-gray-400">—</span>';
             }
+            const pct = (currentRev - lyRev) / lyRev * 100;
+            if (Math.abs(pct) < 0.5) return '<span class="text-xs text-gray-400">—</span>';
+            if (pct > 0) return `<span class="text-xs text-green-600 font-semibold">+${pct.toFixed(0)}%</span>`;
+            return `<span class="text-xs text-red-500 font-semibold">${pct.toFixed(0)}%</span>`;
         }
 
-        // Update products table
-        function updateProductsTable(products, showCompare = false) {
-            const tbody = document.getElementById('productsTable');
-            updateProductsTableHeader(showCompare);
-            
+        // products: ranked list to render
+        // otherRevMap: Map<sku, revenue> from the other period
+        // isCurrentTable: true = current (myRev=current, otherRev=LY), false = LY table (reversed)
+        // startDate/endDate: embedded in rows for variant drill-down
+        function buildProductTableRows(products, otherRevMap, isCurrentTable, startDate, endDate) {
             if (products.length === 0) {
-                const cols = showCompare ? 8 : 5;
-                tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No product data</td></tr>`;
-                return;
+                return `<tr><td colspan="4" class="py-4 text-center text-gray-400">No product data</td></tr>`;
             }
-
-            // Calculate totals
-            const totalQty = products.reduce((s, p) => s + (p.quantity_sold || 0), 0);
-            const totalRevenue = products.reduce((s, p) => s + (p.revenue || 0), 0);
-            const totalProducts = products.length;
-
-            if (showCompare) {
-                const totalPrevQty = products.reduce((s, p) => s + (p.prev_quantity_sold || 0), 0);
-                const totalPrevRevenue = products.reduce((s, p) => s + (p.prev_revenue || 0), 0);
-                const totalQtyChange = formatChange(totalQty, totalPrevQty);
-                const totalRevChange = formatChange(totalRevenue, totalPrevRevenue);
-                tbody.innerHTML = products.map(p => {
-                    const qtyChange = formatChange(p.quantity_sold, p.prev_quantity_sold);
-                    const revChange = formatChange(p.revenue, p.prev_revenue);
-                    return `
-                        <tr class="border-b hover:bg-gray-50">
-                            <td class="py-2 px-4">
-                                <div class="font-medium text-gray-900">${cleanProductName(p.name)}</div>
-                                <div class="text-xs text-gray-400 font-mono">${p.sku || '-'}</div>
-                            </td>
-                            <td class="py-2 px-4 text-gray-500 text-xs">${p.category || '-'}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${p.quantity_sold}</td>
-                            <td class="text-right py-2 px-4 text-gray-400">${p.prev_quantity_sold || '-'}</td>
-                            <td class="text-right py-2 px-4">${qtyChange.formatted}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
-                            <td class="text-right py-2 px-4 text-gray-400">${p.prev_revenue ? formatCurrency(p.prev_revenue) : '-'}</td>
-                            <td class="text-right py-2 px-4">${revChange.formatted}</td>
-                        </tr>
-                    `;
-                }).join('') + `
-                    <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                        <td class="py-3 px-4">${totalProducts} products</td>
-                        <td class="py-3 px-4"></td>
-                        <td class="text-right py-3 px-4">${totalQty}</td>
-                        <td class="text-right py-3 px-4 text-gray-400">${totalPrevQty || '-'}</td>
-                        <td class="text-right py-3 px-4">${totalQtyChange.formatted}</td>
-                        <td class="text-right py-3 px-4">${formatCurrency(totalRevenue)}</td>
-                        <td class="text-right py-3 px-4 text-gray-400">${totalPrevRevenue ? formatCurrency(totalPrevRevenue) : '-'}</td>
-                        <td class="text-right py-3 px-4">${totalRevChange.formatted}</td>
-                    </tr>`;
-            } else {
-                tbody.innerHTML = products.map((p, idx) => `
-                    <tr class="border-b hover:bg-gray-50 cursor-pointer" data-sku="${encodeURIComponent(p.sku)}" onclick="toggleVariants(this)">
-                        <td class="py-2 px-4">
-                            <div class="font-medium text-gray-900">${cleanProductName(p.name)}</div>
+            const rows = products.map(p => {
+                const otherRev = otherRevMap.get(p.sku);
+                const currentRev = isCurrentTable ? p.revenue : (otherRev !== undefined ? otherRev : null);
+                const lyRev = isCurrentTable ? (otherRev !== undefined ? otherRev : null) : p.revenue;
+                const change = revChangePct(currentRev, lyRev);
+                return `
+                    <tr class="border-b hover:bg-gray-50 cursor-pointer"
+                        data-sku="${encodeURIComponent(p.sku)}"
+                        data-start="${startDate}" data-end="${endDate}"
+                        onclick="toggleVariants(this)">
+                        <td class="py-2 px-3">
+                            <div class="font-medium text-gray-900 text-xs leading-tight">${cleanProductName(p.name)}</div>
                             <div class="text-xs text-gray-400 font-mono">${p.sku || '-'}</div>
                         </td>
-                        <td class="py-2 px-4 text-gray-500 text-xs">${p.category || '-'}</td>
-                        <td class="text-right py-2 px-4">${p.quantity_sold}</td>
-                        <td class="text-right py-2 px-4 text-gray-400">${p.variants || 1}</td>
-                        <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
+                        <td class="text-right py-2 px-3 text-sm">${p.quantity_sold}</td>
+                        <td class="text-right py-2 px-3 text-sm font-semibold">${formatCurrency(p.revenue)}</td>
+                        <td class="text-right py-2 px-3">${change}</td>
                     </tr>
-                `).join('') + `
-                    <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                        <td class="py-3 px-4">${totalProducts} products</td>
-                        <td class="py-3 px-4"></td>
-                        <td class="text-right py-3 px-4">${totalQty}</td>
-                        <td class="text-right py-3 px-4"></td>
-                        <td class="text-right py-3 px-4">${formatCurrency(totalRevenue)}</td>
-                    </tr>`;
-            }
+                `;
+            });
+            const totalQty = products.reduce((s, p) => s + (p.quantity_sold || 0), 0);
+            const totalRevenue = products.reduce((s, p) => s + (p.revenue || 0), 0);
+            rows.push(`
+                <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-sm">
+                    <td class="py-2 px-3">${products.length} products</td>
+                    <td class="text-right py-2 px-3">${totalQty}</td>
+                    <td class="text-right py-2 px-3">${formatCurrency(totalRevenue)}</td>
+                    <td></td>
+                </tr>
+            `);
+            return rows.join('');
+        }
+
+        function updateProductsSideBySide(currentProducts, lyProducts, currentStart, currentEnd, lyStart, lyEnd) {
+            const currentRevMap = new Map(currentProducts.map(p => [p.sku, p.revenue]));
+            const lyRevMap = new Map(lyProducts.map(p => [p.sku, p.revenue]));
+
+            document.getElementById('productsCurrentTable').innerHTML =
+                buildProductTableRows(currentProducts, lyRevMap, true, currentStart, currentEnd);
+            document.getElementById('productsLYTable').innerHTML =
+                buildProductTableRows(lyProducts, currentRevMap, false, lyStart, lyEnd);
         }
 
         // Update categories table header based on compare mode
@@ -959,7 +1123,8 @@
         function updateCategoriesTable(categories, showCompare = false) {
             const tbody = document.getElementById('categoriesTable');
             updateCategoriesTableHeader(showCompare);
-            
+            const isDrillDown = !!currentCategoryGroup;
+
             if (categories.length === 0) {
                 const cols = showCompare ? 7 : 4;
                 tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No category data</td></tr>`;
@@ -970,9 +1135,11 @@
                 tbody.innerHTML = categories.map(c => {
                     const qtyChange = formatChange(c.quantity_sold, c.prev_quantity_sold);
                     const revChange = formatChange(c.revenue, c.prev_revenue);
+                    const clickable = !isDrillDown ? `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoCategoryGroup('${c.category.replace(/'/g, "\\'")}')"` : `class="border-b hover:bg-gray-50"`;
+                    const chevron = !isDrillDown ? `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>` : '';
                     return `
-                        <tr class="border-b hover:bg-gray-50">
-                            <td class="py-2 px-4 font-medium">${c.category}</td>
+                        <tr ${clickable}>
+                            <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
                             <td class="text-right py-2 px-4 font-semibold">${c.quantity_sold}</td>
                             <td class="text-right py-2 px-4 text-gray-400">${c.prev_quantity_sold || '-'}</td>
                             <td class="text-right py-2 px-4">${qtyChange.formatted}</td>
@@ -983,14 +1150,18 @@
                     `;
                 }).join('');
             } else {
-                tbody.innerHTML = categories.map(c => `
-                    <tr class="border-b hover:bg-gray-50">
-                        <td class="py-2 px-4 font-medium">${c.category}</td>
-                        <td class="text-right py-2 px-4">${c.quantity_sold}</td>
-                        <td class="text-right py-2 px-4">${c.order_count}</td>
-                        <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
-                    </tr>
-                `).join('');
+                tbody.innerHTML = categories.map(c => {
+                    const clickable = !isDrillDown ? `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoCategoryGroup('${c.category.replace(/'/g, "\\'")}')"` : `class="border-b hover:bg-gray-50"`;
+                    const chevron = !isDrillDown ? `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>` : '';
+                    return `
+                        <tr ${clickable}>
+                            <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
+                            <td class="text-right py-2 px-4">${c.quantity_sold}</td>
+                            <td class="text-right py-2 px-4">${c.order_count}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                        </tr>
+                    `;
+                }).join('');
             }
         }
 
@@ -1026,15 +1197,16 @@
             // Get current filter values
             const productFilters = getProductFilters();
             const categoryFilters = getCategoryFilters();
-            const productCompareTo = productFilters.compare ? productFilters.comparePeriod : null;
             const categoryCompareTo = categoryFilters.compare ? categoryFilters.comparePeriod : null;
+            const { lyStart, lyEnd } = getLYDates();
 
             // Fetch all data in parallel
-            const [summary, staff, products, categories, syncStatus] = await Promise.all([
+            const [summary, staff, currentProducts, lyProducts, categories, syncStatus] = await Promise.all([
                 fetchSummary(),
                 fetchStaff(currentStaffFilter),
-                fetchProducts(productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor, productCompareTo),
-                fetchCategories(categoryFilters.location, categoryFilters.vendor, categoryCompareTo),
+                fetchProducts(currentStartDate, currentEndDate, productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor),
+                fetchProducts(lyStart, lyEnd, productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor),
+                fetchCategories(categoryFilters.location, categoryFilters.vendor, categoryCompareTo, currentCategoryGroup),
                 fetchSyncStatus()
             ]);
 
@@ -1042,12 +1214,16 @@
                 updateSummaryCards(summary);
                 updateLocationChart(summary.locations);
                 updateLocationTable(summary.locations);
+                updateChannelChart(summary.locations);
             }
 
             updateStaffTable(staff);
-            updateProductsTable(products, productFilters.compare);
+            updateProductsSideBySide(currentProducts, lyProducts, currentStartDate, currentEndDate, lyStart, lyEnd);
             updateCategoriesTable(categories, categoryFilters.compare);
             updateSyncStatus(syncStatus);
+
+            // Sales tab trend/weekday/running charts
+            refreshSalesCharts();
             
             // Update staff filter buttons
             createStaffFilterButtons();
@@ -1081,86 +1257,492 @@
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                     </svg>
-                    Sync Data
+                    Sync from POS
                 `;
             }
         }
 
+        // ============== Period Presets ==============
+
+        const PRESETS = ['today', 'yesterday', 'week', 'month', 'last30', 'ytd', 'custom'];
+
+        function toDateStr(d) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+
+        function setPreset(preset) {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            let start, end = today;
+
+            if (preset === 'today') {
+                start = today;
+            } else if (preset === 'yesterday') {
+                const y = new Date(today); y.setDate(y.getDate() - 1);
+                start = y; end = y;
+            } else if (preset === 'week') {
+                const d = new Date(today);
+                // Back to Monday (ISO week)
+                d.setDate(d.getDate() - (d.getDay() === 0 ? 6 : d.getDay() - 1));
+                start = d;
+            } else if (preset === 'month') {
+                start = new Date(today.getFullYear(), today.getMonth(), 1);
+            } else if (preset === 'last30') {
+                const d = new Date(today); d.setDate(d.getDate() - 29);
+                start = d;
+            } else if (preset === 'ytd') {
+                start = new Date(today.getFullYear(), 0, 1);
+            } else if (preset === 'custom') {
+                document.getElementById('customDateRange').classList.remove('hidden');
+                updatePresetButtons('custom');
+                return;
+            }
+
+            currentStartDate = toDateStr(start);
+            currentEndDate   = toDateStr(end);
+            document.getElementById('startDate').value = currentStartDate;
+            document.getElementById('endDate').value   = currentEndDate;
+            document.getElementById('customDateRange').classList.add('hidden');
+            updatePresetButtons(preset);
+            refreshDashboard();
+        }
+
+        function updatePresetButtons(active) {
+            PRESETS.forEach(p => {
+                const btn = document.getElementById('preset-' + p);
+                if (!btn) return;
+                const isActive = p === active;
+                btn.classList.toggle('bg-blue-600', isActive);
+                btn.classList.toggle('text-white',  isActive);
+                btn.classList.toggle('font-medium', isActive);
+                btn.classList.toggle('bg-white',       !isActive);
+                btn.classList.toggle('text-gray-600',  !isActive);
+                btn.classList.toggle('hover:bg-gray-50', !isActive);
+            });
+        }
+
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
-            // Set date pickers to today
-            document.getElementById('startDate').value = currentStartDate;
-            document.getElementById('endDate').value = currentEndDate;
-            
             // Fetch locations, categories, and vendors first
             await Promise.all([
                 fetchLocationsList(),
                 fetchCategoriesList(),
                 fetchVendorsList()
             ]);
-            
+
             // Populate filter dropdowns
             populateFilterDropdowns();
-            
-            // Add date change listeners
+
+            // Custom date inputs: apply on change and mark Custom active
             document.getElementById('startDate').addEventListener('change', (e) => {
                 currentStartDate = e.target.value;
                 if (currentStartDate > currentEndDate) {
                     currentEndDate = currentStartDate;
                     document.getElementById('endDate').value = currentEndDate;
                 }
+                updatePresetButtons('custom');
                 refreshDashboard();
             });
-            
+
             document.getElementById('endDate').addEventListener('change', (e) => {
                 currentEndDate = e.target.value;
                 if (currentEndDate < currentStartDate) {
                     currentStartDate = currentEndDate;
                     document.getElementById('startDate').value = currentStartDate;
                 }
+                updatePresetButtons('custom');
                 refreshDashboard();
             });
 
-            // Initial load
-            refreshDashboard();
+            // Initial load: default to This Week
+            setPreset('week');
 
             // Auto-refresh every 5 minutes
             setInterval(refreshDashboard, 5 * 60 * 1000);
         });
 
+        // ============== Sales Tab Analytics ==============
+
+        let trendChart = null;
+        let channelChart = null;
+        let weekdayChart = null;
+        let runningTotalChart = null;
+        let currentTrendGroupBy = 'day';
+
+        function setTrendGroupBy(groupBy) {
+            currentTrendGroupBy = groupBy;
+            ['day', 'week', 'month', 'quarter'].forEach(g => {
+                const btn = document.getElementById('trendGroup-' + g);
+                if (!btn) return;
+                if (g === groupBy) {
+                    btn.classList.add('bg-blue-600', 'text-white');
+                    btn.classList.remove('bg-white', 'text-gray-600', 'hover:bg-gray-50');
+                } else {
+                    btn.classList.remove('bg-blue-600', 'text-white');
+                    btn.classList.add('bg-white', 'text-gray-600', 'hover:bg-gray-50');
+                }
+            });
+            fetchDailyRevenue().then(updateTrendChart);
+        }
+
+        function formatTrendLabel(dateStr, groupBy) {
+            // dateStr is ISO date "2025-01-06" = start of the truncated period
+            const [year, month, day] = dateStr.split('-').map(Number);
+            const d = new Date(year, month - 1, day);
+            if (groupBy === 'week') {
+                return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+            }
+            if (groupBy === 'month') {
+                return d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+            }
+            if (groupBy === 'quarter') {
+                return `Q${Math.floor((month - 1) / 3) + 1} ${year}`;
+            }
+            // day: MM-DD
+            return `${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+        }
+
+        async function fetchDailyRevenue() {
+            try {
+                const r = await fetch(`${API_BASE}/revenue/daily?start_date=${currentStartDate}&end_date=${currentEndDate}&group_by=${currentTrendGroupBy}`);
+                return await r.json();
+            } catch (e) { console.error('Error fetching daily revenue:', e); return []; }
+        }
+
+        async function fetchWeekdayRevenue() {
+            try {
+                const r = await fetch(`${API_BASE}/revenue/by-weekday?start_date=${currentStartDate}&end_date=${currentEndDate}`);
+                return await r.json();
+            } catch (e) { console.error('Error fetching weekday revenue:', e); return []; }
+        }
+
+        async function fetchRunningTotal() {
+            try {
+                const r = await fetch(`${API_BASE}/revenue/running-total?start_date=${currentStartDate}&end_date=${currentEndDate}`);
+                return await r.json();
+            } catch (e) { console.error('Error fetching running total:', e); return []; }
+        }
+
+        function updateTrendChart(data) {
+            const ctx = document.getElementById('trendChart').getContext('2d');
+            if (trendChart) trendChart.destroy();
+            const showLY = document.getElementById('trendYoYToggle')?.checked;
+            const showBudget = document.getElementById('trendBudgetToggle')?.checked;
+            const groupBy = currentTrendGroupBy;
+
+            const dotRadius = data.length <= 30 ? 3 : 0;
+            const maxTicks = groupBy === 'day' ? 14 : (groupBy === 'week' ? 16 : 0);
+            const tension = groupBy === 'day' ? 0.3 : 0.15;
+            const hasBudget = data.some(d => d.budget !== null && d.budget > 0);
+
+            const datasets = [{
+                label: 'Revenue',
+                data: data.map(d => d.revenue),
+                borderColor: '#00AEEF',
+                backgroundColor: 'rgba(0,174,239,0.08)',
+                borderWidth: 2,
+                pointRadius: dotRadius,
+                pointHoverRadius: 4,
+                fill: true,
+                tension,
+            }];
+
+            if (showBudget && hasBudget) {
+                datasets.push({
+                    label: 'Budget',
+                    data: data.map(d => d.budget ?? 0),
+                    borderColor: '#f59e0b',
+                    borderDash: [5, 4],
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: false,
+                    tension,
+                });
+            }
+
+            if (showLY) {
+                datasets.push({
+                    label: 'Last Year',
+                    data: data.map(d => d.revenue_last_year),
+                    borderColor: '#94a3b8',
+                    borderDash: [4, 4],
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension,
+                });
+            }
+
+            const labels = data.map(d => formatTrendLabel(d.date, groupBy));
+            const showLegend = showLY || (showBudget && hasBudget);
+
+            trendChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: showLegend, labels: { boxWidth: 24, padding: 16 } },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            callbacks: {
+                                title: items => labels[items[0].dataIndex],
+                                label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)} NOK`,
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { ticks: { maxTicksLimit: maxTicks || undefined, maxRotation: 0 } },
+                        y: { ticks: { callback: v => formatCurrency(v) } }
+                    }
+                }
+            });
+        }
+
+        function onTrendToggle() {
+            fetchDailyRevenue().then(updateTrendChart);
+        }
+
+        function updateChannelChart(locations) {
+            const ctx = document.getElementById('channelChart').getContext('2d');
+            if (channelChart) channelChart.destroy();
+
+            let onlineRev = 0, onlineOrders = 0, onlineLY = 0;
+            let storeRev = 0, storeOrders = 0, storeLY = 0;
+
+            locations.forEach(loc => {
+                if (loc.location === 'Online') {
+                    onlineRev += loc.revenue;
+                    onlineOrders += loc.order_count;
+                    onlineLY += loc.revenue_last_year;
+                } else {
+                    storeRev += loc.revenue;
+                    storeOrders += loc.order_count;
+                    storeLY += loc.revenue_last_year;
+                }
+            });
+
+            channelChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Online', 'Stores'],
+                    datasets: [{
+                        data: [onlineRev, storeRev],
+                        backgroundColor: ['#00AEEF', '#6366f1'],
+                        borderWidth: 3,
+                        borderColor: '#fff',
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => `${ctx.label}: ${formatCurrency(ctx.raw)} NOK`
+                            }
+                        }
+                    }
+                }
+            });
+
+            const fmtYoY = (cur, ly) => {
+                if (!ly || ly === 0) return '';
+                const pct = ((cur - ly) / ly * 100).toFixed(1);
+                const cls = cur >= ly ? 'text-green-600' : 'text-red-600';
+                return `<span class="text-sm font-medium ${cls}">${cur >= ly ? '+' : ''}${pct}% vs LY</span>`;
+            };
+
+            document.getElementById('channelStats').innerHTML = `
+                <div class="bg-sky-50 rounded-xl p-5">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="w-3 h-3 rounded-full bg-[#00AEEF] flex-shrink-0"></span>
+                        <span class="text-sm font-medium text-gray-600">Online</span>
+                    </div>
+                    <div class="text-2xl font-bold text-gray-900 mb-0.5">${formatCurrency(onlineRev)} <span class="text-sm font-normal text-gray-400">NOK</span></div>
+                    <div class="text-sm text-gray-500 mb-2">${formatCurrency(onlineOrders)} orders</div>
+                    ${fmtYoY(onlineRev, onlineLY)}
+                </div>
+                <div class="bg-indigo-50 rounded-xl p-5">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="w-3 h-3 rounded-full bg-indigo-500 flex-shrink-0"></span>
+                        <span class="text-sm font-medium text-gray-600">Stores</span>
+                    </div>
+                    <div class="text-2xl font-bold text-gray-900 mb-0.5">${formatCurrency(storeRev)} <span class="text-sm font-normal text-gray-400">NOK</span></div>
+                    <div class="text-sm text-gray-500 mb-2">${formatCurrency(storeOrders)} orders</div>
+                    ${fmtYoY(storeRev, storeLY)}
+                </div>
+            `;
+        }
+
+        function updateWeekdayChart(data) {
+            const ctx = document.getElementById('weekdayChart').getContext('2d');
+            if (weekdayChart) weekdayChart.destroy();
+
+            weekdayChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => d.name.slice(0, 3)),
+                    datasets: [
+                        {
+                            label: 'Online',
+                            data: data.map(d => d.online_avg),
+                            backgroundColor: '#00AEEF',
+                            borderWidth: 0,
+                            borderRadius: 4,
+                        },
+                        {
+                            label: 'Stores',
+                            data: data.map(d => d.store_avg),
+                            backgroundColor: '#6366f1',
+                            borderWidth: 0,
+                            borderRadius: 4,
+                        },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 16, font: { size: 12 } } },
+                        tooltip: {
+                            mode: 'index',
+                            callbacks: {
+                                label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)} NOK`,
+                                footer: items => {
+                                    const d = data[items[0].dataIndex];
+                                    return `Total avg: ${formatCurrency(d.avg_revenue)} NOK  (${d.day_count} day${d.day_count !== 1 ? 's' : ''})`;
+                                },
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { stacked: false },
+                        y: { ticks: { callback: v => formatCurrency(v) } }
+                    }
+                }
+            });
+        }
+
+        function updateRunningTotalChart(data) {
+            const ctx = document.getElementById('runningTotalChart').getContext('2d');
+            if (runningTotalChart) runningTotalChart.destroy();
+
+            const hasBudget = data.some(d => d.cumulative_budget > 0);
+            const note = document.getElementById('runningTotalNote');
+
+            if (!hasBudget) {
+                note.textContent = 'No budget data for this period — showing revenue only';
+            } else {
+                note.textContent = 'Cumulative revenue vs cumulative budget target';
+            }
+
+            const datasets = [{
+                label: 'Revenue',
+                data: data.map(d => d.cumulative_revenue),
+                borderColor: '#00AEEF',
+                backgroundColor: 'rgba(0,174,239,0.06)',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: true,
+                tension: 0.2,
+            }];
+
+            if (hasBudget) {
+                datasets.push({
+                    label: 'Budget',
+                    data: data.map(d => d.cumulative_budget),
+                    borderColor: '#94a3b8',
+                    borderDash: [5, 5],
+                    borderWidth: 1.5,
+                    pointRadius: 0,
+                    fill: false,
+                    tension: 0,
+                });
+            }
+
+            runningTotalChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels: data.map(d => d.date), datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: hasBudget },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)} NOK`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: {
+                                maxTicksLimit: 10,
+                                callback: function(val) {
+                                    const d = this.getLabelForValue(val);
+                                    return d ? d.slice(5) : '';
+                                }
+                            }
+                        },
+                        y: { ticks: { callback: v => formatCurrency(v) } }
+                    }
+                }
+            });
+        }
+
+        async function refreshSalesCharts() {
+            const [daily, weekday, running] = await Promise.all([
+                fetchDailyRevenue(),
+                fetchWeekdayRevenue(),
+                fetchRunningTotal(),
+            ]);
+            updateTrendChart(daily);
+            updateWeekdayChart(weekday);
+            updateRunningTotalChart(running);
+        }
+
         // ============== Tab Navigation ==============
 
         let currentTab = 'sales';
 
+        const ALL_TABS = ['sales', 'top-products', 'categories', 'budget', 'staff', 'stock'];
+
         function showTab(tab) {
             currentTab = tab;
 
-            // Sales panels
-            const salesTop = document.getElementById('tab-sales');
-            const salesBottom = document.getElementById('tab-sales-bottom');
-            const staffPanel = document.getElementById('tab-staff');
-            const stockPanel = document.getElementById('tab-stock');
+            ALL_TABS.forEach(t => {
+                const panel = document.getElementById('tab-' + t);
+                if (panel) panel.classList.toggle('hidden', t !== tab);
 
-            salesTop.classList.toggle('hidden', tab !== 'sales');
-            salesBottom.classList.toggle('hidden', tab !== 'sales');
-            staffPanel.classList.toggle('hidden', tab !== 'staff');
-            stockPanel.classList.toggle('hidden', tab !== 'stock');
-
-            // Update tab button styles
-            ['sales', 'staff', 'stock'].forEach(t => {
                 const btn = document.getElementById('tab-btn-' + t);
-                if (t === tab) {
-                    btn.classList.add('border-blue-600', 'text-blue-600');
-                    btn.classList.remove('border-transparent', 'text-gray-500');
-                } else {
-                    btn.classList.remove('border-blue-600', 'text-blue-600');
-                    btn.classList.add('border-transparent', 'text-gray-500');
+                if (btn) {
+                    if (t === tab) {
+                        btn.classList.add('border-blue-600', 'text-blue-600');
+                        btn.classList.remove('border-transparent', 'text-gray-500');
+                    } else {
+                        btn.classList.remove('border-blue-600', 'text-blue-600');
+                        btn.classList.add('border-transparent', 'text-gray-500');
+                    }
                 }
             });
 
-            // Redraw chart when switching to sales (canvas visibility issue)
-            if (tab === 'sales' && locationChart) {
-                setTimeout(() => locationChart.resize(), 50);
+            // Redraw charts when switching to sales (canvas visibility issue)
+            if (tab === 'sales') {
+                setTimeout(() => {
+                    if (locationChart) locationChart.resize();
+                    if (trendChart) trendChart.resize();
+                    if (channelChart) channelChart.resize();
+                    if (weekdayChart) weekdayChart.resize();
+                    if (runningTotalChart) runningTotalChart.resize();
+                }, 50);
             }
         }
 

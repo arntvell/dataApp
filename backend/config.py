@@ -27,15 +27,7 @@ class Settings:
     SAMESYSTEM_EMAIL: str = os.getenv("SAMESYSTEM_EMAIL", "")
     SAMESYSTEM_PASSWORD: str = os.getenv("SAMESYSTEM_PASSWORD", "")
 
-    @staticmethod
-    def _parse_departments() -> Dict[str, str]:
-        raw = os.getenv("SAMESYSTEM_DEPARTMENTS", "{}")
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
-
-    SAMESYSTEM_DEPARTMENTS: Dict[str, str] = _parse_departments()
+    SAMESYSTEM_DEPARTMENTS: Dict[str, str] = json.loads(os.getenv("SAMESYSTEM_DEPARTMENTS", "{}")) if os.getenv("SAMESYSTEM_DEPARTMENTS", "{}").strip().startswith("{") else {}
 
     # Cin7 Core Configuration
     CIN7_ACCOUNT_ID: str = os.getenv("CIN7_ACCOUNT_ID", "")

@@ -55,11 +55,13 @@ async def get_budget_vs_actual(
     ).all()
 
     # Build budget lookup: {store: {sales: X, salary: Y}}
+    # Sales budget is ex VAT — multiply by 1.25 to compare against inc-VAT actual sales
     budget_map = {}
     for row in budget_data:
         if row.store not in budget_map:
             budget_map[row.store] = {"sales": 0, "salary": 0}
-        budget_map[row.store][row.budget_type] = float(row.total_amount or 0)
+        amount = float(row.total_amount or 0)
+        budget_map[row.store][row.budget_type] = amount * 1.25 if row.budget_type == "sales" else amount
 
     # Actual sales per location
     start_dt = datetime.combine(start_date, datetime.min.time())

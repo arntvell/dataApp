@@ -204,6 +204,7 @@ class CategoryMapping(Base):
     
     # Standardized category
     standard_category = Column(String, index=True)  # Unified category
+    category_group = Column(String, nullable=True, index=True)  # Parent group (e.g. Jersey covers T-shirt, Singlet, Sweatshirt)
     
     # Gender / target audience based on Sitoo vendor classification
     designed_for = Column(String, nullable=True, index=True)  # 'men', 'women', 'unisex'

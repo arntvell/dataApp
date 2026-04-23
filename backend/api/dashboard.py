@@ -720,7 +720,7 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """Trigger an incremental sync for all sources (Sitoo, Shopify, Cin7, SameSystem)"""
+    """Trigger an incremental sync: Sitoo/Shopify sales, Cin7 wholesale orders, SameSystem worktime."""
     from pipelines.sales_sync import SalesSyncPipeline
     from pipelines.stock_sync import StockSyncPipeline
     from pipelines.budget_sync import BudgetSyncPipeline
@@ -762,12 +762,10 @@ async def trigger_sync(
         except Exception as e:
             logger.error(f"Sales sync error: {e}")
         try:
-            stock_pipeline.sync_stock_levels()
             stock_pipeline.sync_wholesale_orders()
         except Exception as e:
             logger.error(f"Stock sync error: {e}")
         try:
-            budget_pipeline.sync_budgets()
             budget_pipeline.sync_worktime()
         except Exception as e:
             logger.error(f"Budget sync error: {e}")

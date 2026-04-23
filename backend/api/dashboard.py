@@ -656,6 +656,84 @@ async def get_top_categories(
     return result
 
 
+@router.get("/brands")
+async def get_brands(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    compare_to: str = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Ranked brand/vendor list with optional period comparison."""
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    date_filter = get_date_filter(start_date, end_date)
+    loc_filter = get_location_filter(location)
+
+    def get_brand_data(d_filter, l_filter):
+        return db.query(
+            SalesOrderItem.vendor.label('vendor'),
+            func.sum(SalesOrderItem.line_total).label('revenue'),
+            func.sum(SalesOrderItem.quantity).label('quantity'),
+            func.count(func.distinct(SalesOrder.id)).label('orders'),
+        ).join(SalesOrder).filter(
+            and_(d_filter, l_filter,
+                 SalesOrderItem.vendor.isnot(None),
+                 SalesOrderItem.vendor != '')
+        ).group_by(SalesOrderItem.vendor).order_by(
+            func.sum(SalesOrderItem.line_total).desc()
+        ).all()
+
+    brands = get_brand_data(date_filter, loc_filter)
+
+    compare_map = {}
+    if compare_to:
+        compare_start, compare_end = get_comparison_period(start_date, end_date, compare_to)
+        if compare_start and compare_end:
+            comp_filter = get_date_filter(compare_start, compare_end)
+            comp_brands = get_brand_data(comp_filter, loc_filter)
+            compare_map = {
+                b.vendor: {'revenue': float(b.revenue or 0), 'quantity': b.quantity, 'orders': b.orders}
+                for b in comp_brands
+            }
+
+    result = []
+    seen = set()
+    for b in brands:
+        seen.add(b.vendor)
+        item = {
+            'vendor': b.vendor,
+            'revenue': float(b.revenue or 0),
+            'quantity': b.quantity,
+            'orders': b.orders,
+        }
+        if compare_to:
+            prev = compare_map.get(b.vendor, {'revenue': 0, 'quantity': 0, 'orders': 0})
+            item['prev_revenue'] = prev['revenue']
+            item['prev_quantity'] = prev['quantity']
+            item['prev_orders'] = prev['orders']
+        result.append(item)
+
+    # Include brands that had LY sales but none this period
+    if compare_to:
+        for vendor, prev in compare_map.items():
+            if vendor not in seen:
+                result.append({
+                    'vendor': vendor,
+                    'revenue': 0,
+                    'quantity': 0,
+                    'orders': 0,
+                    'prev_revenue': prev['revenue'],
+                    'prev_quantity': prev['quantity'],
+                    'prev_orders': prev['orders'],
+                })
+
+    return result
+
+
 @router.get("/locations/list")
 async def get_location_list(db: Session = Depends(get_db)):
     """Get list of all locations for filter dropdown"""

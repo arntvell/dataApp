@@ -114,6 +114,10 @@
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Categories
             </button>
+            <button onclick="showTab('brands')" id="tab-btn-brands"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Brands
+            </button>
             <button onclick="showTab('budget')" id="tab-btn-budget"
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Budget vs Actual
@@ -407,6 +411,46 @@
 
         </div> <!-- end tab-categories -->
 
+        <!-- TAB: Brands -->
+        <div id="tab-brands" class="hidden">
+        <div class="card mb-8">
+            <div class="flex flex-wrap justify-between items-center mb-2 gap-4">
+                <h2 class="text-xl font-semibold">Brands</h2>
+                <div class="flex flex-wrap gap-3 items-center">
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Location:</label>
+                        <select id="brandLocationSelect" onchange="onBrandFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2 border-l pl-3">
+                        <label class="text-sm text-gray-600">Compare:</label>
+                        <input type="checkbox" id="brandCompareToggle" onchange="onBrandFilterChange()" class="w-4 h-4 rounded">
+                        <select id="brandComparePeriod" onchange="onBrandFilterChange()" class="px-2 py-1.5 text-sm border rounded-lg bg-white">
+                            <option value="previous_period">vs Prev Period</option>
+                            <option value="previous_year">vs Prev Year</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div id="brandBreadcrumb" class="hidden flex items-center gap-2 mb-3"></div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead class="sticky top-0 bg-white">
+                        <tr class="border-b bg-gray-50" id="brandsTableHeader">
+                            <th class="text-left py-3 px-4">Brand</th>
+                            <th class="text-right py-3 px-4">Qty</th>
+                            <th class="text-right py-3 px-4">Orders</th>
+                            <th class="text-right py-3 px-4">Revenue</th>
+                        </tr>
+                    </thead>
+                    <tbody id="brandsTable">
+                        <tr><td colspan="4" class="py-4 text-center text-gray-400">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        </div> <!-- end tab-brands -->
+
         <!-- TAB: Budget vs Actual -->
         <div id="tab-budget" class="hidden">
 
@@ -519,6 +563,8 @@
         let vendorsList = ['All'];
         let currentStaffFilter = 'ALL';
         let currentStandardCategory = null;
+        let currentBrand = null;
+        let brandsLoaded = false;
 
         // Format currency
         function formatCurrency(value) {
@@ -876,6 +922,189 @@
                     <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
                 </tr>
             `).join('');
+        }
+
+        // ============== Brands ==============
+
+        function getBrandFilters() {
+            return {
+                location: document.getElementById('brandLocationSelect')?.value || 'All',
+                compare: document.getElementById('brandCompareToggle')?.checked || false,
+                comparePeriod: document.getElementById('brandComparePeriod')?.value || 'previous_year',
+            };
+        }
+
+        async function fetchBrands(location = 'All', compareTo = null) {
+            try {
+                let url = `${API_BASE}/brands?start_date=${currentStartDate}&end_date=${currentEndDate}`;
+                if (location && location !== 'All') url += `&location=${encodeURIComponent(location)}`;
+                if (compareTo) url += `&compare_to=${compareTo}`;
+                const res = await fetch(url);
+                return await res.json();
+            } catch (e) {
+                console.error('Error fetching brands:', e);
+                return [];
+            }
+        }
+
+        async function fetchBrandCategories(location = 'All', compareTo = null) {
+            try {
+                let url = `${API_BASE}/categories?start_date=${currentStartDate}&end_date=${currentEndDate}&limit=200&vendor=${encodeURIComponent(currentBrand)}`;
+                if (location && location !== 'All') url += `&location=${encodeURIComponent(location)}`;
+                if (compareTo) url += `&compare_to=${compareTo}`;
+                const res = await fetch(url);
+                return await res.json();
+            } catch (e) {
+                console.error('Error fetching brand categories:', e);
+                return [];
+            }
+        }
+
+        async function drillIntoBrand(vendor) {
+            currentBrand = vendor;
+            updateBrandBreadcrumb();
+            const filters = getBrandFilters();
+            const compareTo = filters.compare ? filters.comparePeriod : null;
+            const categories = await fetchBrandCategories(filters.location, compareTo);
+            updateBrandCategoriesTable(categories, filters.compare);
+        }
+
+        async function resetBrand() {
+            currentBrand = null;
+            updateBrandBreadcrumb();
+            await onBrandFilterChange();
+        }
+
+        function updateBrandBreadcrumb() {
+            const bc = document.getElementById('brandBreadcrumb');
+            if (!bc) return;
+            if (currentBrand) {
+                const backChevron = `<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>`;
+                bc.innerHTML = `
+                    <button onclick="resetBrand()" class="text-blue-600 hover:underline text-sm flex items-center gap-1">${backChevron} All Brands</button>
+                    <span class="text-gray-400 text-sm">›</span>
+                    <span class="text-sm font-medium text-gray-700">${currentBrand}</span>
+                `;
+                bc.classList.remove('hidden');
+            } else {
+                bc.classList.add('hidden');
+            }
+        }
+
+        function updateBrandsTableHeader(showCompare) {
+            const header = document.getElementById('brandsTableHeader');
+            if (showCompare) {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Brand</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                    <th class="text-right py-3 px-4">Prev</th>
+                    <th class="text-right py-3 px-4">Chg</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Orders</th>
+                `;
+            } else {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Brand</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Orders</th>
+                `;
+            }
+        }
+
+        function updateBrandsTable(brands, showCompare = false) {
+            updateBrandsTableHeader(showCompare);
+            const tbody = document.getElementById('brandsTable');
+            if (!brands.length) {
+                const cols = showCompare ? 6 : 4;
+                tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No brand data</td></tr>`;
+                return;
+            }
+            const chevron = `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>`;
+            tbody.innerHTML = brands.map(b => {
+                const onclick = `onclick="drillIntoBrand('${b.vendor.replace(/'/g, "\\'")}')"`;
+                if (showCompare) {
+                    const revChange = formatChange(b.revenue, b.prev_revenue);
+                    return `
+                        <tr class="border-b hover:bg-gray-50 cursor-pointer" ${onclick}>
+                            <td class="py-2 px-4 font-medium">${b.vendor}${chevron}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(b.revenue)}</td>
+                            <td class="text-right py-2 px-4 text-gray-400">${b.prev_revenue ? formatCurrency(b.prev_revenue) : '-'}</td>
+                            <td class="text-right py-2 px-4">${revChange.formatted}</td>
+                            <td class="text-right py-2 px-4">${b.quantity}</td>
+                            <td class="text-right py-2 px-4">${b.orders}</td>
+                        </tr>`;
+                } else {
+                    return `
+                        <tr class="border-b hover:bg-gray-50 cursor-pointer" ${onclick}>
+                            <td class="py-2 px-4 font-medium">${b.vendor}${chevron}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(b.revenue)}</td>
+                            <td class="text-right py-2 px-4">${b.quantity}</td>
+                            <td class="text-right py-2 px-4">${b.orders}</td>
+                        </tr>`;
+                }
+            }).join('');
+        }
+
+        function updateBrandCategoriesTable(categories, showCompare = false) {
+            const header = document.getElementById('brandsTableHeader');
+            if (showCompare) {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Category</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                    <th class="text-right py-3 px-4">Prev</th>
+                    <th class="text-right py-3 px-4">Chg</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Orders</th>
+                `;
+            } else {
+                header.innerHTML = `
+                    <th class="text-left py-3 px-4">Category</th>
+                    <th class="text-right py-3 px-4">Revenue</th>
+                    <th class="text-right py-3 px-4">Qty</th>
+                    <th class="text-right py-3 px-4">Orders</th>
+                `;
+            }
+            const tbody = document.getElementById('brandsTable');
+            if (!categories.length) {
+                const cols = showCompare ? 6 : 4;
+                tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No categories found</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = categories.map(c => {
+                if (showCompare) {
+                    const revChange = formatChange(c.revenue, c.prev_revenue);
+                    return `
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="py-2 px-4 font-medium">${c.category}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                            <td class="text-right py-2 px-4 text-gray-400">${c.prev_revenue ? formatCurrency(c.prev_revenue) : '-'}</td>
+                            <td class="text-right py-2 px-4">${revChange.formatted}</td>
+                            <td class="text-right py-2 px-4">${c.quantity_sold}</td>
+                            <td class="text-right py-2 px-4">${c.order_count}</td>
+                        </tr>`;
+                } else {
+                    return `
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="py-2 px-4 font-medium">${c.category}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                            <td class="text-right py-2 px-4">${c.quantity_sold}</td>
+                            <td class="text-right py-2 px-4">${c.order_count}</td>
+                        </tr>`;
+                }
+            }).join('');
+        }
+
+        async function onBrandFilterChange() {
+            const filters = getBrandFilters();
+            const compareTo = filters.compare ? filters.comparePeriod : null;
+            if (currentBrand) {
+                const categories = await fetchBrandCategories(filters.location, compareTo);
+                updateBrandCategoriesTable(categories, filters.compare);
+            } else {
+                const brands = await fetchBrands(filters.location, compareTo);
+                updateBrandsTable(brands, filters.compare);
+            }
         }
 
         // Fetch sync status
@@ -1775,7 +2004,7 @@
 
         let currentTab = 'sales';
 
-        const ALL_TABS = ['sales', 'top-products', 'categories', 'budget', 'staff', 'stock'];
+        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock'];
 
         function showTab(tab) {
             currentTab = tab;
@@ -1795,6 +2024,13 @@
                     }
                 }
             });
+
+            // Lazy-load brands tab on first visit
+            if (tab === 'brands' && !brandsLoaded) {
+                brandsLoaded = true;
+                populateDropdown('brandLocationSelect', locationsList);
+                onBrandFilterChange();
+            }
 
             // Redraw charts when switching to sales (canvas visibility issue)
             if (tab === 'sales') {
@@ -1944,7 +2180,7 @@
 
         // ============== Enhanced refresh with new sections ==============
 
-        // Extend the original refreshDashboard to also load budget + stock
+        // Extend the original refreshDashboard to also load budget + stock + brands
         const _originalRefresh = refreshDashboard;
         refreshDashboard = async function() {
             await _originalRefresh();
@@ -1970,6 +2206,13 @@
             if (stockOverview && stockOverview.length > 0) {
                 const locs = stockOverview.map(r => r.location);
                 populateStockLocationDropdown(locs);
+            }
+
+            // Refresh brands if the tab has been visited
+            if (brandsLoaded) {
+                currentBrand = null;
+                updateBrandBreadcrumb();
+                onBrandFilterChange();
             }
         };
     </script>

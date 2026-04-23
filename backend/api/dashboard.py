@@ -668,11 +668,14 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """Trigger an incremental sales data sync"""
+    """Trigger an incremental sync for all sources (Sitoo, Shopify, Cin7, SameSystem)"""
     from pipelines.sales_sync import SalesSyncPipeline
+    from pipelines.stock_sync import StockSyncPipeline
+    from pipelines.budget_sync import BudgetSyncPipeline
     import os
-    
-    config = {
+    import json
+
+    sales_pipeline = SalesSyncPipeline({
         'sitoo': {
             'base_url': os.environ.get('SITOO_BASE_URL'),
             'api_id': os.environ.get('SITOO_API_ID'),
@@ -682,19 +685,43 @@ async def trigger_sync(
             'base_url': os.environ.get('SHOPIFY_BASE_URL'),
             'api_key': os.environ.get('SHOPIFY_API_KEY')
         }
-    }
-    
-    pipeline = SalesSyncPipeline(config)
-    
-    # Run sync in background
+    })
+    stock_pipeline = StockSyncPipeline({
+        'cin7': {
+            'account_id': os.environ.get('CIN7_ACCOUNT_ID'),
+            'api_key': os.environ.get('CIN7_API_KEY')
+        }
+    })
+    try:
+        departments = json.loads(os.environ.get('SAMESYSTEM_DEPARTMENTS', '{}'))
+    except Exception:
+        departments = {}
+    budget_pipeline = BudgetSyncPipeline({
+        'samesystem': {
+            'email': os.environ.get('SAMESYSTEM_EMAIL'),
+            'password': os.environ.get('SAMESYSTEM_PASSWORD'),
+            'departments': departments
+        }
+    })
+
     def run_sync():
         try:
-            pipeline.sync_incremental()
+            sales_pipeline.sync_incremental()
         except Exception as e:
-            logger.error(f"Sync error: {e}")
-    
+            logger.error(f"Sales sync error: {e}")
+        try:
+            stock_pipeline.sync_stock_levels()
+            stock_pipeline.sync_wholesale_orders()
+        except Exception as e:
+            logger.error(f"Stock sync error: {e}")
+        try:
+            budget_pipeline.sync_budgets()
+            budget_pipeline.sync_worktime()
+        except Exception as e:
+            logger.error(f"Budget sync error: {e}")
+
     background_tasks.add_task(run_sync)
-    
+
     return {
         "status": "started",
         "message": "Sync started in background. Refresh in a few moments to see updated data."

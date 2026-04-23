@@ -348,7 +348,8 @@ async def get_top_products(
     end_date: date = Query(default=None),
     target_date: date = Query(default=None),
     location: str = Query(default="All", description="Filter: All, Stores, Online, or specific location"),
-    category: str = Query(default=None, description="Filter by category"),
+    category: str = Query(default=None, description="Filter by category group"),
+    standard_category: str = Query(default=None, description="Filter by exact standard_category (subcategory drill-down)"),
     vendor: str = Query(default=None, description="Filter by vendor"),
     designed_for: str = Query(default=None, description="Filter by designed_for: men, women, unisex"),
     aggregate_by: str = Query(default="parent", description="Aggregate by: 'sku' or 'parent'"),
@@ -371,9 +372,16 @@ async def get_top_products(
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
     
-    # Build category filter — match on group first, fall back to standard_category
+    # Build category filter
     cat_filter = True
-    if category and category not in ['ALL', 'All', '']:
+    if standard_category and standard_category not in ['ALL', 'All', '']:
+        sc_filter = CategoryMapping.standard_category == standard_category
+        if category and category not in ['ALL', 'All', '']:
+            grp_filter = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category) == category
+            cat_filter = and_(sc_filter, grp_filter)
+        else:
+            cat_filter = sc_filter
+    elif category and category not in ['ALL', 'All', '']:
         cat_filter = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category) == category
     
     # Build vendor filter

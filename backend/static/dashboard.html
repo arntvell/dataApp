@@ -518,6 +518,7 @@
         let categoriesList = ['All'];
         let vendorsList = ['All'];
         let currentStaffFilter = 'ALL';
+        let currentStandardCategory = null;
 
         // Format currency
         function formatCurrency(value) {
@@ -780,6 +781,11 @@
         // Handle category filter change
         async function onCategoryFilterChange() {
             const filters = getCategoryFilters();
+            if (currentStandardCategory) {
+                const products = await fetchCategoryProducts(filters.location, filters.vendor);
+                updateCategoryProductsTable(products);
+                return;
+            }
             const compareTo = filters.compare ? filters.comparePeriod : null;
             const categories = await fetchCategories(filters.location, filters.vendor, compareTo, currentCategoryGroup);
             updateCategoriesTable(categories, filters.compare);
@@ -787,12 +793,28 @@
 
         async function drillIntoCategoryGroup(group) {
             currentCategoryGroup = group;
+            currentStandardCategory = null;
+            updateCategoryBreadcrumb();
+            await onCategoryFilterChange();
+        }
+
+        async function drillIntoStandardCategory(stdCat) {
+            currentStandardCategory = stdCat;
+            updateCategoryBreadcrumb();
+            const filters = getCategoryFilters();
+            const products = await fetchCategoryProducts(filters.location, filters.vendor);
+            updateCategoryProductsTable(products);
+        }
+
+        async function resetToGroupLevel() {
+            currentStandardCategory = null;
             updateCategoryBreadcrumb();
             await onCategoryFilterChange();
         }
 
         async function resetCategoryGroup() {
             currentCategoryGroup = null;
+            currentStandardCategory = null;
             updateCategoryBreadcrumb();
             await onCategoryFilterChange();
         }
@@ -800,12 +822,19 @@
         function updateCategoryBreadcrumb() {
             const bc = document.getElementById('categoryBreadcrumb');
             if (!bc) return;
-            if (currentCategoryGroup) {
+            const backChevron = `<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>`;
+            if (currentStandardCategory) {
                 bc.innerHTML = `
-                    <button onclick="resetCategoryGroup()" class="text-blue-600 hover:underline text-sm flex items-center gap-1">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-                        All Groups
-                    </button>
+                    <button onclick="resetCategoryGroup()" class="text-blue-600 hover:underline text-sm flex items-center gap-1">${backChevron} All Groups</button>
+                    <span class="text-gray-400 text-sm">›</span>
+                    <button onclick="resetToGroupLevel()" class="text-blue-600 hover:underline text-sm">${currentCategoryGroup}</button>
+                    <span class="text-gray-400 text-sm">›</span>
+                    <span class="text-sm font-medium text-gray-700">${currentStandardCategory}</span>
+                `;
+                bc.classList.remove('hidden');
+            } else if (currentCategoryGroup) {
+                bc.innerHTML = `
+                    <button onclick="resetCategoryGroup()" class="text-blue-600 hover:underline text-sm flex items-center gap-1">${backChevron} All Groups</button>
                     <span class="text-gray-400 text-sm">›</span>
                     <span class="text-sm font-medium text-gray-700">${currentCategoryGroup}</span>
                 `;
@@ -813,6 +842,40 @@
             } else {
                 bc.classList.add('hidden');
             }
+        }
+
+        async function fetchCategoryProducts(location = 'All', vendor = 'All') {
+            try {
+                let url = `${API_BASE}/products?start_date=${currentStartDate}&end_date=${currentEndDate}&aggregate_by=parent&limit=0&sort_by=revenue&standard_category=${encodeURIComponent(currentStandardCategory)}`;
+                if (currentCategoryGroup) url += `&category=${encodeURIComponent(currentCategoryGroup)}`;
+                if (location && location !== 'All') url += `&location=${encodeURIComponent(location)}`;
+                if (vendor && vendor !== 'All') url += `&vendor=${encodeURIComponent(vendor)}`;
+                const res = await fetch(url);
+                return await res.json();
+            } catch (e) {
+                console.error('Error fetching category products:', e);
+                return [];
+            }
+        }
+
+        function updateCategoryProductsTable(products) {
+            document.getElementById('categoriesTableHeader').innerHTML = `
+                <th class="text-left py-3 px-4">Product</th>
+                <th class="text-right py-3 px-4">Qty</th>
+                <th class="text-right py-3 px-4">Revenue</th>
+            `;
+            const tbody = document.getElementById('categoriesTable');
+            if (!products.length) {
+                tbody.innerHTML = `<tr><td colspan="3" class="py-4 text-center text-gray-400">No products found</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = products.map(p => `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="py-2 px-4">${p.name || p.sku}</td>
+                    <td class="text-right py-2 px-4">${p.quantity_sold}</td>
+                    <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
+                </tr>
+            `).join('');
         }
 
         // Fetch sync status
@@ -1131,14 +1194,17 @@
                 return;
             }
 
+            const chevron = `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>`;
+            const rowClick = (cat) => !isDrillDown
+                ? `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoCategoryGroup('${cat.replace(/'/g, "\\'")}')" `
+                : `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoStandardCategory('${cat.replace(/'/g, "\\'")}')" `;
+
             if (showCompare) {
                 tbody.innerHTML = categories.map(c => {
                     const qtyChange = formatChange(c.quantity_sold, c.prev_quantity_sold);
                     const revChange = formatChange(c.revenue, c.prev_revenue);
-                    const clickable = !isDrillDown ? `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoCategoryGroup('${c.category.replace(/'/g, "\\'")}')"` : `class="border-b hover:bg-gray-50"`;
-                    const chevron = !isDrillDown ? `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>` : '';
                     return `
-                        <tr ${clickable}>
+                        <tr ${rowClick(c.category)}>
                             <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
                             <td class="text-right py-2 px-4 font-semibold">${c.quantity_sold}</td>
                             <td class="text-right py-2 px-4 text-gray-400">${c.prev_quantity_sold || '-'}</td>
@@ -1150,18 +1216,14 @@
                     `;
                 }).join('');
             } else {
-                tbody.innerHTML = categories.map(c => {
-                    const clickable = !isDrillDown ? `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoCategoryGroup('${c.category.replace(/'/g, "\\'")}')"` : `class="border-b hover:bg-gray-50"`;
-                    const chevron = !isDrillDown ? `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>` : '';
-                    return `
-                        <tr ${clickable}>
-                            <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
-                            <td class="text-right py-2 px-4">${c.quantity_sold}</td>
-                            <td class="text-right py-2 px-4">${c.order_count}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
-                        </tr>
-                    `;
-                }).join('');
+                tbody.innerHTML = categories.map(c => `
+                    <tr ${rowClick(c.category)}>
+                        <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
+                        <td class="text-right py-2 px-4">${c.quantity_sold}</td>
+                        <td class="text-right py-2 px-4">${c.order_count}</td>
+                        <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                    </tr>
+                `).join('');
             }
         }
 

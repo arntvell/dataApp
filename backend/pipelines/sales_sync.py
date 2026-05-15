@@ -351,6 +351,15 @@ class SalesSyncPipeline:
         except Exception as e:
             logger.warning(f"Could not load category mappings: {e}")
 
+        # Also include SKUs already in parent_sku_mappings to avoid UniqueViolation
+        # when a SKU exists there but not in category_mappings
+        try:
+            parent_skus = db.query(ParentSkuMapping.sku).all()
+            for row in parent_skus:
+                mappings['existing_skus'].add(row.sku)
+        except Exception as e:
+            logger.warning(f"Could not load parent SKU mappings: {e}")
+
         # Load unisex SKU set (from current Shopify catalog via category_mappings)
         try:
             unisex_rows = db.query(CategoryMapping.sku).filter(

@@ -107,6 +107,7 @@ class SalesSyncPipeline:
                     )
                     logger.info(f"Incremental sync: {len(orders)} orders from Sitoo")
                 except Exception as e:
+                    db.rollback()
                     self._update_sync_status(db, 'sitoo', sync_in_progress=False, last_error=str(e))
                     logger.error(f"Sitoo incremental sync error: {e}")
 
@@ -142,6 +143,7 @@ class SalesSyncPipeline:
                     )
                     logger.info(f"Incremental sync: {len(orders)} orders from Shopify")
                 except Exception as e:
+                    db.rollback()
                     self._update_sync_status(db, 'shopify', sync_in_progress=False, last_error=str(e))
                     logger.error(f"Shopify incremental sync error: {e}")
             

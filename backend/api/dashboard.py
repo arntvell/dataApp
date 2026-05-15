@@ -938,6 +938,15 @@ async def trigger_sync(
     }
 
 
+@router.post("/reset-sync-status")
+async def reset_sync_status(db: Session = Depends(get_db)):
+    """Clear stuck sync_in_progress flags (use when a sync crashed mid-run)."""
+    from database.models import SyncStatus as SyncStatusModel
+    db.query(SyncStatusModel).update({"sync_in_progress": False})
+    db.commit()
+    return {"status": "ok", "message": "sync_in_progress cleared for all sources"}
+
+
 @router.post("/sync-shopify")
 async def trigger_shopify_sync(
     background_tasks: BackgroundTasks,

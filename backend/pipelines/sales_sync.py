@@ -14,6 +14,7 @@ from database.models import SalesOrder, SalesOrderItem, SalesRefund, SyncStatus,
 from connectors.sitoo_connector import SitooConnector
 from connectors.shopify_connector import ShopifyConnector
 from data.vendor_standardization import standardize_vendor
+from data.category_groups import CATEGORY_GROUPS
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +325,7 @@ class SalesSyncPipeline:
             'staff_by_userid': {},
             'staff_by_extid': {},
             'categories': {},
+            'mapping_sources': {},
             'existing_skus': set(),
             'unisex_skus': set(),
         }
@@ -346,6 +348,7 @@ class SalesSyncPipeline:
             for cat in category_records:
                 if cat.sku:
                     mappings['categories'][cat.sku] = cat.standard_category
+                    mappings['mapping_sources'][cat.sku] = cat.mapping_source
                     mappings['existing_skus'].add(cat.sku)
             logger.info(f"Loaded {len(category_records)} category mappings")
         except Exception as e:
@@ -371,24 +374,55 @@ class SalesSyncPipeline:
 
         return mappings
     
-    def _create_sku_mappings(self, db: Session, orders: List[Dict[str, Any]], existing_skus: set):
-        """Create category and parent SKU mappings for new SKUs"""
+    def _create_sku_mappings(self, db: Session, orders: List[Dict[str, Any]], mappings: dict):
+        """Create category mappings for new SKUs; update existing ones when Shopify's productType changes."""
         import re
-        
+
+        existing_skus = mappings['existing_skus']
+        current_categories = mappings.get('categories', {})
+        mapping_sources = mappings.get('mapping_sources', {})
+
         new_skus = {}
-        
-        # Collect new SKUs from orders
+        shopify_updates = {}  # sku → new product_type from Shopify
+
         for order in orders:
             source = order.get('source_system')
             for item in order.get('items', []):
                 sku = item.get('sku')
-                if sku and sku not in existing_skus and sku not in new_skus:
+                if not sku:
+                    continue
+                product_type = item.get('product_category') or ''
+
+                if sku in existing_skus:
+                    # Shopify is authoritative — update if the mapping didn't come
+                    # from Shopify yet, or if Shopify's productType has changed.
+                    if (source == 'shopify'
+                            and product_type
+                            and product_type not in ('Uncategorized', 'Standard', '')
+                            and sku not in shopify_updates
+                            and (mapping_sources.get(sku) != 'shopify'
+                                 or current_categories.get(sku) != product_type)):
+                        shopify_updates[sku] = product_type
+                elif sku not in new_skus:
                     new_skus[sku] = {
                         'product_name': item.get('product_name'),
-                        'product_category': item.get('product_category'),
-                        'source': source
+                        'product_category': product_type,
+                        'source': source,
                     }
-        
+
+        # Apply Shopify productType corrections to existing mappings
+        if shopify_updates:
+            logger.info(f"Updating {len(shopify_updates)} Shopify category mappings")
+            for sku, product_type in shopify_updates.items():
+                category_group = CATEGORY_GROUPS.get(product_type, product_type)
+                db.query(CategoryMapping).filter(CategoryMapping.sku == sku).update({
+                    'standard_category': product_type,
+                    'category_group': category_group,
+                    'mapping_source': 'shopify',
+                    'confidence': 1.0,
+                })
+            db.commit()
+
         if not new_skus:
             return
         
@@ -576,7 +610,7 @@ class SalesSyncPipeline:
 
         # Auto-create mappings for unknown staff and SKUs
         self._create_staff_mappings(db, orders, set(mappings['staff_by_userid'].keys()))
-        self._create_sku_mappings(db, orders, mappings['existing_skus'])
+        self._create_sku_mappings(db, orders, mappings)
 
         # Reload mappings to include newly created ones
         mappings = self._load_mappings(db)

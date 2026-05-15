@@ -21,9 +21,26 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _run_migrations():
+    """Apply any column additions that create_all won't handle on existing tables."""
+    from database.config import engine
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR",
+        "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
+        "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
+        "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
+    ]
+    with engine.begin() as conn:
+        for sql in migrations:
+            conn.execute(text(sql))
+    logger.info("Migrations applied")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    _run_migrations()
     if settings.SCHEDULER_ENABLED:
         from scheduler import start_scheduler
         start_scheduler()

@@ -675,15 +675,15 @@ async def get_brands(
 
     def get_brand_data(d_filter, l_filter):
         return db.query(
-            SalesOrderItem.vendor.label('vendor'),
+            func.coalesce(func.nullif(SalesOrderItem.vendor, ''), '—').label('vendor'),
             func.sum(SalesOrderItem.line_total).label('revenue'),
             func.sum(SalesOrderItem.quantity).label('quantity'),
             func.count(func.distinct(SalesOrder.id)).label('orders'),
         ).join(SalesOrder).filter(
-            and_(d_filter, l_filter,
-                 SalesOrderItem.vendor.isnot(None),
-                 SalesOrderItem.vendor != '')
-        ).group_by(SalesOrderItem.vendor).order_by(
+            and_(d_filter, l_filter)
+        ).group_by(
+            func.coalesce(func.nullif(SalesOrderItem.vendor, ''), '—')
+        ).order_by(
             func.sum(SalesOrderItem.line_total).desc()
         ).all()
 

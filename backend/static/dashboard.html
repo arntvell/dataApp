@@ -545,6 +545,7 @@
                     </tbody>
                 </table>
             </div>
+            <p class="text-xs text-gray-400 mt-2 italic">Product revenue (item-level). Returns and order-level discounts are not attributed per category — KPI cards show net revenue.</p>
         </div>
 
         </div> <!-- end tab-categories -->
@@ -586,6 +587,7 @@
                     </tbody>
                 </table>
             </div>
+            <p class="text-xs text-gray-400 mt-2 italic">Product revenue (item-level). Returns and order-level discounts are not attributed per brand — KPI cards show net revenue.</p>
         </div>
         </div> <!-- end tab-brands -->
 
@@ -1187,7 +1189,7 @@
                         </tr>`;
                 }).join('') + `
                     ${totalRow}
-                        <td class="py-2 px-4">Total</td>
+                        <td class="py-2 px-4">Product revenue</td>
                         <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
                         <td class="text-right py-2 px-4 text-gray-500">${totPrevRev ? formatCurrency(totPrevRev) : '-'}</td>
                         <td class="text-right py-2 px-4">${revTot.formatted}</td>
@@ -1209,7 +1211,7 @@
                         </tr>`;
                 }).join('') + `
                     ${totalRow}
-                        <td class="py-2 px-4">Total</td>
+                        <td class="py-2 px-4">Product revenue</td>
                         <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
                         <td class="text-right py-2 px-4">${totQty}</td>
                         <td class="text-right py-2 px-4">${totOrd}</td>
@@ -1262,7 +1264,7 @@
                         </tr>`;
                 }).join('') + `
                     ${totalRowB}
-                        <td class="py-2 px-4">Total</td>
+                        <td class="py-2 px-4">Product revenue</td>
                         <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
                         <td class="text-right py-2 px-4 text-gray-500">${totPrevRev ? formatCurrency(totPrevRev) : '-'}</td>
                         <td class="text-right py-2 px-4">${revTot.formatted}</td>
@@ -1283,7 +1285,7 @@
                         </tr>`;
                 }).join('') + `
                     ${totalRowB}
-                        <td class="py-2 px-4">Total</td>
+                        <td class="py-2 px-4">Product revenue</td>
                         <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
                         <td class="text-right py-2 px-4">${totQty}</td>
                         <td class="text-right py-2 px-4">${totOrd}</td>
@@ -1648,7 +1650,7 @@
                     `;
                 }).join('') + `
                     ${totalRow}
-                        <td class="py-2 px-4">Total</td>
+                        <td class="py-2 px-4">Product revenue</td>
                         <td class="text-right py-2 px-4">${totQty}</td>
                         <td class="text-right py-2 px-4 text-gray-500">${totPrevQty || '-'}</td>
                         <td class="text-right py-2 px-4">${qtyTot.formatted}</td>
@@ -1669,7 +1671,7 @@
                     </tr>
                 `).join('') + `
                     ${totalRow}
-                        <td class="py-2 px-4">Total</td>
+                        <td class="py-2 px-4">Product revenue</td>
                         <td class="text-right py-2 px-4">${totQty}</td>
                         <td class="text-right py-2 px-4">${totOrd}</td>
                         <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>

@@ -759,6 +759,108 @@ async def get_vendors_list(db: Session = Depends(get_db)):
     return [v.vendor for v in vendors]
 
 
+@router.get("/stock-cancellations")
+async def get_stock_cancellations(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    """Orders cancelled due to lack of stock (Shopify cancelReason=INVENTORY), YTD by default."""
+    if start_date is None:
+        start_date = date(datetime.now().year, 1, 1)
+    if end_date is None:
+        end_date = date.today()
+
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+
+    orders = (
+        db.query(SalesOrder)
+        .filter(
+            SalesOrder.source_system == 'shopify',
+            SalesOrder.cancel_reason == 'INVENTORY',
+            SalesOrder.cancelled_at >= start_dt,
+            SalesOrder.cancelled_at <= end_dt,
+        )
+        .order_by(SalesOrder.cancelled_at.desc())
+        .all()
+    )
+
+    rows = [
+        {
+            'order_number': o.order_number,
+            'cancelled_at': o.cancelled_at.isoformat() if o.cancelled_at else None,
+            'total_amount': o.total_amount,
+            'total_refunded': o.total_refunded,
+            'location': o.location,
+            'status': o.status,
+        }
+        for o in orders
+    ]
+
+    return {
+        'period': {'start': start_date.isoformat(), 'end': end_date.isoformat()},
+        'order_count': len(rows),
+        'total_lost_revenue': sum(r['total_amount'] for r in rows),
+        'orders': rows,
+    }
+
+
+@router.get("/refunds-with-notes")
+async def get_refunds_with_notes(
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    """All YTD Shopify orders with REFUNDED/PARTIALLY_REFUNDED/VOIDED status or a cancel_reason,
+    returning order notes and any refund notes so staff can review."""
+    if start_date is None:
+        start_date = date(datetime.now().year, 1, 1)
+    if end_date is None:
+        end_date = date.today()
+
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+
+    from sqlalchemy import or_
+
+    orders = (
+        db.query(SalesOrder)
+        .filter(
+            SalesOrder.source_system == 'shopify',
+            SalesOrder.order_date >= start_dt,
+            SalesOrder.order_date <= end_dt,
+            or_(
+                SalesOrder.status.in_(['REFUNDED', 'PARTIALLY_REFUNDED', 'VOIDED']),
+                SalesOrder.cancel_reason.isnot(None),
+            )
+        )
+        .order_by(SalesOrder.order_date.desc())
+        .all()
+    )
+
+    rows = []
+    for o in orders:
+        refund_notes = [r.note for r in o.refunds if r.note]
+        rows.append({
+            'order_number': o.order_number,
+            'order_date': o.order_date.isoformat() if o.order_date else None,
+            'status': o.status,
+            'cancel_reason': o.cancel_reason,
+            'cancelled_at': o.cancelled_at.isoformat() if o.cancelled_at else None,
+            'total_amount': o.total_amount,
+            'total_refunded': o.total_refunded,
+            'order_note': o.note,
+            'refund_notes': refund_notes,
+        })
+
+    return {
+        'period': {'start': start_date.isoformat(), 'end': end_date.isoformat()},
+        'order_count': len(rows),
+        'orders': rows,
+    }
+
+
 @router.get("/sync-status")
 async def get_sync_status(db: Session = Depends(get_db)):
     """Get detailed sync status for all sources"""
@@ -806,12 +908,9 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """Trigger an incremental sync: Sitoo/Shopify sales, Cin7 wholesale orders, SameSystem worktime."""
+    """Trigger an incremental sync: Sitoo and Shopify sales only."""
     from pipelines.sales_sync import SalesSyncPipeline
-    from pipelines.stock_sync import StockSyncPipeline
-    from pipelines.budget_sync import BudgetSyncPipeline
     import os
-    import json
 
     sales_pipeline = SalesSyncPipeline({
         'sitoo': {
@@ -824,43 +923,91 @@ async def trigger_sync(
             'api_key': os.environ.get('SHOPIFY_API_KEY')
         }
     })
-    stock_pipeline = StockSyncPipeline({
-        'cin7': {
-            'account_id': os.environ.get('CIN7_ACCOUNT_ID'),
-            'api_key': os.environ.get('CIN7_API_KEY')
-        }
-    })
-    try:
-        departments = json.loads(os.environ.get('SAMESYSTEM_DEPARTMENTS', '{}'))
-    except Exception:
-        departments = {}
-    budget_pipeline = BudgetSyncPipeline({
-        'samesystem': {
-            'email': os.environ.get('SAMESYSTEM_EMAIL'),
-            'password': os.environ.get('SAMESYSTEM_PASSWORD'),
-            'departments': departments
-        }
-    })
 
     def run_sync():
         try:
             sales_pipeline.sync_incremental()
         except Exception as e:
             logger.error(f"Sales sync error: {e}")
-        try:
-            stock_pipeline.sync_wholesale_orders()
-        except Exception as e:
-            logger.error(f"Stock sync error: {e}")
-        try:
-            budget_pipeline.sync_worktime()
-        except Exception as e:
-            logger.error(f"Budget sync error: {e}")
 
     background_tasks.add_task(run_sync)
 
     return {
         "status": "started",
         "message": "Sync started in background. Refresh in a few moments to see updated data."
+    }
+
+
+@router.post("/sync-shopify")
+async def trigger_shopify_sync(
+    background_tasks: BackgroundTasks,
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
+):
+    """Trigger a Shopify-only sync. Defaults to YTD. Pass from_date/to_date to narrow the range."""
+    import os
+    from pipelines.sales_sync import SalesSyncPipeline
+
+    if from_date is None:
+        from_date = date(datetime.now().year, 1, 1)
+
+    from_dt = datetime.combine(from_date, datetime.min.time())
+    to_dt = datetime.combine(to_date, datetime.max.time()) if to_date else None
+
+    pipeline = SalesSyncPipeline({
+        'sitoo': {},
+        'shopify': {
+            'base_url': os.environ.get('SHOPIFY_BASE_URL'),
+            'api_key': os.environ.get('SHOPIFY_API_KEY'),
+        }
+    })
+
+    def run():
+        from database.config import SessionLocal
+        from database.models import SalesOrder
+        db = SessionLocal()
+        try:
+            pipeline._update_sync_status(db, 'shopify', sync_in_progress=True, last_error=None)
+            logger.info(f"Shopify sync: fetching orders from {from_dt} to {to_dt or 'now'}...")
+            batch_size = 250
+            cursor = None
+            has_next = True
+            saved = 0
+            while has_next:
+                result = pipeline.shopify.get_all_detailed_orders(
+                    from_date=from_dt, to_date=to_dt, batch_size=batch_size
+                )
+                # get_all_detailed_orders fetches all pages at once — save in chunks
+                pipeline._save_sales_orders(db, result)
+                saved += len(result)
+                logger.info(f"Shopify sync: saved {saved} orders so far")
+                has_next = False  # get_all_detailed_orders handles pagination internally
+
+            total = db.query(SalesOrder).filter(SalesOrder.source_system == 'shopify').count()
+            max_date = (
+                db.query(SalesOrder.order_date)
+                .filter(SalesOrder.source_system == 'shopify')
+                .order_by(SalesOrder.order_date.desc())
+                .first()
+            )
+            pipeline._update_sync_status(db, 'shopify',
+                sync_in_progress=False,
+                last_full_sync=datetime.now(),
+                last_order_date=max_date[0] if max_date else None,
+                total_orders_synced=total,
+                last_sync_orders_count=saved,
+            )
+            logger.info(f"Shopify sync complete: {saved} orders processed")
+        except Exception as e:
+            pipeline._update_sync_status(db, 'shopify', sync_in_progress=False, last_error=str(e))
+            logger.error(f"Shopify sync error: {e}")
+        finally:
+            db.close()
+
+    background_tasks.add_task(run)
+    return {
+        "status": "started",
+        "message": f"Shopify sync started from {from_date} to {to_date or 'today'} in background."
     }
 
 

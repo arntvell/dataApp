@@ -94,6 +94,9 @@ class SalesOrder(Base):
     
     # Status
     status = Column(String)  # PAID, PENDING, REFUNDED, etc.
+    cancel_reason = Column(String, nullable=True)  # Shopify: CUSTOMER, FRAUD, INVENTORY, DECLINED, STAFF, OTHER
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    note = Column(Text, nullable=True)  # Order-level note from Shopify
     payment_method = Column(String, nullable=True)  # Card, Cash, etc.
     
     # Customer info
@@ -128,6 +131,7 @@ class SalesRefund(Base):
 
     amount = Column(Float, default=0)  # Refund amount
     currency = Column(String, default='NOK')
+    note = Column(Text, nullable=True)  # Note added when processing the refund
     refund_date = Column(DateTime(timezone=True), index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

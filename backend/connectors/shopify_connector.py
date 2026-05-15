@@ -399,6 +399,9 @@ class ShopifyConnector(BaseConnector):
                             id
                             name
                             createdAt
+                            cancelReason
+                            cancelledAt
+                            note
                             displayFinancialStatus
                             returnStatus
                             totalPriceSet {{ shopMoney {{ amount currencyCode }} }}
@@ -409,6 +412,7 @@ class ShopifyConnector(BaseConnector):
                             refunds {{
                                 id
                                 createdAt
+                                note
                                 totalRefundedSet {{ shopMoney {{ amount currencyCode }} }}
                             }}
                             customer {{
@@ -493,6 +497,9 @@ class ShopifyConnector(BaseConnector):
                                 id
                                 name
                                 createdAt
+                                cancelReason
+                                cancelledAt
+                                note
                                 displayFinancialStatus
                                 returnStatus
                                 totalPriceSet {{ shopMoney {{ amount currencyCode }} }}
@@ -503,6 +510,7 @@ class ShopifyConnector(BaseConnector):
                                 refunds {{
                                     id
                                     createdAt
+                                    note
                                     totalRefundedSet {{ shopMoney {{ amount currencyCode }} }}
                                 }}
                                 customer {{
@@ -612,6 +620,12 @@ class ShopifyConnector(BaseConnector):
                 
                 # Map status
                 status = order.get('displayFinancialStatus', 'UNKNOWN')
+
+                # Cancellation info (INVENTORY = cancelled due to lack of stock)
+                cancel_reason = order.get('cancelReason')
+                cancelled_at_raw = order.get('cancelledAt')
+                cancelled_at = datetime.fromisoformat(cancelled_at_raw.replace('Z', '+00:00')) if cancelled_at_raw else None
+                order_note = order.get('note')
                 
                 # Build items
                 items = []
@@ -649,6 +663,7 @@ class ShopifyConnector(BaseConnector):
                             'source_id': str(refund.get('id')).split('/')[-1],
                             'amount': refund_amount,
                             'currency': refund_currency,
+                            'note': refund.get('note'),
                             'refund_date': refund_date,
                         })
 
@@ -666,6 +681,9 @@ class ShopifyConnector(BaseConnector):
                     'total_refunded': total_refunded,
                     'currency': currency,
                     'status': status,
+                    'cancel_reason': cancel_reason,
+                    'cancelled_at': cancelled_at,
+                    'note': order_note,
                     'payment_method': 'Online',
                     'customer_source_id': str(customer.get('id')).split('/')[-1] if customer.get('id') else None,
                     'is_new_customer': is_new_customer,

@@ -52,6 +52,24 @@ def _run_migrations():
                   AND category_group IS DISTINCT FROM :group
             """), {"group": group, "std_cat": std_cat})
 
+        # Backfill total_discount for Sitoo orders where it was previously hardcoded to 0.
+        # moneydiscount is stored ex-VAT per unit in sales_order_items.discount_amount;
+        # multiply by 1.25 to produce an inc-VAT figure consistent with total_amount.
+        conn.execute(text("""
+            UPDATE sales_orders so
+            SET total_discount = subq.order_discount
+            FROM (
+                SELECT order_id,
+                       SUM(discount_amount * quantity) * 1.25 AS order_discount
+                FROM sales_order_items
+                GROUP BY order_id
+            ) subq
+            WHERE so.id = subq.order_id
+              AND so.source_system = 'sitoo'
+              AND so.total_discount = 0
+              AND subq.order_discount > 0
+        """))
+
     logger.info("Migrations applied")
 
 

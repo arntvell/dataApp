@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, cast, Date
+from sqlalchemy import func, and_, cast, Date, case
 from typing import Optional, List
 from datetime import datetime, date, timedelta
 from database.config import get_db
@@ -1319,6 +1319,7 @@ async def get_daily_revenue(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
     group_by: str = Query(default="day", description="day, week, month, quarter"),
+    location: str = Query(default="All"),
     db: Session = Depends(get_db),
 ):
     """Revenue grouped by day/week/month/quarter with last-year overlay."""
@@ -1338,15 +1339,17 @@ async def get_daily_revenue(
 
     period_expr = func.date_trunc(trunc, SalesOrder.order_date)
 
+    loc_filter = get_location_filter(location)
+
     current = db.query(
         period_expr.label("period"),
         func.sum(SalesOrder.total_amount).label("revenue"),
-    ).filter(date_filter).group_by(period_expr).order_by(period_expr).all()
+    ).filter(and_(date_filter, loc_filter)).group_by(period_expr).order_by(period_expr).all()
 
     ly = db.query(
         period_expr.label("period"),
         func.sum(SalesOrder.total_amount).label("revenue"),
-    ).filter(ly_filter).group_by(period_expr).order_by(period_expr).all()
+    ).filter(and_(ly_filter, loc_filter)).group_by(period_expr).order_by(period_expr).all()
 
     # Budget grouped by the same truncation
     budget_period_expr = func.date_trunc(trunc, SameSystemBudget.date)
@@ -1384,6 +1387,7 @@ async def get_daily_revenue(
 async def get_revenue_by_weekday(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
+    location: str = Query(default="All"),
     db: Session = Depends(get_db),
 ):
     """Average revenue by day of week split by Online vs Stores (Monday–Sunday)."""
@@ -1393,12 +1397,14 @@ async def get_revenue_by_weekday(
         end_date = start_date
 
     date_filter = get_date_filter(start_date, end_date)
+    loc_filter = get_location_filter(location)
+    combined = and_(date_filter, loc_filter)
 
     # Day counts per weekday (used for averaging, regardless of channel)
     day_counts = db.query(
         func.extract("dow", SalesOrder.order_date).label("weekday"),
         func.count(func.distinct(cast(SalesOrder.order_date, Date))).label("day_count"),
-    ).filter(date_filter).group_by(
+    ).filter(combined).group_by(
         func.extract("dow", SalesOrder.order_date)
     ).all()
     day_count_map = {int(r.weekday): int(r.day_count) for r in day_counts}
@@ -1408,7 +1414,7 @@ async def get_revenue_by_weekday(
         func.extract("dow", SalesOrder.order_date).label("weekday"),
         SalesOrder.source_system,
         func.sum(SalesOrder.total_amount).label("total_revenue"),
-    ).filter(date_filter).group_by(
+    ).filter(combined).group_by(
         func.extract("dow", SalesOrder.order_date),
         SalesOrder.source_system,
     ).all()
@@ -1444,6 +1450,7 @@ async def get_revenue_by_weekday(
 async def get_running_total(
     start_date: date = Query(default=None),
     end_date: date = Query(default=None),
+    location: str = Query(default="All"),
     db: Session = Depends(get_db),
 ):
     """Cumulative revenue vs cumulative budget for the selected period."""
@@ -1455,11 +1462,12 @@ async def get_running_total(
         end_date = start_date
 
     date_filter = get_date_filter(start_date, end_date)
+    loc_filter = get_location_filter(location)
 
     daily = db.query(
         cast(SalesOrder.order_date, Date).label("day"),
         func.sum(SalesOrder.total_amount).label("revenue"),
-    ).filter(date_filter).group_by(
+    ).filter(and_(date_filter, loc_filter)).group_by(
         cast(SalesOrder.order_date, Date)
     ).order_by(cast(SalesOrder.order_date, Date)).all()
 
@@ -1497,3 +1505,355 @@ async def get_running_total(
         current += timedelta(days=1)
 
     return result
+
+
+@router.get("/discount-analysis")
+async def get_discount_analysis(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    db: Session = Depends(get_db),
+):
+    """Discount breakdown: share of orders discounted, total discount value, revenue split."""
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    date_filter = get_date_filter(start_date, end_date)
+    loc_filter = get_location_filter(location)
+    combined = and_(date_filter, loc_filter)
+
+    totals = db.query(
+        func.count(SalesOrder.id).label("total_orders"),
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label("total_revenue"),
+        func.coalesce(func.sum(SalesOrder.total_discount), 0).label("total_discount"),
+    ).filter(combined).first()
+
+    discounted = db.query(
+        func.count(SalesOrder.id).label("count"),
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label("revenue"),
+        func.coalesce(func.sum(SalesOrder.total_discount), 0).label("discount"),
+    ).filter(combined, SalesOrder.total_discount > 0).first()
+
+    total_orders = int(totals.total_orders or 0)
+    total_revenue = float(totals.total_revenue or 0)
+    total_discount = float(totals.total_discount or 0)
+
+    discounted_orders = int(discounted.count or 0)
+    discounted_revenue = float(discounted.revenue or 0)
+    discounted_discount_sum = float(discounted.discount or 0)
+
+    full_price_revenue = total_revenue - discounted_revenue
+    pct_orders_discounted = round(discounted_orders / total_orders * 100, 1) if total_orders else 0
+
+    avg_discount_pct = round(
+        discounted_discount_sum / (discounted_revenue + discounted_discount_sum) * 100, 1
+    ) if (discounted_revenue + discounted_discount_sum) > 0 else 0
+
+    return {
+        "total_orders": total_orders,
+        "discounted_orders": discounted_orders,
+        "pct_orders_discounted": pct_orders_discounted,
+        "total_discount_value": total_discount,
+        "discounted_revenue": discounted_revenue,
+        "full_price_revenue": full_price_revenue,
+        "avg_discount_pct": avg_discount_pct,
+        "total_revenue": total_revenue,
+    }
+
+
+@router.get("/discount-analysis/by-location")
+async def get_discount_by_location(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    db: Session = Depends(get_db),
+):
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    combined = and_(get_date_filter(start_date, end_date), get_location_filter(location))
+
+    rows = db.query(
+        SalesOrder.location,
+        func.count(SalesOrder.id).label("total_orders"),
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label("total_revenue"),
+        func.coalesce(func.sum(SalesOrder.total_discount), 0).label("total_discount"),
+        func.count(SalesOrder.id).filter(SalesOrder.total_discount > 0).label("discounted_orders"),
+        func.coalesce(func.sum(SalesOrder.total_amount).filter(SalesOrder.total_discount > 0), 0).label("discounted_revenue"),
+        func.coalesce(func.sum(SalesOrder.total_discount).filter(SalesOrder.total_discount > 0), 0).label("discounted_discount_sum"),
+    ).filter(combined).group_by(SalesOrder.location).order_by(func.sum(SalesOrder.total_amount).desc()).all()
+
+    result = []
+    for r in rows:
+        total_orders = int(r.total_orders or 0)
+        discounted_orders = int(r.discounted_orders or 0)
+        total_revenue = float(r.total_revenue or 0)
+        discounted_revenue = float(r.discounted_revenue or 0)
+        disc_sum = float(r.discounted_discount_sum or 0)
+        pct_orders = round(discounted_orders / total_orders * 100, 1) if total_orders else 0
+        pct_revenue = round(discounted_revenue / total_revenue * 100, 1) if total_revenue else 0
+        avg_disc_pct = round(disc_sum / (discounted_revenue + disc_sum) * 100, 1) if (discounted_revenue + disc_sum) > 0 else 0
+        result.append({
+            "location": r.location or "Unknown",
+            "total_orders": total_orders,
+            "discounted_orders": discounted_orders,
+            "pct_orders_discounted": pct_orders,
+            "total_revenue": total_revenue,
+            "discounted_revenue": discounted_revenue,
+            "total_discount": float(r.total_discount or 0),
+            "pct_revenue_discounted": pct_revenue,
+            "avg_discount_pct": avg_disc_pct,
+        })
+    return result
+
+
+@router.get("/discount-analysis/by-category")
+async def get_discount_by_category(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    db: Session = Depends(get_db),
+):
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    combined = and_(get_date_filter(start_date, end_date), get_location_filter(location))
+
+    cat_label = func.coalesce(
+        CategoryMapping.category_group,
+        CategoryMapping.standard_category,
+        SalesOrderItem.product_category,
+        "Uncategorized"
+    ).label("category")
+
+    rows = db.query(
+        cat_label,
+        func.count(SalesOrderItem.id).label("total_lines"),
+        func.coalesce(func.sum(SalesOrderItem.line_total), 0).label("total_revenue"),
+        func.count(SalesOrderItem.id).filter(SalesOrderItem.discount_amount > 0).label("discounted_lines"),
+        func.coalesce(func.sum(SalesOrderItem.line_total).filter(SalesOrderItem.discount_amount > 0), 0).label("discounted_revenue"),
+        func.coalesce(func.sum(SalesOrderItem.discount_amount * SalesOrderItem.quantity).filter(SalesOrderItem.discount_amount > 0), 0).label("discount_value"),
+    ).join(SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+    ).outerjoin(CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
+    ).filter(combined
+    ).group_by(
+        func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category, "Uncategorized")
+    ).order_by(func.sum(SalesOrderItem.line_total).desc()).all()
+
+    result = []
+    for r in rows:
+        total_lines = int(r.total_lines or 0)
+        discounted_lines = int(r.discounted_lines or 0)
+        total_revenue = float(r.total_revenue or 0)
+        discounted_revenue = float(r.discounted_revenue or 0)
+        disc_val = float(r.discount_value or 0)
+        pct_lines = round(discounted_lines / total_lines * 100, 1) if total_lines else 0
+        pct_revenue = round(discounted_revenue / total_revenue * 100, 1) if total_revenue else 0
+        avg_disc_pct = round(disc_val / (discounted_revenue + disc_val) * 100, 1) if (discounted_revenue + disc_val) > 0 else 0
+        result.append({
+            "category": r.category,
+            "total_lines": total_lines,
+            "discounted_lines": discounted_lines,
+            "pct_lines_discounted": pct_lines,
+            "total_revenue": total_revenue,
+            "discounted_revenue": discounted_revenue,
+            "pct_revenue_discounted": pct_revenue,
+            "avg_discount_pct": avg_disc_pct,
+        })
+    return result
+
+
+@router.get("/discount-analysis/by-depth")
+async def get_discount_by_depth(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    db: Session = Depends(get_db),
+):
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    combined = and_(get_date_filter(start_date, end_date), get_location_filter(location))
+
+    pct_expr = (
+        SalesOrder.total_discount /
+        (SalesOrder.total_amount + SalesOrder.total_discount) * 100
+    )
+    bucket_expr = case(
+        (pct_expr < 10, 1),
+        (pct_expr < 25, 2),
+        (pct_expr < 50, 3),
+        else_=4,
+    )
+
+    rows = db.query(
+        bucket_expr.label("bucket"),
+        func.count(SalesOrder.id).label("order_count"),
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label("revenue"),
+        func.coalesce(func.sum(SalesOrder.total_discount), 0).label("discount_value"),
+    ).filter(
+        combined,
+        SalesOrder.total_discount > 0,
+        (SalesOrder.total_amount + SalesOrder.total_discount) > 0,
+    ).group_by(bucket_expr).order_by(bucket_expr).all()
+
+    BUCKET_LABELS = {1: "0–10%", 2: "10–25%", 3: "25–50%", 4: "≥50%"}
+    bucket_map = {r.bucket: r for r in rows}
+    return [
+        {
+            "bucket": BUCKET_LABELS[i],
+            "order_count": int(bucket_map[i].order_count) if i in bucket_map else 0,
+            "revenue": float(bucket_map[i].revenue) if i in bucket_map else 0,
+            "discount_value": float(bucket_map[i].discount_value) if i in bucket_map else 0,
+        }
+        for i in [1, 2, 3, 4]
+    ]
+
+
+@router.get("/discount-analysis/trend")
+async def get_discount_trend(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All"),
+    group_by: str = Query(default="week"),
+    db: Session = Depends(get_db),
+):
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    trunc = group_by if group_by in ("day", "week", "month", "quarter") else "week"
+    combined = and_(get_date_filter(start_date, end_date), get_location_filter(location))
+    period_expr = func.date_trunc(trunc, SalesOrder.order_date)
+
+    rows = db.query(
+        period_expr.label("period"),
+        func.count(SalesOrder.id).label("total_orders"),
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label("total_revenue"),
+        func.count(SalesOrder.id).filter(SalesOrder.total_discount > 0).label("discounted_orders"),
+        func.coalesce(func.sum(SalesOrder.total_amount).filter(SalesOrder.total_discount > 0), 0).label("discounted_revenue"),
+        func.coalesce(func.sum(SalesOrder.total_discount), 0).label("total_discount"),
+    ).filter(combined).group_by(period_expr).order_by(period_expr).all()
+
+    return [
+        {
+            "period": r.period.date().isoformat(),
+            "total_orders": int(r.total_orders or 0),
+            "total_revenue": float(r.total_revenue or 0),
+            "discounted_orders": int(r.discounted_orders or 0),
+            "discounted_revenue": float(r.discounted_revenue or 0),
+            "total_discount": float(r.total_discount or 0),
+            "pct_revenue_discounted": round(float(r.discounted_revenue or 0) / float(r.total_revenue or 1) * 100, 1),
+            "pct_orders_discounted": round(int(r.discounted_orders or 0) / int(r.total_orders or 1) * 100, 1),
+        }
+        for r in rows
+    ]
+
+
+@router.get("/discount-analysis/location-detail")
+async def get_discount_location_detail(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(..., description="Specific location name"),
+    db: Session = Depends(get_db),
+):
+    """Per-product and per-staff discount breakdown for a single location."""
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    date_filter = get_date_filter(start_date, end_date)
+    loc_exact = SalesOrder.location == location
+
+    cat_label = func.coalesce(
+        CategoryMapping.category_group,
+        CategoryMapping.standard_category,
+        SalesOrderItem.product_category,
+        "Uncategorized"
+    )
+
+    # Products: items with discount_amount > 0 at this location
+    product_rows = db.query(
+        SalesOrderItem.product_name,
+        SalesOrderItem.sku,
+        cat_label.label("category"),
+        func.count(SalesOrderItem.id).label("times_discounted"),
+        func.coalesce(func.sum(SalesOrderItem.quantity), 0).label("total_qty"),
+        func.coalesce(
+            func.sum(SalesOrderItem.discount_amount * SalesOrderItem.quantity), 0
+        ).label("total_discount_value"),
+        func.coalesce(func.sum(SalesOrderItem.line_total), 0).label("discounted_revenue"),
+        func.avg(
+            SalesOrderItem.discount_amount / func.nullif(SalesOrderItem.unit_price, 0) * 100
+        ).label("avg_discount_pct"),
+    ).join(SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+    ).outerjoin(CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
+    ).filter(
+        date_filter,
+        loc_exact,
+        SalesOrderItem.discount_amount > 0,
+        SalesOrderItem.unit_price > 0,
+    ).group_by(
+        SalesOrderItem.product_name,
+        SalesOrderItem.sku,
+        cat_label,
+    ).order_by(
+        func.sum(SalesOrderItem.discount_amount * SalesOrderItem.quantity).desc()
+    ).limit(100).all()
+
+    products = [
+        {
+            "product_name": r.product_name or "Unknown",
+            "sku": r.sku or "",
+            "category": r.category,
+            "times_discounted": int(r.times_discounted or 0),
+            "total_qty": int(r.total_qty or 0),
+            "total_discount_value": float(r.total_discount_value or 0),
+            "discounted_revenue": float(r.discounted_revenue or 0),
+            "avg_discount_pct": round(float(r.avg_discount_pct or 0), 1),
+        }
+        for r in product_rows
+    ]
+
+    # Staff: orders with total_discount > 0 at this location, grouped by staff
+    staff_rows = db.query(
+        SalesOrder.staff_name,
+        func.count(SalesOrder.id).label("discounted_orders"),
+        func.coalesce(func.sum(SalesOrder.total_discount), 0).label("total_discount_given"),
+        func.coalesce(func.sum(SalesOrder.total_amount), 0).label("total_revenue_on_disc_orders"),
+        func.avg(
+            SalesOrder.total_discount /
+            func.nullif(SalesOrder.total_amount + SalesOrder.total_discount, 0) * 100
+        ).label("avg_discount_pct"),
+    ).filter(
+        date_filter,
+        loc_exact,
+        SalesOrder.total_discount > 0,
+        SalesOrder.staff_name.isnot(None),
+        SalesOrder.staff_name != "",
+    ).group_by(SalesOrder.staff_name
+    ).order_by(func.sum(SalesOrder.total_discount).desc()
+    ).all()
+
+    staff = [
+        {
+            "staff_name": r.staff_name,
+            "discounted_orders": int(r.discounted_orders or 0),
+            "total_discount_given": float(r.total_discount_given or 0),
+            "total_revenue_on_disc_orders": float(r.total_revenue_on_disc_orders or 0),
+            "avg_discount_pct": round(float(r.avg_discount_pct or 0), 1),
+        }
+        for r in staff_rows
+    ]
+
+    return {"location": location, "products": products, "staff": staff}

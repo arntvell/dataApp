@@ -594,7 +594,8 @@ class SitooConnector(BaseConnector):
                     'staff_userid': staff_userid,  # Store GUID for future mapping
                     'staff_name': None,  # Will be enriched by pipeline
                     'subtotal': subtotal,
-                    'total_discount': 0,  # Calculate from items if needed
+                    # moneydiscount is ex-VAT per unit; multiply by 1.25 to match inc-VAT revenue figures
+                    'total_discount': sum(i['discount_amount'] * i['quantity'] for i in items) * 1.25,
                     'total_amount': total,
                     'total_refunded': 0,
                     'currency': order.get('currencycode', 'NOK'),

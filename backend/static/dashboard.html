@@ -135,6 +135,14 @@
         <!-- TAB: Sales -->
         <div id="tab-sales">
 
+        <!-- Sales tab location filter -->
+        <div class="flex items-center gap-3 mb-5">
+            <label class="text-sm font-medium text-gray-600">Location:</label>
+            <select id="salesLocationSelect" onchange="onSalesLocationChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-36">
+                <!-- Options populated by JS -->
+            </select>
+        </div>
+
         <!-- Daily Revenue Trend -->
         <div class="card mb-6">
             <div class="flex flex-wrap justify-between items-center mb-5 gap-3">
@@ -220,6 +228,135 @@
                 </div>
             </div>
 
+        </div>
+
+        <!-- Discount Analysis -->
+        <div class="card mb-8">
+            <h2 class="text-xl font-semibold mb-1">Discount Analysis</h2>
+            <p class="text-xs text-gray-400 mb-5">Share of revenue sold at a discount vs full price in the selected period</p>
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-6" id="discountKpis">
+                <div class="text-center"><div class="text-2xl font-bold text-gray-800" id="disc-pct-orders">—</div><div class="text-xs text-gray-500 mt-1">% Orders discounted</div></div>
+                <div class="text-center"><div class="text-2xl font-bold text-gray-800" id="disc-orders">—</div><div class="text-xs text-gray-500 mt-1">Discounted orders</div></div>
+                <div class="text-center"><div class="text-2xl font-bold text-gray-800" id="disc-total-discount">—</div><div class="text-xs text-gray-500 mt-1">Total discount value</div></div>
+                <div class="text-center"><div class="text-2xl font-bold text-gray-800" id="disc-avg-pct">—</div><div class="text-xs text-gray-500 mt-1">Avg discount %</div></div>
+                <div class="text-center"><div class="text-2xl font-bold text-green-600" id="disc-full-price">—</div><div class="text-xs font-medium text-green-500 mt-0.5" id="disc-full-price-pct">—</div><div class="text-xs text-gray-500 mt-0.5">Full-price revenue</div></div>
+                <div class="text-center"><div class="text-2xl font-bold text-amber-500" id="disc-discounted">—</div><div class="text-xs font-medium text-amber-400 mt-0.5" id="disc-discounted-pct">—</div><div class="text-xs text-gray-500 mt-0.5">Discounted revenue</div></div>
+            </div>
+            <div class="h-4 rounded-full overflow-hidden bg-gray-100 w-full" id="discountBar" title="">
+                <div id="discountBarFill" class="h-full bg-green-500 float-left transition-all duration-500" style="width:0%"></div>
+                <div id="discountBarFill2" class="h-full bg-amber-400 float-left transition-all duration-500" style="width:0%"></div>
+            </div>
+            <div class="flex gap-6 mt-2 text-xs text-gray-500">
+                <span><span class="inline-block w-3 h-3 rounded-sm bg-green-500 mr-1"></span>Full price</span>
+                <span><span class="inline-block w-3 h-3 rounded-sm bg-amber-400 mr-1"></span>Discounted</span>
+            </div>
+
+            <!-- Drill-down section -->
+            <div class="mt-6 pt-5 border-t border-gray-100">
+                <div class="flex flex-wrap gap-2 mb-4">
+                    <button id="disc-tab-location" onclick="setDiscountTab('location')" class="px-3 py-1.5 text-sm rounded-lg font-medium bg-blue-600 text-white transition">By Location</button>
+                    <button id="disc-tab-category" onclick="setDiscountTab('category')" class="px-3 py-1.5 text-sm rounded-lg font-medium bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition">By Category</button>
+                    <button id="disc-tab-depth"    onclick="setDiscountTab('depth')"    class="px-3 py-1.5 text-sm rounded-lg font-medium bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition">Discount Depth</button>
+                    <button id="disc-tab-trend"    onclick="setDiscountTab('trend')"    class="px-3 py-1.5 text-sm rounded-lg font-medium bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition">Over Time</button>
+                    <!-- group-by for trend, hidden unless trend tab is active -->
+                    <div id="disc-trend-groupby" class="hidden flex gap-1 ml-2">
+                        <button id="disc-tg-week"  onclick="setDiscountTrendGroup('week')"    class="px-2.5 py-1.5 text-xs rounded-lg bg-blue-600 text-white border transition">Week</button>
+                        <button id="disc-tg-month" onclick="setDiscountTrendGroup('month')"   class="px-2.5 py-1.5 text-xs rounded-lg bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition">Month</button>
+                    </div>
+                </div>
+
+                <!-- Location table -->
+                <div id="disc-panel-location">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                                <th class="w-6 py-2 px-3"></th>
+                                <th class="text-left py-2 px-3">Location</th>
+                                <th class="text-right py-2 px-3">Orders</th>
+                                <th class="text-right py-2 px-3">Discounted</th>
+                                <th class="text-right py-2 px-3">% Orders</th>
+                                <th class="text-right py-2 px-3">Discount value</th>
+                                <th class="text-right py-2 px-3">Disc. revenue</th>
+                                <th class="text-right py-2 px-3">% Revenue</th>
+                                <th class="text-right py-2 px-3">Avg disc %</th>
+                            </tr></thead>
+                            <tbody id="disc-location-tbody"><tr><td colspan="9" class="py-4 text-center text-gray-400">Loading…</td></tr></tbody>
+                        </table>
+                    </div>
+                    <!-- Location detail panel (expands below table when a row is clicked) -->
+                    <div id="disc-location-detail" class="hidden mt-3 border border-blue-100 rounded-xl bg-blue-50/40 p-4">
+                        <div class="flex justify-between items-center mb-3">
+                            <h3 class="font-semibold text-gray-800 text-sm" id="disc-detail-title">—</h3>
+                            <button onclick="closeLocationDetail()" class="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
+                        </div>
+                        <!-- Sub-tabs -->
+                        <div class="flex gap-2 mb-3">
+                            <button id="disc-detail-tab-products" onclick="setLocationDetailTab('products')"
+                                class="px-3 py-1 text-xs rounded-lg font-medium bg-blue-600 text-white transition">Products</button>
+                            <button id="disc-detail-tab-staff" onclick="setLocationDetailTab('staff')"
+                                class="px-3 py-1 text-xs rounded-lg font-medium bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition">Staff</button>
+                        </div>
+                        <!-- Products sub-panel -->
+                        <div id="disc-detail-panel-products" class="overflow-x-auto">
+                            <table class="w-full text-xs">
+                                <thead><tr class="border-b bg-white/60 text-gray-500 uppercase tracking-wide">
+                                    <th class="text-left py-2 px-2">Product</th>
+                                    <th class="text-left py-2 px-2">SKU</th>
+                                    <th class="text-left py-2 px-2">Category</th>
+                                    <th class="text-right py-2 px-2">Times disc.</th>
+                                    <th class="text-right py-2 px-2">Qty</th>
+                                    <th class="text-right py-2 px-2">Total disc. value</th>
+                                    <th class="text-right py-2 px-2">Disc. revenue</th>
+                                    <th class="text-right py-2 px-2">Avg disc %</th>
+                                </tr></thead>
+                                <tbody id="disc-detail-products-tbody"><tr><td colspan="8" class="py-3 text-center text-gray-400">Loading…</td></tr></tbody>
+                            </table>
+                        </div>
+                        <!-- Staff sub-panel -->
+                        <div id="disc-detail-panel-staff" class="overflow-x-auto hidden">
+                            <table class="w-full text-xs">
+                                <thead><tr class="border-b bg-white/60 text-gray-500 uppercase tracking-wide">
+                                    <th class="text-left py-2 px-2">Staff</th>
+                                    <th class="text-right py-2 px-2">Disc. orders</th>
+                                    <th class="text-right py-2 px-2">Total disc. given</th>
+                                    <th class="text-right py-2 px-2">Revenue on disc. orders</th>
+                                    <th class="text-right py-2 px-2">Avg disc %</th>
+                                </tr></thead>
+                                <tbody id="disc-detail-staff-tbody"><tr><td colspan="5" class="py-3 text-center text-gray-400">Loading…</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Category table -->
+                <div id="disc-panel-category" class="hidden">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                                <th class="text-left py-2 px-3">Category</th>
+                                <th class="text-right py-2 px-3">Line items</th>
+                                <th class="text-right py-2 px-3">Discounted</th>
+                                <th class="text-right py-2 px-3">% Items</th>
+                                <th class="text-right py-2 px-3">Revenue</th>
+                                <th class="text-right py-2 px-3">Disc. revenue</th>
+                                <th class="text-right py-2 px-3">% Revenue</th>
+                                <th class="text-right py-2 px-3">Avg disc %</th>
+                            </tr></thead>
+                            <tbody id="disc-category-tbody"><tr><td colspan="8" class="py-4 text-center text-gray-400">Loading…</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Depth chart -->
+                <div id="disc-panel-depth" class="hidden">
+                    <div class="h-52"><canvas id="discountDepthChart"></canvas></div>
+                </div>
+
+                <!-- Trend chart -->
+                <div id="disc-panel-trend" class="hidden">
+                    <div class="h-64"><canvas id="discountTrendChart"></canvas></div>
+                </div>
+            </div>
         </div>
 
         </div> <!-- end tab-sales -->
@@ -565,6 +702,13 @@
         let currentStandardCategory = null;
         let currentBrand = null;
         let brandsLoaded = false;
+        let currentSalesLocation = 'All';
+        let currentDiscountTab = 'location';
+        let currentDiscountTrendGroup = 'week';
+        let discountDepthChartObj = null;
+        let discountTrendChartObj = null;
+        let currentLocationDetailTab = 'products';
+        let openedLocationDetail = null;
 
         // Format currency
         function formatCurrency(value) {
@@ -1469,11 +1613,14 @@
 
         // Populate all filter dropdowns
         function populateFilterDropdowns() {
+            // Sales tab location filter
+            populateDropdown('salesLocationSelect', locationsList, currentSalesLocation);
+
             // Product filters
             populateDropdown('productLocationSelect', locationsList);
             populateDropdown('productCategorySelect', categoriesList);
             populateDropdown('productVendorSelect', vendorsList);
-            
+
             // Category filters
             populateDropdown('categoryLocationSelect', locationsList);
             populateDropdown('categoryVendorSelect', vendorsList);
@@ -1698,23 +1845,387 @@
 
         async function fetchDailyRevenue() {
             try {
-                const r = await fetch(`${API_BASE}/revenue/daily?start_date=${currentStartDate}&end_date=${currentEndDate}&group_by=${currentTrendGroupBy}`);
+                const r = await fetch(`${API_BASE}/revenue/daily?start_date=${currentStartDate}&end_date=${currentEndDate}&group_by=${currentTrendGroupBy}&location=${encodeURIComponent(currentSalesLocation)}`);
                 return await r.json();
             } catch (e) { console.error('Error fetching daily revenue:', e); return []; }
         }
 
         async function fetchWeekdayRevenue() {
             try {
-                const r = await fetch(`${API_BASE}/revenue/by-weekday?start_date=${currentStartDate}&end_date=${currentEndDate}`);
+                const r = await fetch(`${API_BASE}/revenue/by-weekday?start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(currentSalesLocation)}`);
                 return await r.json();
             } catch (e) { console.error('Error fetching weekday revenue:', e); return []; }
         }
 
         async function fetchRunningTotal() {
             try {
-                const r = await fetch(`${API_BASE}/revenue/running-total?start_date=${currentStartDate}&end_date=${currentEndDate}`);
+                const r = await fetch(`${API_BASE}/revenue/running-total?start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(currentSalesLocation)}`);
                 return await r.json();
             } catch (e) { console.error('Error fetching running total:', e); return []; }
+        }
+
+        async function fetchDiscountAnalysis() {
+            try {
+                const r = await fetch(`${API_BASE}/discount-analysis?start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(currentSalesLocation)}`);
+                return await r.json();
+            } catch (e) { console.error('Error fetching discount analysis:', e); return null; }
+        }
+
+        function updateDiscountCard(data) {
+            if (!data) return;
+            document.getElementById('disc-pct-orders').textContent = data.pct_orders_discounted + '%';
+            document.getElementById('disc-orders').textContent = data.discounted_orders.toLocaleString('nb-NO');
+            document.getElementById('disc-total-discount').textContent = formatCurrency(data.total_discount_value);
+            document.getElementById('disc-avg-pct').textContent = data.avg_discount_pct + '%';
+            document.getElementById('disc-full-price').textContent = formatCurrency(data.full_price_revenue);
+            document.getElementById('disc-discounted').textContent = formatCurrency(data.discounted_revenue);
+            const total = data.total_revenue || 1;
+            const fullPct = Math.round(data.full_price_revenue / total * 100);
+            const discPct = Math.round(data.discounted_revenue / total * 100);
+            document.getElementById('disc-full-price-pct').textContent = fullPct + '% of revenue';
+            document.getElementById('disc-discounted-pct').textContent = discPct + '% of revenue';
+            document.getElementById('discountBarFill').style.width = fullPct + '%';
+            document.getElementById('discountBarFill2').style.width = discPct + '%';
+            document.getElementById('discountBar').title =
+                `Full price: ${fullPct}% | Discounted: ${discPct}%`;
+        }
+
+        function onSalesLocationChange() {
+            currentSalesLocation = document.getElementById('salesLocationSelect')?.value || 'All';
+            closeLocationDetail();
+            refreshSalesCharts();
+        }
+
+        // ============== Discount Drill-down ==============
+
+        function setDiscountTab(tab) {
+            currentDiscountTab = tab;
+            const tabs = ['location', 'category', 'depth', 'trend'];
+            tabs.forEach(t => {
+                const btn = document.getElementById('disc-tab-' + t);
+                const panel = document.getElementById('disc-panel-' + t);
+                const active = t === tab;
+                if (btn) {
+                    btn.className = active
+                        ? 'px-3 py-1.5 text-sm rounded-lg font-medium bg-blue-600 text-white transition'
+                        : 'px-3 py-1.5 text-sm rounded-lg font-medium bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition';
+                }
+                if (panel) panel.classList.toggle('hidden', !active);
+            });
+            const trendGb = document.getElementById('disc-trend-groupby');
+            if (trendGb) trendGb.classList.toggle('hidden', tab !== 'trend');
+            fetchAndRenderDiscountDrilldown();
+        }
+
+        function setDiscountTrendGroup(g) {
+            currentDiscountTrendGroup = g;
+            ['week', 'month'].forEach(t => {
+                const btn = document.getElementById('disc-tg-' + t);
+                if (!btn) return;
+                btn.className = t === g
+                    ? 'px-2.5 py-1.5 text-xs rounded-lg bg-blue-600 text-white border transition'
+                    : 'px-2.5 py-1.5 text-xs rounded-lg bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition';
+            });
+            fetchAndRenderDiscountDrilldown();
+        }
+
+        async function fetchAndRenderDiscountDrilldown() {
+            const base = `${API_BASE}/discount-analysis`;
+            const p = `start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(currentSalesLocation)}`;
+            try {
+                if (currentDiscountTab === 'location') {
+                    const data = await fetch(`${base}/by-location?${p}`).then(r => r.json());
+                    renderDiscountLocationTable(data);
+                } else if (currentDiscountTab === 'category') {
+                    const data = await fetch(`${base}/by-category?${p}`).then(r => r.json());
+                    renderDiscountCategoryTable(data);
+                } else if (currentDiscountTab === 'depth') {
+                    const data = await fetch(`${base}/by-depth?${p}`).then(r => r.json());
+                    renderDiscountDepthChart(data);
+                } else if (currentDiscountTab === 'trend') {
+                    const data = await fetch(`${base}/trend?${p}&group_by=${currentDiscountTrendGroup}`).then(r => r.json());
+                    renderDiscountTrendChart(data);
+                }
+            } catch (e) { console.error('Discount drilldown error:', e); }
+        }
+
+        function renderDiscountLocationTable(data) {
+            const tbody = document.getElementById('disc-location-tbody');
+            if (!data || !data.length) {
+                tbody.innerHTML = '<tr><td colspan="9" class="py-4 text-center text-gray-400">No data</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(r => {
+                const loc = r.location.replace(/'/g, "\\'");
+                const isOpen = openedLocationDetail === r.location;
+                return `
+                <tr class="border-b hover:bg-amber-50 cursor-pointer select-none transition-colors ${isOpen ? 'bg-amber-50' : ''}"
+                    onclick="toggleLocationDetail('${loc}')">
+                    <td class="py-2 px-3 text-gray-400 text-xs" id="disc-loc-chevron-${loc}">${isOpen ? '▼' : '▶'}</td>
+                    <td class="py-2 px-3 font-medium">${r.location}</td>
+                    <td class="text-right py-2 px-3">${r.total_orders.toLocaleString('nb-NO')}</td>
+                    <td class="text-right py-2 px-3">${r.discounted_orders.toLocaleString('nb-NO')}</td>
+                    <td class="text-right py-2 px-3">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-12 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
+                                <span class="block h-1.5 rounded-full bg-amber-400" style="width:${Math.min(r.pct_orders_discounted, 100)}%"></span>
+                            </span>
+                            ${r.pct_orders_discounted}%
+                        </span>
+                    </td>
+                    <td class="text-right py-2 px-3">${formatCurrency(r.total_discount)}</td>
+                    <td class="text-right py-2 px-3">${formatCurrency(r.discounted_revenue)}</td>
+                    <td class="text-right py-2 px-3">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-12 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
+                                <span class="block h-1.5 rounded-full bg-amber-400" style="width:${Math.min(r.pct_revenue_discounted, 100)}%"></span>
+                            </span>
+                            ${r.pct_revenue_discounted}%
+                        </span>
+                    </td>
+                    <td class="text-right py-2 px-3 font-medium text-amber-600">${r.avg_discount_pct}%</td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function toggleLocationDetail(location) {
+            if (openedLocationDetail === location) {
+                closeLocationDetail();
+                return;
+            }
+            openedLocationDetail = location;
+            currentLocationDetailTab = 'products';
+
+            const panel = document.getElementById('disc-location-detail');
+            panel.classList.remove('hidden');
+            document.getElementById('disc-detail-title').textContent = location + ' — Discounted items';
+
+            // Reset tab state
+            setLocationDetailTab('products', false);
+
+            // Show loading
+            document.getElementById('disc-detail-products-tbody').innerHTML =
+                '<tr><td colspan="8" class="py-3 text-center text-gray-400">Loading…</td></tr>';
+            document.getElementById('disc-detail-staff-tbody').innerHTML =
+                '<tr><td colspan="5" class="py-3 text-center text-gray-400">Loading…</td></tr>';
+
+            // Re-render table rows to update chevrons
+            const tbody = document.getElementById('disc-location-tbody');
+            tbody.querySelectorAll('tr').forEach(tr => {
+                const chevron = tr.querySelector('[id^="disc-loc-chevron-"]');
+                if (chevron) {
+                    const loc = chevron.id.replace('disc-loc-chevron-', '');
+                    chevron.textContent = loc === location ? '▼' : '▶';
+                    tr.classList.toggle('bg-amber-50', loc === location);
+                }
+            });
+
+            try {
+                const p = `start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(location)}`;
+                const data = await fetch(`${API_BASE}/discount-analysis/location-detail?${p}`).then(r => r.json());
+                renderLocationDetailProducts(data.products || []);
+                renderLocationDetailStaff(data.staff || []);
+            } catch (e) {
+                console.error('Location detail error:', e);
+                document.getElementById('disc-detail-products-tbody').innerHTML =
+                    '<tr><td colspan="8" class="py-3 text-center text-red-400">Failed to load</td></tr>';
+            }
+
+            // Scroll detail panel into view
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        function closeLocationDetail() {
+            openedLocationDetail = null;
+            document.getElementById('disc-location-detail').classList.add('hidden');
+            // Reset chevrons
+            document.getElementById('disc-location-tbody').querySelectorAll('[id^="disc-loc-chevron-"]').forEach(el => {
+                el.textContent = '▶';
+                el.closest('tr').classList.remove('bg-amber-50');
+            });
+        }
+
+        function setLocationDetailTab(tab, fetch = false) {
+            currentLocationDetailTab = tab;
+            ['products', 'staff'].forEach(t => {
+                const btn = document.getElementById('disc-detail-tab-' + t);
+                const panel = document.getElementById('disc-detail-panel-' + t);
+                const active = t === tab;
+                if (btn) btn.className = active
+                    ? 'px-3 py-1 text-xs rounded-lg font-medium bg-blue-600 text-white transition'
+                    : 'px-3 py-1 text-xs rounded-lg font-medium bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 transition';
+                if (panel) panel.classList.toggle('hidden', !active);
+            });
+        }
+
+        function renderLocationDetailProducts(products) {
+            const tbody = document.getElementById('disc-detail-products-tbody');
+            if (!products.length) {
+                tbody.innerHTML = '<tr><td colspan="8" class="py-3 text-center text-gray-400">No discounted items found</td></tr>';
+                return;
+            }
+            tbody.innerHTML = products.map(p => `
+                <tr class="border-b hover:bg-white/60">
+                    <td class="py-1.5 px-2 max-w-xs truncate" title="${p.product_name}">${p.product_name}</td>
+                    <td class="py-1.5 px-2 text-gray-500 font-mono">${p.sku}</td>
+                    <td class="py-1.5 px-2 text-gray-500">${p.category}</td>
+                    <td class="text-right py-1.5 px-2">${p.times_discounted}</td>
+                    <td class="text-right py-1.5 px-2">${p.total_qty}</td>
+                    <td class="text-right py-1.5 px-2 font-medium">${formatCurrency(p.total_discount_value)}</td>
+                    <td class="text-right py-1.5 px-2">${formatCurrency(p.discounted_revenue)}</td>
+                    <td class="text-right py-1.5 px-2 font-medium text-amber-600">${p.avg_discount_pct}%</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderLocationDetailStaff(staff) {
+            const tbody = document.getElementById('disc-detail-staff-tbody');
+            if (!staff.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="py-3 text-center text-gray-400">No staff discount data (Online orders have no staff)</td></tr>';
+                return;
+            }
+            tbody.innerHTML = staff.map(s => `
+                <tr class="border-b hover:bg-white/60">
+                    <td class="py-1.5 px-2 font-medium">${s.staff_name}</td>
+                    <td class="text-right py-1.5 px-2">${s.discounted_orders}</td>
+                    <td class="text-right py-1.5 px-2 font-medium">${formatCurrency(s.total_discount_given)}</td>
+                    <td class="text-right py-1.5 px-2">${formatCurrency(s.total_revenue_on_disc_orders)}</td>
+                    <td class="text-right py-1.5 px-2 font-medium text-amber-600">${s.avg_discount_pct}%</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderDiscountCategoryTable(data) {
+            const tbody = document.getElementById('disc-category-tbody');
+            if (!data || !data.length) {
+                tbody.innerHTML = '<tr><td colspan="8" class="py-4 text-center text-gray-400">No data</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.map(r => `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="py-2 px-3 font-medium">${r.category}</td>
+                    <td class="text-right py-2 px-3">${r.total_lines.toLocaleString('nb-NO')}</td>
+                    <td class="text-right py-2 px-3">${r.discounted_lines.toLocaleString('nb-NO')}</td>
+                    <td class="text-right py-2 px-3">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-12 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
+                                <span class="block h-1.5 rounded-full bg-amber-400" style="width:${Math.min(r.pct_lines_discounted, 100)}%"></span>
+                            </span>
+                            ${r.pct_lines_discounted}%
+                        </span>
+                    </td>
+                    <td class="text-right py-2 px-3">${formatCurrency(r.total_revenue)}</td>
+                    <td class="text-right py-2 px-3">${formatCurrency(r.discounted_revenue)}</td>
+                    <td class="text-right py-2 px-3">
+                        <span class="inline-flex items-center gap-1.5">
+                            <span class="w-12 bg-gray-100 rounded-full h-1.5 inline-block align-middle">
+                                <span class="block h-1.5 rounded-full bg-amber-400" style="width:${Math.min(r.pct_revenue_discounted, 100)}%"></span>
+                            </span>
+                            ${r.pct_revenue_discounted}%
+                        </span>
+                    </td>
+                    <td class="text-right py-2 px-3 font-medium text-amber-600">${r.avg_discount_pct}%</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderDiscountDepthChart(data) {
+            const ctx = document.getElementById('discountDepthChart');
+            if (!ctx) return;
+            if (discountDepthChartObj) discountDepthChartObj.destroy();
+            const labels = data.map(d => d.bucket);
+            const counts = data.map(d => d.order_count);
+            const revenues = data.map(d => d.revenue);
+            discountDepthChartObj = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Orders',
+                            data: counts,
+                            backgroundColor: ['#fde68a', '#fbbf24', '#f59e0b', '#d97706'],
+                            borderRadius: 4,
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Revenue',
+                            data: revenues,
+                            backgroundColor: ['rgba(251,191,36,0.25)', 'rgba(245,158,11,0.25)', 'rgba(217,119,6,0.25)', 'rgba(180,83,9,0.25)'],
+                            borderColor: ['#fbbf24', '#f59e0b', '#d97706', '#b45309'],
+                            borderWidth: 2,
+                            borderRadius: 4,
+                            yAxisID: 'y2',
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+                    scales: {
+                        y:  { position: 'left',  title: { display: true, text: 'Orders', font: { size: 11 } }, ticks: { font: { size: 11 } } },
+                        y2: { position: 'right', title: { display: true, text: 'Revenue', font: { size: 11 } }, grid: { drawOnChartArea: false }, ticks: { callback: v => formatCurrency(v), font: { size: 11 } } },
+                        x: { ticks: { font: { size: 11 } } }
+                    }
+                }
+            });
+        }
+
+        function renderDiscountTrendChart(data) {
+            const ctx = document.getElementById('discountTrendChart');
+            if (!ctx) return;
+            if (discountTrendChartObj) discountTrendChartObj.destroy();
+            const labels = data.map(d => {
+                const [y, m, day] = d.period.split('-').map(Number);
+                const dt = new Date(y, m - 1, day);
+                return currentDiscountTrendGroup === 'month'
+                    ? dt.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })
+                    : dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+            });
+            discountTrendChartObj = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Full-price revenue',
+                            data: data.map(d => d.total_revenue - d.discounted_revenue),
+                            backgroundColor: 'rgba(34,197,94,0.7)',
+                            borderRadius: 3,
+                            stack: 'rev',
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: 'Discounted revenue',
+                            data: data.map(d => d.discounted_revenue),
+                            backgroundColor: 'rgba(251,191,36,0.85)',
+                            borderRadius: 3,
+                            stack: 'rev',
+                            yAxisID: 'y',
+                        },
+                        {
+                            label: '% Revenue discounted',
+                            data: data.map(d => d.pct_revenue_discounted),
+                            type: 'line',
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'transparent',
+                            borderWidth: 2,
+                            pointRadius: 3,
+                            tension: 0.3,
+                            yAxisID: 'pct',
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { position: 'top', labels: { font: { size: 11 } } } },
+                    scales: {
+                        y:   { stacked: true, position: 'left',  ticks: { callback: v => formatCurrency(v), font: { size: 11 } } },
+                        pct: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, ticks: { callback: v => v + '%', font: { size: 11 } } },
+                        x:   { stacked: true, ticks: { font: { size: 11 } } }
+                    }
+                }
+            });
         }
 
         function updateTrendChart(data) {
@@ -1990,14 +2501,17 @@
         }
 
         async function refreshSalesCharts() {
-            const [daily, weekday, running] = await Promise.all([
+            const [daily, weekday, running, discount] = await Promise.all([
                 fetchDailyRevenue(),
                 fetchWeekdayRevenue(),
                 fetchRunningTotal(),
+                fetchDiscountAnalysis(),
             ]);
             updateTrendChart(daily);
             updateWeekdayChart(weekday);
             updateRunningTotalChart(running);
+            updateDiscountCard(discount);
+            fetchAndRenderDiscountDrilldown();
         }
 
         // ============== Tab Navigation ==============

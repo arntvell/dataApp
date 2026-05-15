@@ -494,6 +494,7 @@ class SalesSyncPipeline:
                     original_category=info['product_category'],
                     product_name=info['product_name'],
                     standard_category=category,
+                    category_group=CATEGORY_GROUPS.get(category, category),
                     mapping_source=source if info['source'] != 'shopify' else 'shopify',
                     confidence=1.0 if info['source'] == 'shopify' else 0.7
                 )

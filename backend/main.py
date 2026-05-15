@@ -22,18 +22,36 @@ logger = logging.getLogger(__name__)
 
 
 def _run_migrations():
-    """Apply any column additions that create_all won't handle on existing tables."""
+    """Apply schema changes and data fixes that create_all won't handle on existing tables."""
     from database.config import engine
     from sqlalchemy import text
-    migrations = [
-        "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR",
-        "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
-        "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
-        "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
-    ]
+    from data.category_groups import CATEGORY_GROUPS
+
     with engine.begin() as conn:
-        for sql in migrations:
+        # Column additions
+        for sql in [
+            "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR",
+            "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
+            "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
+            "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
+        ]:
             conn.execute(text(sql))
+
+        # Backfill category_group for any rows where it is NULL.
+        # Default to standard_category, then apply group overrides.
+        conn.execute(text("""
+            UPDATE category_mappings
+            SET category_group = standard_category
+            WHERE category_group IS NULL AND standard_category IS NOT NULL
+        """))
+        for std_cat, group in CATEGORY_GROUPS.items():
+            conn.execute(text("""
+                UPDATE category_mappings
+                SET category_group = :group
+                WHERE standard_category = :std_cat
+                  AND category_group IS DISTINCT FROM :group
+            """), {"group": group, "std_cat": std_cat})
+
     logger.info("Migrations applied")
 
 

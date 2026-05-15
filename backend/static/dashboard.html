@@ -35,6 +35,7 @@
                         <button onclick="setPreset('today')"     id="preset-today"     class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition whitespace-nowrap">Today</button>
                         <button onclick="setPreset('yesterday')" id="preset-yesterday" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Yesterday</button>
                         <button onclick="setPreset('week')"      id="preset-week"      class="px-3 py-1.5 bg-blue-600 text-white font-medium border-l border-gray-200 transition whitespace-nowrap">This Week</button>
+                        <button onclick="setPreset('lastweek')"  id="preset-lastweek"  class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Last Week</button>
                         <button onclick="setPreset('month')"     id="preset-month"     class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">This Month</button>
                         <button onclick="setPreset('last30')"    id="preset-last30"    class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Last 30d</button>
                         <button onclick="setPreset('ytd')"       id="preset-ytd"       class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">YTD</button>
@@ -1165,9 +1166,15 @@
                 return;
             }
             const chevron = `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>`;
-            tbody.innerHTML = brands.map(b => {
-                const onclick = `onclick="drillIntoBrand('${b.vendor.replace(/'/g, "\\'")}')"`;
-                if (showCompare) {
+            const totalRow = `<tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">`;
+            if (showCompare) {
+                const totRev     = brands.reduce((s, b) => s + (b.revenue || 0), 0);
+                const totPrevRev = brands.reduce((s, b) => s + (b.prev_revenue || 0), 0);
+                const totQty     = brands.reduce((s, b) => s + (b.quantity || 0), 0);
+                const totOrd     = brands.reduce((s, b) => s + (b.orders || 0), 0);
+                const revTot     = formatChange(totRev, totPrevRev);
+                tbody.innerHTML = brands.map(b => {
+                    const onclick = `onclick="drillIntoBrand('${b.vendor.replace(/'/g, "\\'")}')"`;
                     const revChange = formatChange(b.revenue, b.prev_revenue);
                     return `
                         <tr class="border-b hover:bg-gray-50 cursor-pointer" ${onclick}>
@@ -1178,7 +1185,21 @@
                             <td class="text-right py-2 px-4">${b.quantity}</td>
                             <td class="text-right py-2 px-4">${b.orders}</td>
                         </tr>`;
-                } else {
+                }).join('') + `
+                    ${totalRow}
+                        <td class="py-2 px-4">Total</td>
+                        <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
+                        <td class="text-right py-2 px-4 text-gray-500">${totPrevRev ? formatCurrency(totPrevRev) : '-'}</td>
+                        <td class="text-right py-2 px-4">${revTot.formatted}</td>
+                        <td class="text-right py-2 px-4">${totQty}</td>
+                        <td class="text-right py-2 px-4">${totOrd}</td>
+                    </tr>`;
+            } else {
+                const totRev = brands.reduce((s, b) => s + (b.revenue || 0), 0);
+                const totQty = brands.reduce((s, b) => s + (b.quantity || 0), 0);
+                const totOrd = brands.reduce((s, b) => s + (b.orders || 0), 0);
+                tbody.innerHTML = brands.map(b => {
+                    const onclick = `onclick="drillIntoBrand('${b.vendor.replace(/'/g, "\\'")}')"`;
                     return `
                         <tr class="border-b hover:bg-gray-50 cursor-pointer" ${onclick}>
                             <td class="py-2 px-4 font-medium">${b.vendor}${chevron}</td>
@@ -1186,8 +1207,14 @@
                             <td class="text-right py-2 px-4">${b.quantity}</td>
                             <td class="text-right py-2 px-4">${b.orders}</td>
                         </tr>`;
-                }
-            }).join('');
+                }).join('') + `
+                    ${totalRow}
+                        <td class="py-2 px-4">Total</td>
+                        <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
+                        <td class="text-right py-2 px-4">${totQty}</td>
+                        <td class="text-right py-2 px-4">${totOrd}</td>
+                    </tr>`;
+            }
         }
 
         function updateBrandCategoriesTable(categories, showCompare = false) {
@@ -1215,8 +1242,14 @@
                 tbody.innerHTML = `<tr><td colspan="${cols}" class="py-4 text-center text-gray-400">No categories found</td></tr>`;
                 return;
             }
-            tbody.innerHTML = categories.map(c => {
-                if (showCompare) {
+            const totalRowB = `<tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">`;
+            if (showCompare) {
+                const totRev     = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totPrevRev = categories.reduce((s, c) => s + (c.prev_revenue || 0), 0);
+                const totQty     = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
+                const totOrd     = categories.reduce((s, c) => s + (c.order_count || 0), 0);
+                const revTot     = formatChange(totRev, totPrevRev);
+                tbody.innerHTML = categories.map(c => {
                     const revChange = formatChange(c.revenue, c.prev_revenue);
                     return `
                         <tr class="border-b hover:bg-gray-50">
@@ -1227,7 +1260,20 @@
                             <td class="text-right py-2 px-4">${c.quantity_sold}</td>
                             <td class="text-right py-2 px-4">${c.order_count}</td>
                         </tr>`;
-                } else {
+                }).join('') + `
+                    ${totalRowB}
+                        <td class="py-2 px-4">Total</td>
+                        <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
+                        <td class="text-right py-2 px-4 text-gray-500">${totPrevRev ? formatCurrency(totPrevRev) : '-'}</td>
+                        <td class="text-right py-2 px-4">${revTot.formatted}</td>
+                        <td class="text-right py-2 px-4">${totQty}</td>
+                        <td class="text-right py-2 px-4">${totOrd}</td>
+                    </tr>`;
+            } else {
+                const totRev = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totQty = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
+                const totOrd = categories.reduce((s, c) => s + (c.order_count || 0), 0);
+                tbody.innerHTML = categories.map(c => {
                     return `
                         <tr class="border-b hover:bg-gray-50">
                             <td class="py-2 px-4 font-medium">${c.category}</td>
@@ -1235,8 +1281,14 @@
                             <td class="text-right py-2 px-4">${c.quantity_sold}</td>
                             <td class="text-right py-2 px-4">${c.order_count}</td>
                         </tr>`;
-                }
-            }).join('');
+                }).join('') + `
+                    ${totalRowB}
+                        <td class="py-2 px-4">Total</td>
+                        <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
+                        <td class="text-right py-2 px-4">${totQty}</td>
+                        <td class="text-right py-2 px-4">${totOrd}</td>
+                    </tr>`;
+            }
         }
 
         async function onBrandFilterChange() {
@@ -1572,7 +1624,14 @@
                 ? `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoCategoryGroup('${cat.replace(/'/g, "\\'")}')" `
                 : `class="border-b hover:bg-gray-50 cursor-pointer" onclick="drillIntoStandardCategory('${cat.replace(/'/g, "\\'")}')" `;
 
+            const totalRow = `<tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">`;
             if (showCompare) {
+                const totQty     = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
+                const totPrevQty = categories.reduce((s, c) => s + (c.prev_quantity_sold || 0), 0);
+                const totRev     = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totPrevRev = categories.reduce((s, c) => s + (c.prev_revenue || 0), 0);
+                const qtyTot  = formatChange(totQty, totPrevQty);
+                const revTot  = formatChange(totRev, totPrevRev);
                 tbody.innerHTML = categories.map(c => {
                     const qtyChange = formatChange(c.quantity_sold, c.prev_quantity_sold);
                     const revChange = formatChange(c.revenue, c.prev_revenue);
@@ -1587,8 +1646,20 @@
                             <td class="text-right py-2 px-4">${revChange.formatted}</td>
                         </tr>
                     `;
-                }).join('');
+                }).join('') + `
+                    ${totalRow}
+                        <td class="py-2 px-4">Total</td>
+                        <td class="text-right py-2 px-4">${totQty}</td>
+                        <td class="text-right py-2 px-4 text-gray-500">${totPrevQty || '-'}</td>
+                        <td class="text-right py-2 px-4">${qtyTot.formatted}</td>
+                        <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
+                        <td class="text-right py-2 px-4 text-gray-500">${totPrevRev ? formatCurrency(totPrevRev) : '-'}</td>
+                        <td class="text-right py-2 px-4">${revTot.formatted}</td>
+                    </tr>`;
             } else {
+                const totQty = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
+                const totOrd = categories.reduce((s, c) => s + (c.order_count || 0), 0);
+                const totRev = categories.reduce((s, c) => s + (c.revenue || 0), 0);
                 tbody.innerHTML = categories.map(c => `
                     <tr ${rowClick(c.category)}>
                         <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
@@ -1596,7 +1667,13 @@
                         <td class="text-right py-2 px-4">${c.order_count}</td>
                         <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
                     </tr>
-                `).join('');
+                `).join('') + `
+                    ${totalRow}
+                        <td class="py-2 px-4">Total</td>
+                        <td class="text-right py-2 px-4">${totQty}</td>
+                        <td class="text-right py-2 px-4">${totOrd}</td>
+                        <td class="text-right py-2 px-4">${formatCurrency(totRev)}</td>
+                    </tr>`;
             }
         }
 
@@ -1702,7 +1779,7 @@
 
         // ============== Period Presets ==============
 
-        const PRESETS = ['today', 'yesterday', 'week', 'month', 'last30', 'ytd', 'custom'];
+        const PRESETS = ['today', 'yesterday', 'week', 'lastweek', 'month', 'last30', 'ytd', 'custom'];
 
         function toDateStr(d) {
             const y = d.getFullYear();
@@ -1723,9 +1800,15 @@
                 start = y; end = y;
             } else if (preset === 'week') {
                 const d = new Date(today);
-                // Back to Monday (ISO week)
                 d.setDate(d.getDate() - (d.getDay() === 0 ? 6 : d.getDay() - 1));
                 start = d;
+            } else if (preset === 'lastweek') {
+                // Previous Mon–Sun
+                const mon = new Date(today);
+                mon.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1) - 7);
+                const sun = new Date(mon);
+                sun.setDate(mon.getDate() + 6);
+                start = mon; end = sun;
             } else if (preset === 'month') {
                 start = new Date(today.getFullYear(), today.getMonth(), 1);
             } else if (preset === 'last30') {

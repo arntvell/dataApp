@@ -26,9 +26,12 @@
             .metric-value { font-size: 1.5rem; }
             .metric-label { font-size: 0.7rem; }
             h1 { font-size: 1.25rem; }
-            /* cap the long preset bar to the VIEWPORT so it scrolls internally
-               instead of widening the whole page */
-            #periodPresets { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100vw - 1.5rem); -webkit-overflow-scrolling: touch; }
+            /* show ALL date presets as wrapping pills — nothing off-screen */
+            #periodPresets { flex-wrap: wrap; overflow: visible; max-width: 100%; border: 0; border-radius: 0; gap: 0.375rem; }
+            #periodPresets > button { border: 1px solid #e5e7eb; border-radius: 0.5rem; flex: 1 0 auto; }
+            /* custom date range wraps and fills the row */
+            #customDateRange { flex-wrap: wrap; width: 100%; }
+            #customDateRange input { flex: 1 1 8rem; }
             canvas { max-width: 100% !important; }
             /* final guard: never let the page scroll sideways on phones */
             html, body { overflow-x: hidden; }

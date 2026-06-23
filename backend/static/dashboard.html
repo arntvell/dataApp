@@ -7,15 +7,18 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        .card { @apply bg-white rounded-xl shadow-md p-6; }
-        .metric-value { @apply text-3xl font-bold text-gray-900; }
-        .metric-label { @apply text-sm text-gray-500 uppercase tracking-wide; }
-        .loading { @apply animate-pulse bg-gray-200 rounded; }
-        .yoy-positive { @apply text-green-600; }
-        .yoy-negative { @apply text-red-600; }
-        .filter-btn { @apply px-3 py-1 text-sm rounded-lg transition; }
-        .filter-btn.active { @apply bg-blue-600 text-white; }
-        .filter-btn:not(.active) { @apply bg-gray-200 text-gray-700 hover:bg-gray-300; }
+        /* Component styles as plain CSS — the Tailwind Play CDN does NOT process
+           @apply inside a normal <style> tag, so these must be real CSS. */
+        .card { background:#fff; border-radius:0.75rem; box-shadow:0 4px 6px -1px rgba(0,0,0,.1),0 2px 4px -2px rgba(0,0,0,.1); padding:1.5rem; }
+        .metric-value { font-size:1.875rem; line-height:2.25rem; font-weight:700; color:#111827; }
+        .metric-label { font-size:0.875rem; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; }
+        .loading { background:#e5e7eb; border-radius:0.5rem; }
+        .yoy-positive { color:#16a34a; }
+        .yoy-negative { color:#dc2626; }
+        .filter-btn { padding:0.25rem 0.75rem; font-size:0.875rem; border-radius:0.5rem; transition:all .15s; }
+        .filter-btn.active { background:#2563eb; color:#fff; }
+        .filter-btn:not(.active) { background:#e5e7eb; color:#374151; }
+        .filter-btn:not(.active):hover { background:#d1d5db; }
 
         /* ---- Mobile refinements ---- */
         @media (max-width: 640px) {
@@ -23,10 +26,12 @@
             .metric-value { font-size: 1.5rem; }
             .metric-label { font-size: 0.7rem; }
             h1 { font-size: 1.25rem; }
-            /* long period-preset segmented control scrolls instead of overflowing the page */
-            #periodPresets { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
-            /* keep chart containers from forcing the page wider */
+            /* cap the long preset bar to the VIEWPORT so it scrolls internally
+               instead of widening the whole page */
+            #periodPresets { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100vw - 1.5rem); -webkit-overflow-scrolling: touch; }
             canvas { max-width: 100% !important; }
+            /* final guard: never let the page scroll sideways on phones */
+            html, body { overflow-x: hidden; }
         }
     </style>
 </head>

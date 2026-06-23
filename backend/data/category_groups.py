@@ -12,6 +12,8 @@ CATEGORY_GROUPS = {
     "Jersey":       "Jersey",
     "T-shirt":      "Jersey",
     "T-Shirt":      "Jersey",
+    "Tee":          "Jersey",
+    "Longsleeve":   "Jersey",
     "Singlet":      "Jersey",
     "Sweatshirt":   "Jersey",
 
@@ -33,6 +35,11 @@ CATEGORY_GROUPS = {
     "Dress":        "Dress",
     "Blouse":       "Blouse",
     "Top":          "Top",
+
+    # Shirts (fold case/spelling variants into the Shirt group)
+    "Shirt":             "Shirt",
+    "shirt":             "Shirt",
+    "Shortsleeved shirt": "Shirt",
 
     # Footwear — all shoes, boots, sandals, sneakers
     "Shoe Men":         "Footwear",
@@ -58,6 +65,9 @@ CATEGORY_GROUPS = {
     "Sunglasses":   "Accessories",
     "Socks":        "Accessories",
     "Socks Unisex": "Accessories",
+    "Socks Men":    "Accessories",
+    "Socks Women":  "Accessories",
+    "Cap":          "Accessories",
     "Underwear":    "Accessories",
 
     # Vintage
@@ -80,6 +90,7 @@ CATEGORY_GROUPS = {
     # Lifestyle
     "Home":         "Lifestyle",
     "Apothecary":   "Lifestyle",
+    "Apothecary Unisex": "Lifestyle",
     "Care":         "Lifestyle",
     "Books":        "Lifestyle",
     "Coffee":       "Lifestyle",

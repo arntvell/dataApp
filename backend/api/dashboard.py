@@ -179,6 +179,30 @@ async def get_summary(
     total_refunded = get_refunds_total(db, start_date, end_date)
     total_revenue = gross_revenue - total_refunded
 
+    # Gross (before discounts & returns) and a COMPLETE returns figure.
+    # Returns come from two places, both VAT-inclusive:
+    #   - Online (Shopify): refund records -> total_refunded
+    #   - Stores (Sitoo): in-store returns are negative-amount orders
+    # Gross = positive (sales) orders with their discounts added back.
+    amounts = db.query(
+        func.coalesce(func.sum(case(
+            (SalesOrder.total_amount >= 0,
+             SalesOrder.total_amount + func.coalesce(SalesOrder.total_discount, 0)),
+            else_=0)), 0).label('gross'),
+        func.coalesce(func.sum(case(
+            (SalesOrder.total_amount >= 0, func.coalesce(SalesOrder.total_discount, 0)),
+            else_=0)), 0).label('discount'),
+        func.coalesce(func.sum(case(
+            (SalesOrder.total_amount < 0, -SalesOrder.total_amount),
+            else_=0)), 0).label('store_returns'),
+    ).filter(date_filter).first()
+
+    gross_sales = float(amounts.gross or 0)
+    total_discount = float(amounts.discount or 0)
+    store_returns = float(amounts.store_returns or 0)
+    online_returns = total_refunded
+    total_returns = store_returns + online_returns
+
     # Last year metrics
     ly_totals = db.query(
         func.coalesce(func.sum(SalesOrder.total_amount), 0).label('revenue'),
@@ -261,6 +285,11 @@ async def get_summary(
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "total_revenue": total_revenue,
+        "gross_sales": gross_sales,
+        "total_discount": total_discount,
+        "total_returns": total_returns,
+        "store_returns": store_returns,
+        "online_returns": online_returns,
         "total_refunded": total_refunded,
         "total_orders": total_orders,
         "total_items": total_items,
@@ -1030,6 +1059,7 @@ async def trigger_full_sync(
     from pipelines.sales_sync import SalesSyncPipeline
     from pipelines.stock_sync import StockSyncPipeline
     from pipelines.budget_sync import BudgetSyncPipeline
+    from pipelines.product_sync import ProductSyncPipeline
     import os
 
     sales_config = {
@@ -1067,6 +1097,10 @@ async def trigger_full_sync(
     sales_pipeline = SalesSyncPipeline(sales_config)
     stock_pipeline = StockSyncPipeline(stock_config)
     budget_pipeline = BudgetSyncPipeline(budget_config)
+    product_pipeline = ProductSyncPipeline({
+        **sales_config,
+        'cin7': stock_config['cin7'],
+    })
 
     def run_full_sync():
         try:
@@ -1074,6 +1108,11 @@ async def trigger_full_sync(
             sales_pipeline.sync_full_history(max_orders=max_orders)
         except Exception as e:
             logger.error(f"Sales sync error: {e}")
+        try:
+            logger.info("Full sync: rebuilding product source-of-truth...")
+            product_pipeline.run()
+        except Exception as e:
+            logger.error(f"Product sync error: {e}")
         try:
             logger.info("Full sync: starting Cin7 stock + wholesale...")
             stock_pipeline.sync_stock_levels()
@@ -1120,6 +1159,40 @@ async def trigger_stock_sync(background_tasks: BackgroundTasks):
 
     background_tasks.add_task(run)
     return {"status": "started", "message": "Cin7 stock sync started."}
+
+
+@router.post("/sync-products")
+async def trigger_product_sync(background_tasks: BackgroundTasks):
+    """Rebuild the product source-of-truth: pull Shopify+Sitoo+Cin7 catalogs,
+    merge into product_master, and refresh category_mappings/parent_sku_mappings."""
+    from pipelines.product_sync import ProductSyncPipeline
+    import os
+
+    pipeline = ProductSyncPipeline({
+        'shopify': {
+            'base_url': os.environ.get('SHOPIFY_BASE_URL'),
+            'api_key': os.environ.get('SHOPIFY_API_KEY'),
+        },
+        'sitoo': {
+            'base_url': os.environ.get('SITOO_BASE_URL'),
+            'api_id': os.environ.get('SITOO_API_ID'),
+            'api_key': os.environ.get('SITOO_API_KEY'),
+        },
+        'cin7': {
+            'account_id': os.environ.get('CIN7_ACCOUNT_ID'),
+            'api_key': os.environ.get('CIN7_API_KEY'),
+        },
+    })
+
+    def run():
+        try:
+            result = pipeline.run()
+            logger.info(f"Product sync complete: {result}")
+        except Exception as e:
+            logger.error(f"Product sync error: {e}")
+
+    background_tasks.add_task(run)
+    return {"status": "started", "message": "Product source-of-truth rebuild started in background."}
 
 
 @router.post("/sync-budget")

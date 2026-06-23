@@ -50,6 +50,16 @@ def job_samesystem_worktime():
         logger.error(f"Scheduled worktime sync failed: {e}")
 
 
+def job_product_sync():
+    """Daily product source-of-truth rebuild (05:00) from Shopify+Sitoo+Cin7 catalogs"""
+    from pipelines.product_sync import ProductSyncPipeline
+    try:
+        pipeline = ProductSyncPipeline(_get_config())
+        pipeline.run()
+    except Exception as e:
+        logger.error(f"Scheduled product sync failed: {e}")
+
+
 def job_cin7_stock():
     """Hourly stock level sync from Cin7"""
     from pipelines.stock_sync import StockSyncPipeline
@@ -114,6 +124,14 @@ def start_scheduler():
         trigger=CronTrigger(hour=6, minute=30),
         id="samesystem_worktime",
         name="SameSystem daily worktime sync",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        job_product_sync,
+        trigger=CronTrigger(hour=5, minute=0),
+        id="product_sync",
+        name="Product source-of-truth rebuild (Shopify+Sitoo+Cin7)",
         replace_existing=True,
     )
 

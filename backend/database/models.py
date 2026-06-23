@@ -438,3 +438,99 @@ class Cin7PurchaseItem(Base):
     line_total = Column(Float, default=0)
 
     purchase = relationship("Cin7Purchase", back_populates="items")
+
+
+# ============== PRODUCT SOURCE-OF-TRUTH (SSOT) ==============
+# Raw per-source catalog snapshots (truncate-and-reload each sync) feed the
+# unified ProductMaster, which in turn projects into category_mappings /
+# parent_sku_mappings (the read layer the dashboard already joins on).
+
+class RawShopifyProduct(Base):
+    """Snapshot of the Shopify catalog, one row per variant (SKU)."""
+    __tablename__ = "shopify_products"
+    __table_args__ = {'schema': 'raw'}
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(String, index=True)
+    sku = Column(String, index=True)
+    title = Column(String, nullable=True)
+    product_type = Column(String, nullable=True)
+    vendor = Column(String, nullable=True)
+    tags = Column(Text, nullable=True)
+    status = Column(String, nullable=True)        # ACTIVE / DRAFT / ARCHIVED
+    total_inventory = Column(Integer, nullable=True)
+    price = Column(Float, nullable=True)
+    unit_cost = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class RawSitooProduct(Base):
+    """Snapshot of the Sitoo catalog (POS), one row per product/variant."""
+    __tablename__ = "sitoo_products"
+    __table_args__ = {'schema': 'raw'}
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(String, index=True)
+    sku = Column(String, index=True)
+    title = Column(String, nullable=True)
+    manufacturer_id = Column(Integer, nullable=True)
+    manufacturer_name = Column(String, nullable=True)
+    parent_sku = Column(String, nullable=True, index=True)  # from variantparentid
+    price = Column(Float, nullable=True)
+    cost = Column(Float, nullable=True)
+    active = Column(Boolean, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class RawCin7Product(Base):
+    """Snapshot of the Cin7 Core catalog (ERP master), stock products only."""
+    __tablename__ = "cin7_products"
+    __table_args__ = {'schema': 'raw'}
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(String, index=True)
+    sku = Column(String, index=True)
+    name = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    brand = Column(String, nullable=True)
+    status = Column(String, nullable=True)
+    average_cost = Column(Float, nullable=True)
+    country_of_origin = Column(String, nullable=True)
+    price = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProductMaster(Base):
+    """Unified product source-of-truth, one row per SKU, merged from all sources
+    with explicit per-field precedence. Projected into category_mappings /
+    parent_sku_mappings for the dashboard to consume."""
+    __tablename__ = "product_master"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sku = Column(String, unique=True, index=True)
+    parent_sku = Column(String, nullable=True, index=True)
+    product_name = Column(String, nullable=True)
+
+    standard_category = Column(String, nullable=True, index=True)
+    category_group = Column(String, nullable=True, index=True)
+    designed_for = Column(String, nullable=True, index=True)   # men / women / unisex
+    sold_as_vendor = Column(String, nullable=True, index=True)  # standardized brand
+
+    cost = Column(Float, nullable=True)
+    price = Column(Float, nullable=True)
+    status = Column(String, nullable=True)
+    country_of_origin = Column(String, nullable=True)
+
+    # Coverage / provenance
+    in_shopify = Column(Boolean, default=False)
+    in_sitoo = Column(Boolean, default=False)
+    in_cin7 = Column(Boolean, default=False)
+    category_source = Column(String, nullable=True)  # shopify / cin7 / sku_prefix / keyword
+    vendor_source = Column(String, nullable=True)
+
+    shopify_product_id = Column(String, nullable=True)
+    sitoo_product_id = Column(String, nullable=True)
+    cin7_product_id = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -375,103 +375,33 @@ class SalesSyncPipeline:
         return mappings
     
     def _create_sku_mappings(self, db: Session, orders: List[Dict[str, Any]], mappings: dict):
-        """Create category mappings for new SKUs; update existing ones when Shopify's productType changes."""
+        """Insert lightweight placeholders for never-before-seen SKUs.
+
+        Category / vendor / gender / parent attributes are owned by the product
+        source-of-truth (pipelines/product_sync.py), which refreshes
+        category_mappings and parent_sku_mappings from the merged catalog. We no
+        longer infer categories from order lines (that caused miscategorisation).
+        To avoid a brand-new SKU having no mapping row until the next product
+        sync, we insert a minimal 'Uncategorized' placeholder; the product sync
+        fills in the real attributes (and backfills sales_order_items) on its
+        next run.
+        """
         import re
 
         existing_skus = mappings['existing_skus']
-        current_categories = mappings.get('categories', {})
-        mapping_sources = mappings.get('mapping_sources', {})
 
         new_skus = {}
-        shopify_updates = {}  # sku → new product_type from Shopify
-
         for order in orders:
-            source = order.get('source_system')
             for item in order.get('items', []):
                 sku = item.get('sku')
-                if not sku:
+                if not sku or sku in existing_skus or sku in new_skus:
                     continue
-                product_type = item.get('product_category') or ''
-
-                if sku in existing_skus:
-                    # Shopify is authoritative — update if the mapping didn't come
-                    # from Shopify yet, or if Shopify's productType has changed.
-                    if (source == 'shopify'
-                            and product_type
-                            and product_type not in ('Uncategorized', 'Standard', '')
-                            and sku not in shopify_updates
-                            and (mapping_sources.get(sku) != 'shopify'
-                                 or current_categories.get(sku) != product_type)):
-                        shopify_updates[sku] = product_type
-                elif sku not in new_skus:
-                    new_skus[sku] = {
-                        'product_name': item.get('product_name'),
-                        'product_category': product_type,
-                        'source': source,
-                    }
-
-        # Apply Shopify productType corrections to existing mappings
-        if shopify_updates:
-            logger.info(f"Updating {len(shopify_updates)} Shopify category mappings")
-            for sku, product_type in shopify_updates.items():
-                category_group = CATEGORY_GROUPS.get(product_type, product_type)
-                db.query(CategoryMapping).filter(CategoryMapping.sku == sku).update({
-                    'standard_category': product_type,
-                    'category_group': category_group,
-                    'mapping_source': 'shopify',
-                    'confidence': 1.0,
-                })
-            db.commit()
+                new_skus[sku] = item.get('product_name')
 
         if not new_skus:
             return
-        
-        logger.info(f"Creating mappings for {len(new_skus)} new SKUs")
-        
-        # Keyword rules for category inference (simplified)
-        def infer_category(name, sku, original_cat):
-            if not name:
-                return original_cat or 'Uncategorized', 'original'
-            
-            name_lower = name.lower()
-            sku_lower = sku.lower() if sku else ''
-            
-            # Check for vintage SKUs
-            is_vintage = sku_lower.startswith(('ext-vn-', 'ext-vin-', 'vn-', 'vin-'))
-            
-            # Simple keyword matching
-            keywords = [
-                (r'skredder|tailor|repair', 'Services'),
-                (r'\bjeans\b|\blevis\b|selvage|selvedge', 'Jeans'),
-                (r'\bshirt\b', 'Shirt'),
-                (r'\bjacket\b', 'Jacket'),
-                (r'\bknit\b|\bsweater\b|\bcardigan\b', 'Knitwear'),
-                (r'\bt-shirt\b|\btee\b', 'T-Shirt'),
-                (r'\btrouser\b|\bpant\b|\bchino\b', 'Trouser'),
-                (r'\bdress\b', 'Dress'),
-                (r'\bskirt\b', 'Skirt'),
-                (r'\bcoat\b', 'Coat'),
-                (r'\bscarf\b', 'Scarf'),
-                (r'\bsocks?\b', 'Socks'),
-                (r'\bboot\b', 'Boots'),
-                (r'\bshoe\b', 'Shoes'),
-            ]
-            
-            for pattern, category in keywords:
-                if re.search(pattern, name_lower):
-                    if is_vintage:
-                        return f'Vintage {category}', 'keyword_inference'
-                    return category, 'keyword_inference'
-            
-            if is_vintage:
-                return 'Vintage Other', 'keyword_inference'
-            
-            return original_cat or 'Uncategorized', 'original'
-        
-        # Size extraction for parent SKU
+
         def extract_parent_sku(sku):
-            if not sku:
-                return sku, None, None
             patterns = [
                 (r'^(.+)-(\d{4})$', 'denim'),
                 (r'^(.+)-(XXS|XS|S|M|L|XL|XXL|2XL|3XL)$', 'letter'),
@@ -483,42 +413,34 @@ class SalesSyncPipeline:
                 if match:
                     return match.group(1), match.group(2).upper(), size_type
             return sku, None, None
-        
-        # Create mappings
-        for sku, info in new_skus.items():
+
+        logger.info(f"Creating {len(new_skus)} placeholder mappings (product sync will enrich)")
+        for sku, product_name in new_skus.items():
             try:
-                # Category mapping
-                category, source = infer_category(info['product_name'], sku, info['product_category'])
-                cat_mapping = CategoryMapping(
+                db.add(CategoryMapping(
                     sku=sku,
-                    original_category=info['product_category'],
-                    product_name=info['product_name'],
-                    standard_category=category,
-                    category_group=CATEGORY_GROUPS.get(category, category),
-                    mapping_source=source if info['source'] != 'shopify' else 'shopify',
-                    confidence=1.0 if info['source'] == 'shopify' else 0.7
-                )
-                db.add(cat_mapping)
-                
-                # Parent SKU mapping
+                    product_name=product_name,
+                    standard_category='Uncategorized',
+                    category_group='Uncategorized',
+                    mapping_source='pending_product_sync',
+                    confidence=0.0,
+                ))
                 parent_sku, size_code, size_type = extract_parent_sku(sku)
-                parent_mapping = ParentSkuMapping(
+                db.add(ParentSkuMapping(
                     sku=sku,
                     parent_sku=parent_sku,
                     size_code=size_code,
                     size_type=size_type,
-                    product_name=info['product_name'],
-                    base_product_name=info['product_name'],  # Simplified
-                    variant_count=1
-                )
-                db.add(parent_mapping)
-                
+                    product_name=product_name,
+                    base_product_name=product_name,
+                    variant_count=1,
+                ))
             except Exception as e:
-                logger.warning(f"Could not create mapping for SKU {sku}: {e}")
+                logger.warning(f"Could not create placeholder mapping for SKU {sku}: {e}")
                 continue
-        
+
         db.commit()
-        logger.info(f"Created mappings for {len(new_skus)} new SKUs")
+        logger.info(f"Created {len(new_skus)} placeholder mappings")
     
     def _enrich_order(self, order_data: Dict[str, Any], mappings: Dict[str, Any]) -> Dict[str, Any]:
         """Enrich order data with staff names, categories, and standardized vendors from mappings"""

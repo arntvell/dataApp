@@ -97,6 +97,63 @@ class SitooConnector(BaseConnector):
             self.logger.error(f"Error getting products: {e}")
             return []
     
+    def get_all_products(self) -> List[Dict[str, Any]]:
+        """Fetch the FULL Sitoo product catalog (paginated) as raw SSOT rows.
+
+        Resolves manufacturer names and turns variantparentid into a parent SKU
+        (Sitoo natively models variant->parent, so we don't need regex here).
+        """
+        raw_items: List[Dict[str, Any]] = []
+        start = 0
+        batch_size = 500
+        while True:
+            url = f"{self.base_url}/sites/1/products.json?start={start}&num={batch_size}"
+            resp = self._get_with_retry(url)
+            if resp.status_code != 200:
+                self.logger.error(f"Sitoo products fetch failed: {resp.status_code}")
+                break
+            items = resp.json().get('items', [])
+            if not items:
+                break
+            raw_items.extend(items)
+            self.logger.info(f"Sitoo: fetched {len(raw_items)} products so far")
+            if len(items) < batch_size:
+                break
+            start += batch_size
+
+        # productid -> sku, to resolve variantparentid into a parent SKU
+        id_to_sku = {str(p.get('productid')): p.get('sku')
+                     for p in raw_items if p.get('productid') is not None}
+
+        # manufacturerid -> name (cached lookup, reused from existing helper)
+        if self._manufacturer_lookup is None:
+            self._manufacturer_lookup = self.get_all_manufacturers()
+        mfr = self._manufacturer_lookup or {}
+
+        def money(v):
+            try:
+                return float(str(v).replace(',', '.'))
+            except (TypeError, ValueError):
+                return 0.0
+
+        out = []
+        for p in raw_items:
+            parent_id = p.get('variantparentid')
+            parent_sku = id_to_sku.get(str(parent_id)) if parent_id else None
+            out.append({
+                'product_id': str(p.get('productid')),
+                'sku': p.get('sku'),
+                'title': p.get('title'),
+                'manufacturer_id': p.get('manufacturerid'),
+                'manufacturer_name': mfr.get(p.get('manufacturerid')),
+                'parent_sku': parent_sku,
+                'price': money(p.get('moneyprice', '0')),
+                'cost': money(p.get('moneypricein', '0')),
+                'active': bool(p.get('active')),
+            })
+        self.logger.info(f"Sitoo: total {len(out)} products")
+        return out
+
     def get_customers(self) -> List[Dict[str, Any]]:
         """Retrieve customers from Sitoo"""
         try:

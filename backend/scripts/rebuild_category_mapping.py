@@ -49,6 +49,7 @@ SKU_PREFIX_RULES = {
     ('LIV', 'JN'): 'Jeans',        # Jon
     ('LIV', 'T'): 'Jeans',         # Tuck
     ('LIV', 'VR'): 'Jeans',        # Vår
+    ('LIV', 'BON'): 'Jeans',       # Bondi
     
     # Livid Shirts
     ('LIV', 'KN'): 'Shirt',        # Ken/Knut
@@ -143,9 +144,17 @@ SKU_PREFIX_RULES = {
     ('EXT', 'PNT'): 'Socks',        # Pantherella
     ('EXT', 'ANY'): 'Socks',        # Anonymous Ism
     
+    # External - Sunglasses / Apothecary
+    ('CHIMI', 'ARI'): 'Sunglasses', # Chimi sunglasses
+    ('EXT', 'ABL'): 'Apothecary',   # Abel fragrance
+
     # External - Home
     ('EXT', 'PF'): 'Home',          # P.F. Candle
     
+    # Services / logistics
+    ('LIV', 'SKREDDER'): 'Services',  # Tailoring service
+    ('LIV', 'FRKT'): 'Services',      # Shipping (Frakt)
+
     # Samples/Other
     ('LIV', 'SMPLS'): 'Sample',     # Samples
     ('LIV', 'MSCSMPL'): 'Sample',   # Misc samples

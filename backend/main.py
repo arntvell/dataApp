@@ -23,9 +23,16 @@ logger = logging.getLogger(__name__)
 
 def _run_migrations():
     """Apply schema changes and data fixes that create_all won't handle on existing tables."""
-    from database.config import engine
+    from database.config import engine, Base
     from sqlalchemy import text
     from data.category_groups import CATEGORY_GROUPS
+    import database.models  # noqa: register all models
+
+    # Ensure the raw schema and any missing tables exist (idempotent — only
+    # creates what isn't already there; never alters existing tables).
+    with engine.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
+    Base.metadata.create_all(engine)
 
     with engine.begin() as conn:
         # Column additions

@@ -122,6 +122,72 @@ class ShopifyConnector(BaseConnector):
             self.logger.error(f"Error getting products: {e}")
             return []
     
+    def get_all_products(self, batch_size: int = 100) -> List[Dict[str, Any]]:
+        """Fetch the FULL Shopify product catalog via GraphQL cursor pagination.
+
+        Returns one raw SSOT row per VARIANT (sku) with product-level attributes
+        (productType, vendor, tags, status) plus per-variant price and unitCost.
+        """
+        out: List[Dict[str, Any]] = []
+        cursor = None
+        has_next = True
+
+        def _f(v):
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        while has_next:
+            after = f', after: "{cursor}"' if cursor else ''
+            query = f"""
+            {{
+              products(first: {batch_size}{after}) {{
+                pageInfo {{ hasNextPage endCursor }}
+                edges {{ node {{
+                  id title productType vendor tags status totalInventory
+                  variants(first: 100) {{ edges {{ node {{
+                    sku price inventoryItem {{ unitCost {{ amount }} }}
+                  }} }} }}
+                }} }}
+              }}
+            }}
+            """
+            res = self._make_graphql_request(query)
+            if 'errors' in res or 'data' not in res:
+                self.logger.error(f"Shopify products fetch error: {res.get('errors')}")
+                break
+
+            data = res['data']['products']
+            for edge in data.get('edges', []):
+                node = edge['node']
+                pid = str(node.get('id')).split('/')[-1]
+                tags = node.get('tags') or []
+                for v_edge in node.get('variants', {}).get('edges', []):
+                    v = v_edge['node']
+                    inv = v.get('inventoryItem') or {}
+                    unit = inv.get('unitCost') or {}
+                    out.append({
+                        'product_id': pid,
+                        'sku': v.get('sku'),
+                        'title': node.get('title'),
+                        'product_type': node.get('productType'),
+                        'vendor': node.get('vendor'),
+                        'tags': ', '.join(tags) if isinstance(tags, list) else (tags or ''),
+                        'status': node.get('status'),
+                        'total_inventory': node.get('totalInventory'),
+                        'price': _f(v.get('price')),
+                        'unit_cost': _f(unit.get('amount')),
+                    })
+
+            page = data.get('pageInfo', {})
+            has_next = page.get('hasNextPage', False)
+            cursor = page.get('endCursor')
+            self.logger.info(f"Shopify: fetched {len(out)} product-variants so far")
+            if not cursor:
+                break
+        return out
+
     def get_customers(self) -> List[Dict[str, Any]]:
         """Retrieve customers from Shopify"""
         try:

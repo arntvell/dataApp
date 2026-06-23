@@ -68,13 +68,14 @@
         <!-- Summary Cards -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
             <div class="card">
-                <div class="metric-label">Revenue inc</div>
+                <div class="metric-label">Net Sales (inc. VAT)</div>
                 <div class="metric-value text-green-600" id="totalRevenue">-</div>
                 <div class="flex items-center gap-2 mt-1">
                     <span class="text-sm text-gray-400">NOK</span>
                     <span class="text-xs" id="revenueYoY"></span>
                 </div>
-                <div class="text-xs text-gray-400 mt-1" id="refundedInfo"></div>
+                <div class="text-xs text-gray-500 mt-1" id="grossInfo"></div>
+                <div class="text-xs text-gray-400" id="refundedInfo"></div>
             </div>
             <div class="card">
                 <div class="metric-label">Orders</div>
@@ -1331,11 +1332,24 @@
             document.getElementById('avgOrderValueYoY').innerHTML = formatYoY(data.avg_order_value_yoy);
             document.getElementById('avgItemsPerOrderYoY').innerHTML = formatYoY(data.avg_items_per_order_yoy);
 
+            // Gross (before discounts & returns) shown above the returns line
+            const grossEl = document.getElementById('grossInfo');
+            if (grossEl) {
+                grossEl.textContent = `Gross ${formatCurrency(data.gross_sales)} NOK`;
+            }
+
+            // Complete returns = store (Sitoo negatives) + online (Shopify refunds)
             const refundedEl = document.getElementById('refundedInfo');
-            if (data.total_refunded > 0) {
-                refundedEl.textContent = `After ${formatCurrency(data.total_refunded)} NOK in returns`;
+            const totalReturns = data.total_returns ?? data.total_refunded ?? 0;
+            if (totalReturns > 0) {
+                refundedEl.textContent =
+                    `After ${formatCurrency(totalReturns)} NOK in returns`;
+                refundedEl.title =
+                    `Stores ${formatCurrency(data.store_returns || 0)} + `
+                    + `Online ${formatCurrency(data.online_returns || 0)} NOK`;
             } else {
                 refundedEl.textContent = '';
+                refundedEl.removeAttribute('title');
             }
         }
 

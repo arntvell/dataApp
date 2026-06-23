@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+.env.prod
+
+# Local DB backups
+backups/
 
 # Python
 __pycache__/

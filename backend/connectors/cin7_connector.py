@@ -166,6 +166,39 @@ class Cin7Connector(BaseConnector):
             data["Total"] = order.get("Total", 0)
         return data
 
+    def get_all_products(self) -> List[Dict[str, Any]]:
+        """Fetch the FULL Cin7 product catalog as raw SSOT rows.
+
+        Keeps only sellable 'Stock' products with a non-empty SKU (skips
+        Services and BOM components like buttons).
+        """
+        def num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        out = []
+        for p in self._paginate("product", "Products"):
+            if p.get("Type") != "Stock":
+                continue
+            sku = (p.get("SKU") or "").strip()
+            if not sku:
+                continue
+            out.append({
+                'product_id': str(p.get('ID')) if p.get('ID') is not None else None,
+                'sku': sku,
+                'name': p.get('Name'),
+                'category': p.get('Category'),
+                'brand': p.get('Brand'),
+                'status': p.get('Status'),
+                'average_cost': num(p.get('AverageCost')),
+                'country_of_origin': p.get('CountryOfOrigin'),
+                'price': num(p.get('PriceTier1')),
+            })
+        self.logger.info(f"Cin7: fetched {len(out)} stock products with SKU")
+        return out
+
     # ---- BaseConnector stubs ----
 
     def get_products(self) -> List[Dict[str, Any]]:

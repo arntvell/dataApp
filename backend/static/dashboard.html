@@ -16,6 +16,18 @@
         .filter-btn { @apply px-3 py-1 text-sm rounded-lg transition; }
         .filter-btn.active { @apply bg-blue-600 text-white; }
         .filter-btn:not(.active) { @apply bg-gray-200 text-gray-700 hover:bg-gray-300; }
+
+        /* ---- Mobile refinements ---- */
+        @media (max-width: 640px) {
+            .card { padding: 1rem; }
+            .metric-value { font-size: 1.5rem; }
+            .metric-label { font-size: 0.7rem; }
+            h1 { font-size: 1.25rem; }
+            /* long period-preset segmented control scrolls instead of overflowing the page */
+            #periodPresets { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
+            /* keep chart containers from forcing the page wider */
+            canvas { max-width: 100% !important; }
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -31,7 +43,7 @@
                 </div>
                 <div class="flex flex-wrap gap-2 items-center">
                     <!-- Period presets -->
-                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                    <div id="periodPresets" class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
                         <button onclick="setPreset('today')"     id="preset-today"     class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition whitespace-nowrap">Today</button>
                         <button onclick="setPreset('yesterday')" id="preset-yesterday" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition whitespace-nowrap">Yesterday</button>
                         <button onclick="setPreset('week')"      id="preset-week"      class="px-3 py-1.5 bg-blue-600 text-white font-medium border-l border-gray-200 transition whitespace-nowrap">This Week</button>
@@ -66,7 +78,7 @@
         </div>
 
         <!-- Summary Cards -->
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 sm:gap-6 mb-8">
             <div class="card">
                 <div class="metric-label">Net Sales (inc. VAT)</div>
                 <div class="metric-value text-green-600" id="totalRevenue">-</div>

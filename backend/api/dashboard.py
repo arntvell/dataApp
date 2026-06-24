@@ -569,6 +569,41 @@ async def get_product_variants(
     ]
 
 
+@router.get("/products/variant-locations")
+async def get_variant_locations(
+    sku: str = Query(..., description="Exact variant SKU to break down by store"),
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Per-store sales breakdown for a single variant SKU (size-level drill-down)."""
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    rows = (
+        db.query(
+            SalesOrder.location,
+            func.sum(SalesOrderItem.quantity).label('quantity_sold'),
+            func.sum(SalesOrderItem.line_total).label('revenue'),
+        )
+        .join(SalesOrder)
+        .filter(and_(get_date_filter(start_date, end_date), SalesOrderItem.sku == sku))
+        .group_by(SalesOrder.location)
+        .order_by(func.sum(SalesOrderItem.quantity).desc())
+        .all()
+    )
+    return [
+        {
+            'location': r.location or 'Unknown',
+            'quantity_sold': r.quantity_sold,
+            'revenue': float(r.revenue or 0),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/categories/list")
 async def get_categories_list(db: Session = Depends(get_db)):
     """Get list of all categories for filter dropdown"""

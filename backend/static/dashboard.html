@@ -978,8 +978,10 @@
 
                 const escapedSku = parentSku.replace(/"/g, '&quot;');
                 const variantRows = variants.map(v => `
-                    <tr class="bg-blue-50/50 border-b border-blue-100" data-parent="${escapedSku}">
-                        <td class="py-1.5 px-3 pl-8 text-sm text-gray-600">${v.size || v.sku}</td>
+                    <tr class="bg-blue-50/50 border-b border-blue-100 cursor-pointer hover:bg-blue-100/60" data-parent="${escapedSku}"
+                        data-variantsku="${encodeURIComponent(v.sku)}" data-start="${startDate}" data-end="${endDate}"
+                        onclick="toggleVariantLocations(this)" title="Show which stores sold this size">
+                        <td class="py-1.5 px-3 pl-8 text-sm text-gray-600">▸ ${v.size || v.sku}</td>
                         <td class="text-right py-1.5 px-3 text-sm">${v.quantity_sold}</td>
                         <td class="text-right py-1.5 px-3 text-sm">${formatCurrency(v.revenue)}</td>
                         <td></td>
@@ -989,6 +991,36 @@
                 row.insertAdjacentHTML('afterend', variantRows);
             } catch (error) {
                 console.error('Error fetching variants:', error);
+            }
+        }
+
+        // Second-level drill-down: which stores sold a given size (variant SKU)
+        async function toggleVariantLocations(row) {
+            const sku = decodeURIComponent(row.dataset.variantsku);
+            const startDate = row.dataset.start || currentStartDate;
+            const endDate = row.dataset.end || currentEndDate;
+
+            const existing = [...row.parentElement.querySelectorAll('tr[data-locrow]')].filter(
+                r => r.dataset.locrow === sku
+            );
+            if (existing.length > 0) { existing.forEach(r => r.remove()); return; }
+
+            try {
+                const resp = await fetch(`${API_BASE}/products/variant-locations?sku=${encodeURIComponent(sku)}&start_date=${startDate}&end_date=${endDate}`);
+                const locs = await resp.json();
+                if (!locs.length) return;
+                const skuAttr = sku.replace(/"/g, '&quot;');
+                const locRows = locs.map(l => `
+                    <tr class="bg-blue-50/20 border-b border-blue-100" data-parent="${row.dataset.parent}" data-locrow="${skuAttr}">
+                        <td class="py-1 px-3 pl-16 text-xs text-gray-500">${l.location}</td>
+                        <td class="text-right py-1 px-3 text-xs text-gray-500">${l.quantity_sold}</td>
+                        <td class="text-right py-1 px-3 text-xs text-gray-500">${formatCurrency(l.revenue)}</td>
+                        <td></td>
+                    </tr>
+                `).join('');
+                row.insertAdjacentHTML('afterend', locRows);
+            } catch (error) {
+                console.error('Error fetching variant locations:', error);
             }
         }
 

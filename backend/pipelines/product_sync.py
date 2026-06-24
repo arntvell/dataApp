@@ -28,6 +28,7 @@ from connectors.sitoo_connector import SitooConnector
 from connectors.cin7_connector import Cin7Connector
 from data.category_groups import CATEGORY_GROUPS
 from data.vendor_standardization import standardize_vendor
+from data.category_standardization import standardize_category
 from scripts.rebuild_category_mapping import get_category_from_sku_prefix, get_category_from_name
 
 logger = logging.getLogger(__name__)
@@ -196,21 +197,30 @@ class ProductSyncPipeline:
                 # ----- vintage is a sourcing segment, orthogonal to garment type -----
                 # Shopify productType reports the garment (Shirt/Knitwear/...), which would
                 # otherwise dissolve the Vintage segment the business reports on. Preserve it.
-                is_vintage = (k.startswith(("VN-", "EXT-VN-", "EXT-VIN-", "VIN-")) or "-VN-" in k)
+                is_vintage = (k.startswith(("VN-", "EXT-VN-", "EXT-VIN-", "VIN-")) or "-VN-" in k
+                              or (category or "").lower().startswith("vintage"))
                 if is_vintage:
-                    if not (category or "").startswith("Vintage"):
-                        category = f"Vintage {category}" if category and category != "Uncategorized" else "Vintage Other"
+                    # Canonicalise the garment so "Vintage Shirt/shirt/Shirts/Tee/Sweater/..."
+                    # collapse to one subcategory each (consolidation is vintage-only).
+                    garment = category or ""
+                    if garment.lower().startswith("vintage"):
+                        garment = garment[len("vintage"):].strip()
+                    canon = standardize_category(garment) if garment else "Uncategorized"
+                    category = f"Vintage {canon}" if canon and canon != "Uncategorized" else "Vintage Other"
                     category_group = "Vintage"
                     csource = (csource or "none") + "+vintage"
                     sold_as_vendor = "Vintage"
                     vsource = "vintage_rule"
 
-                # ----- parent sku (Sitoo native -> regex) -----
-                if si and si.parent_sku:
-                    parent_sku = _norm(si.parent_sku)
-                    _, size_code, size_type = _extract_parent(k)
-                else:
-                    parent_sku, size_code, size_type = _extract_parent(k)
+                # ----- parent sku -----
+                # Always size-strip the variant SKU so the parent groups variants and
+                # never shows a size (e.g. LIV-BRNS-JPN-DWN-3834 -> LIV-BRNS-JPN-DWN).
+                # Fall back to Sitoo's (also size-stripped) parent only when the SKU
+                # itself carries no size pattern.
+                base, size_code, size_type = _extract_parent(k)
+                if base == k and si and si.parent_sku:
+                    base = _extract_parent(_norm(si.parent_sku))[0]
+                parent_sku = base
 
                 rows.append({
                     "sku": k,

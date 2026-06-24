@@ -405,35 +405,66 @@ def _suggest_moves(by_loc, days):
 @router.get("/product-detail")
 async def product_detail(sku: str = Query(..., description="Parent or variant SKU"),
                          days: int = Query(30), db: Session = Depends(get_db)):
-    """Per-location stock vs recent sales for a product, with suggested transfers."""
+    """Size x location stock vs recent sales for a product, with suggested per-size transfers."""
     since = _since(days)
-    variants = [r.sku for r in db.query(ParentSkuMapping.sku).filter(ParentSkuMapping.parent_sku == sku).all()] or [sku]
-    up = [v.upper().strip() for v in variants]
+    pv = db.query(ParentSkuMapping.sku, ParentSkuMapping.size_code).filter(
+        ParentSkuMapping.parent_sku == sku).all()
+    if pv:
+        variants = [r.sku for r in pv]
+        size_of = {r.sku: (r.size_code or r.sku) for r in pv}
+    else:
+        variants = [sku]
+        size_of = {sku: sku}
+    up_to_variant = {v.upper().strip(): v for v in variants}
+    ups = list(up_to_variant.keys())
 
+    # stock per (variant, location)
     stock = {}
-    for loc, oh, av in db.query(
-        Cin7Stock.location, func.sum(Cin7Stock.on_hand), func.sum(Cin7Stock.available)
-    ).filter(_pm_sku(Cin7Stock.sku).in_(up), Cin7Stock.location.in_(PHYSICAL_LOCATIONS)).group_by(Cin7Stock.location):
-        stock[loc] = (float(oh or 0), float(av or 0))
+    for u, loc, oh, av in db.query(
+        _pm_sku(Cin7Stock.sku), Cin7Stock.location,
+        func.sum(Cin7Stock.on_hand), func.sum(Cin7Stock.available)
+    ).filter(_pm_sku(Cin7Stock.sku).in_(ups), Cin7Stock.location.in_(PHYSICAL_LOCATIONS)).group_by(
+        _pm_sku(Cin7Stock.sku), Cin7Stock.location
+    ):
+        v = up_to_variant.get(u)
+        if v:
+            stock[(v, loc)] = (float(oh or 0), float(av or 0))
 
+    # sold per (variant, location), retail stores only
     sold = {}
-    for loc, q in db.query(
-        SalesOrder.location, func.sum(SalesOrderItem.quantity)
+    for s, loc, q in db.query(
+        SalesOrderItem.sku, SalesOrder.location, func.sum(SalesOrderItem.quantity)
     ).join(SalesOrder, SalesOrderItem.order_id == SalesOrder.id).filter(
-        _pm_sku(SalesOrderItem.sku).in_(up), SalesOrder.order_date >= since,
+        SalesOrderItem.sku.in_(variants), SalesOrder.order_date >= since,
         SalesOrder.location.in_(RETAIL_STORES)
-    ).group_by(SalesOrder.location):
-        sold[loc] = int(q or 0)
+    ).group_by(SalesOrderItem.sku, SalesOrder.location):
+        sold[(s, loc)] = int(q or 0)
 
-    by_loc = []
-    for loc in PHYSICAL_LOCATIONS:
-        oh, av = stock.get(loc, (0, 0))
-        by_loc.append({"location": loc, "on_hand": oh, "available": av, "sold": sold.get(loc, 0)})
+    sizes, moves = [], []
+    for v in sorted(variants, key=lambda x: str(size_of.get(x, x))):
+        cells, sold_loc, per_loc = {}, {}, []
+        tot_av = tot_sold = 0
+        for loc in PHYSICAL_LOCATIONS:
+            oh, av = stock.get((v, loc), (0, 0))
+            sd = sold.get((v, loc), 0)
+            cells[loc] = av
+            sold_loc[loc] = sd
+            tot_av += av
+            tot_sold += sd
+            per_loc.append({"location": loc, "available": av, "sold": sd})
+        if tot_av == 0 and tot_sold == 0:
+            continue  # hide sizes with no stock and no sales
+        sizes.append({
+            "sku": v, "size": size_of.get(v, v), "cells": cells, "sold": sold_loc,
+            "total_available": tot_av, "total_sold": tot_sold,
+        })
+        for m in _suggest_moves(per_loc, days):
+            moves.append({**m, "size": size_of.get(v, v), "sku": v})
 
-    name = db.query(ProductMaster.product_name).filter(ProductMaster.sku.in_(up)).first()
+    name = db.query(ProductMaster.product_name).filter(ProductMaster.sku.in_(ups)).first()
     return {
         "sku": sku, "name": name[0] if name else sku, "days": days,
-        "by_location": by_loc, "suggested_moves": _suggest_moves(by_loc, days),
+        "locations": PHYSICAL_LOCATIONS, "sizes": sizes, "suggested_moves": moves,
     }
 
 

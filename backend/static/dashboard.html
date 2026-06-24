@@ -663,8 +663,26 @@
                 </div>
             </div>
 
-            <!-- Location summary cards -->
-            <div id="stockLocCards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"></div>
+            <!-- Location stock snapshot cards -->
+            <div id="stockLocCards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4"></div>
+
+            <!-- Sell-through context (moved off the cards) -->
+            <div class="card mb-6">
+                <h2 class="text-base font-semibold mb-1">Sell-through by location</h2>
+                <p class="text-xs text-gray-400 mb-3">Units sold and days of cover over the selected window — context for where stock is moving vs sitting.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                            <th class="text-left py-2 px-3">Location</th>
+                            <th class="text-right py-2 px-3">Available</th>
+                            <th class="text-right py-2 px-3">Sold</th>
+                            <th class="text-right py-2 px-3">Daily</th>
+                            <th class="text-right py-2 px-3">Days cover</th>
+                        </tr></thead>
+                        <tbody id="stockSellThroughBody"></tbody>
+                    </table>
+                </div>
+            </div>
 
             <!-- Product search -->
             <div class="card mb-6">
@@ -2814,21 +2832,34 @@
 
         async function renderStockLocCards() {
             const el = document.getElementById('stockLocCards');
+            const stBody = document.getElementById('stockSellThroughBody');
             try {
                 const d = await (await fetch(`${API_BASE}/stock/locations-summary?days=${stockDays}`)).json();
+                const totalAvail = d.locations.reduce((s, l) => s + (l.available || 0), 0) || 1;
+                // Clean stock snapshot cards (no sell-through here)
                 el.innerHTML = d.locations.map(l => `
                     <div class="card !p-3">
                         <div class="text-xs text-gray-500 font-medium truncate" title="${l.location}">${shortLoc(l.location)}${l.is_warehouse ? ' 🏭' : ''}</div>
                         <div class="text-xl font-bold text-gray-900">${formatCurrency(l.available)}</div>
-                        <div class="text-xs text-gray-400">avail · ${formatCurrency(l.on_hand)} on hand</div>
-                        <div class="text-xs mt-1">sold ${stockDays}d: <span class="font-medium">${l.sold}</span></div>
-                        <div class="text-xs">cover: ${coverBadge(l.days_cover)}</div>
-                    </div>`).join('') + `
-                    <div class="card !p-3 bg-blue-50">
-                        <div class="text-xs text-gray-500 font-medium">Online demand</div>
-                        <div class="text-xl font-bold text-blue-700">${d.online_demand}</div>
-                        <div class="text-xs text-gray-400">units ${stockDays}d (ex physical stock)</div>
-                    </div>`;
+                        <div class="text-xs text-gray-400">available</div>
+                        <div class="text-xs text-gray-400 mt-1">${formatCurrency(l.on_hand)} on hand · ${Math.round(l.available / totalAvail * 100)}%</div>
+                    </div>`).join('');
+                // Sell-through table (context lives here, with a label)
+                stBody.innerHTML = d.locations.map(l => `
+                    <tr class="border-b">
+                        <td class="py-2 px-3 font-medium">${shortLoc(l.location)}${l.is_warehouse ? ' 🏭' : ''}</td>
+                        <td class="text-right py-2 px-3">${formatCurrency(l.available)}</td>
+                        <td class="text-right py-2 px-3 font-medium">${l.sold}</td>
+                        <td class="text-right py-2 px-3 text-gray-500">${l.daily}</td>
+                        <td class="text-right py-2 px-3">${coverBadge(l.days_cover)}</td>
+                    </tr>`).join('') + `
+                    <tr class="border-t bg-blue-50">
+                        <td class="py-2 px-3 font-medium text-blue-700">Online (demand)</td>
+                        <td class="text-right py-2 px-3 text-gray-400">—</td>
+                        <td class="text-right py-2 px-3 font-medium">${d.online_demand}</td>
+                        <td class="text-right py-2 px-3 text-gray-400">—</td>
+                        <td class="text-right py-2 px-3 text-gray-400">fulfilled from stock</td>
+                    </tr>`;
             } catch (e) { el.innerHTML = '<div class="text-gray-400 text-sm">Failed to load.</div>'; }
         }
 
@@ -2897,31 +2928,41 @@
             panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             try {
                 const d = await (await fetch(`${API_BASE}/stock/product-detail?sku=${encodeURIComponent(sku)}&days=${stockDays}`)).json();
-                const rows = d.by_location.map(l => `
-                    <tr class="border-b"><td class="py-1.5 px-3">${l.location}</td>
-                        <td class="text-right py-1.5 px-3">${formatCurrency(l.on_hand)}</td>
-                        <td class="text-right py-1.5 px-3 text-green-600">${formatCurrency(l.available)}</td>
-                        <td class="text-right py-1.5 px-3 text-gray-500">${l.sold}</td></tr>`).join('');
+                const locs = d.locations;
+                // Size x location matrix (available units), + sold over window
+                const sizeRows = (d.sizes || []).map(s => `
+                    <tr class="border-b">
+                        <td class="py-1.5 px-3 font-medium">${s.size}</td>
+                        ${locs.map(l => `<td class="text-right py-1.5 px-3">${fmtCell(s.cells[l])}</td>`).join('')}
+                        <td class="text-right py-1.5 px-3 font-semibold">${formatCurrency(s.total_available)}</td>
+                        <td class="text-right py-1.5 px-3 text-gray-500">${s.total_sold}</td>
+                    </tr>`).join('') || `<tr><td colspan="${locs.length + 3}" class="py-3 text-center text-gray-400">No stock or sales for this product.</td></tr>`;
                 const sugg = (d.suggested_moves || []).map(m => `
                     <div class="flex items-center gap-2 text-sm py-1">
-                        <span class="text-amber-700">Move <b>${m.qty}</b>: ${m.from} → ${m.to}</span>
-                        <button onclick="addToPlan('${escAttr(d.name)}','${escAttr(sku)}','${escAttr(m.from)}','${escAttr(m.to)}',${m.qty})" class="text-xs px-2 py-0.5 bg-blue-600 text-white rounded">add</button>
+                        <span class="text-amber-700">Size <b>${m.size}</b>: move <b>${m.qty}</b> ${shortLoc(m.from)} → ${shortLoc(m.to)}</span>
+                        <button onclick="addToPlan('${escAttr(d.name)} (${escAttr(m.size)})','${escAttr(m.sku)}','${escAttr(m.from)}','${escAttr(m.to)}',${m.qty})" class="text-xs px-2 py-0.5 bg-blue-600 text-white rounded">add</button>
                     </div>`).join('') || '<div class="text-sm text-gray-400">No automatic suggestion — add a move manually below.</div>';
-                const opts = d.by_location.map(l => `<option value="${escAttr(l.location)}">${l.location}</option>`).join('');
+                const locOpts = locs.map(l => `<option value="${escAttr(l)}">${shortLoc(l)}</option>`).join('');
+                const sizeOpts = (d.sizes || []).map(s => `<option value="${escAttr(s.sku)}" data-size="${escAttr(s.size)}">${s.size}</option>`).join('');
                 panel.innerHTML = `
                     <div class="flex justify-between items-start mb-2">
                         <div><h3 class="text-lg font-semibold">${d.name}</h3><div class="text-xs text-gray-400 font-mono">${sku}</div></div>
                         <button onclick="document.getElementById('stockProductPanel').classList.add('hidden')" class="text-gray-400 hover:text-gray-600">✕</button>
                     </div>
+                    <p class="text-xs text-gray-400 mb-2">Available units by size × location (sold = last ${stockDays}d across stores).</p>
                     <div class="overflow-x-auto mb-3"><table class="w-full text-sm">
-                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase"><th class="text-left py-2 px-3">Location</th><th class="text-right py-2 px-3">On hand</th><th class="text-right py-2 px-3">Available</th><th class="text-right py-2 px-3">Sold ${stockDays}d</th></tr></thead>
-                        <tbody>${rows}</tbody></table></div>
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                            <th class="text-left py-2 px-3">Size</th>
+                            ${locs.map(l => `<th class="text-right py-2 px-3">${shortLoc(l)}</th>`).join('')}
+                            <th class="text-right py-2 px-3">Avail</th><th class="text-right py-2 px-3">Sold</th>
+                        </tr></thead><tbody>${sizeRows}</tbody></table></div>
                     <div class="mb-3"><div class="text-sm font-medium mb-1">Suggested moves</div>${sugg}</div>
                     <div class="flex flex-wrap items-end gap-2 border-t pt-3">
-                        <div><label class="text-xs text-gray-500 block">From</label><select id="mvFrom" class="border rounded px-2 py-1 text-sm">${opts}</select></div>
-                        <div><label class="text-xs text-gray-500 block">To</label><select id="mvTo" class="border rounded px-2 py-1 text-sm">${opts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">Size</label><select id="mvSize" class="border rounded px-2 py-1 text-sm">${sizeOpts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">From</label><select id="mvFrom" class="border rounded px-2 py-1 text-sm">${locOpts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">To</label><select id="mvTo" class="border rounded px-2 py-1 text-sm">${locOpts}</select></div>
                         <div><label class="text-xs text-gray-500 block">Qty</label><input id="mvQty" type="number" min="1" value="1" class="border rounded px-2 py-1 text-sm w-20"></div>
-                        <button onclick="addToPlan('${escAttr(d.name)}','${escAttr(sku)}',document.getElementById('mvFrom').value,document.getElementById('mvTo').value,parseInt(document.getElementById('mvQty').value)||0)" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm">Add to plan</button>
+                        <button onclick="addManualMove('${escAttr(d.name)}')" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm">Add to plan</button>
                     </div>`;
             } catch (e) { panel.innerHTML = '<div class="text-gray-400 text-sm">Failed to load product.</div>'; }
         }
@@ -2930,6 +2971,15 @@
             if (!from || !to || from === to || !qty || qty < 1) { alert('Pick different From/To locations and a positive quantity.'); return; }
             transferPlanItems.push({ name, sku, from, to, qty });
             renderTransferPlan();
+        }
+        function addManualMove(baseName) {
+            const sel = document.getElementById('mvSize');
+            const sku = sel.value;
+            const size = sel.options[sel.selectedIndex]?.dataset.size || '';
+            addToPlan(`${baseName} (${size})`, sku,
+                document.getElementById('mvFrom').value,
+                document.getElementById('mvTo').value,
+                parseInt(document.getElementById('mvQty').value) || 0);
         }
         function removeFromPlan(i) { transferPlanItems.splice(i, 1); renderTransferPlan(); }
         function renderTransferPlan() {

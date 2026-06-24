@@ -651,56 +651,65 @@
         <!-- TAB: Stock -->
         <div id="tab-stock" class="hidden">
 
-        <!-- Stock Overview -->
-        <div class="card mb-8">
-            <div class="flex flex-wrap justify-between items-center mb-4 gap-4">
-                <h2 class="text-xl font-semibold">Stock Overview</h2>
+            <!-- Window selector -->
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <p class="text-sm text-gray-500">Live stock across stores + warehouse, with sell-through to plan moves. Online sells from this same physical stock.</p>
                 <div class="flex items-center gap-2">
-                    <label class="text-sm text-gray-600">Location:</label>
-                    <select id="stockLocationSelect" onchange="onStockFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
-                        <option value="">All Locations</option>
-                    </select>
+                    <span class="text-sm text-gray-600">Sales window:</span>
+                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                        <button onclick="setStockDays(30)" id="stockDays-30" class="px-3 py-1.5 bg-blue-600 text-white font-medium">30 days</button>
+                        <button onclick="setStockDays(90)" id="stockDays-90" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">90 days</button>
+                    </div>
                 </div>
             </div>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="border-b bg-gray-50">
-                            <th class="text-left py-3 px-4">Location</th>
-                            <th class="text-right py-3 px-4">SKUs</th>
-                            <th class="text-right py-3 px-4">On Hand</th>
-                            <th class="text-right py-3 px-4">Allocated</th>
-                            <th class="text-right py-3 px-4">Available</th>
-                            <th class="text-right py-3 px-4">On Order</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stockTable">
-                        <tr><td colspan="6" class="py-4 text-center text-gray-400">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
 
-        <!-- Top Stock Products -->
-        <div class="card mb-8">
-            <h2 class="text-xl font-semibold mb-4">Top Products by Stock</h2>
-            <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                    <thead>
-                        <tr class="border-b bg-gray-50">
-                            <th class="text-left py-3 px-4">SKU</th>
-                            <th class="text-left py-3 px-4">Location</th>
-                            <th class="text-right py-3 px-4">On Hand</th>
-                            <th class="text-right py-3 px-4">Available</th>
-                            <th class="text-right py-3 px-4">On Order</th>
-                        </tr>
-                    </thead>
-                    <tbody id="stockProductsTable">
-                        <tr><td colspan="5" class="py-4 text-center text-gray-400">Loading...</td></tr>
-                    </tbody>
-                </table>
+            <!-- Location summary cards -->
+            <div id="stockLocCards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6"></div>
+
+            <!-- Product search -->
+            <div class="card mb-6">
+                <h2 class="text-xl font-semibold mb-1">Find a product</h2>
+                <p class="text-xs text-gray-400 mb-3">Search by SKU or name to see stock vs sales per location and plan a transfer.</p>
+                <input id="stockSearch" oninput="onStockSearch()" placeholder="e.g. Barnes, LIV-BRNS, shirt…"
+                       class="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
+                <div id="stockSearchResults" class="mt-3"></div>
             </div>
-        </div>
+
+            <!-- Product detail panel (per-location + suggested moves) -->
+            <div id="stockProductPanel" class="card mb-6 hidden"></div>
+
+            <!-- Category x Location matrix -->
+            <div class="card mb-6">
+                <div class="flex flex-wrap justify-between items-center mb-1 gap-2">
+                    <h2 class="text-xl font-semibold">Stock by category × location</h2>
+                    <div id="stockMatrixCrumb" class="text-sm"></div>
+                </div>
+                <p class="text-xs text-gray-400 mb-3">On-hand units per location. Click a category to drill into products, then a product to plan a move.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm" id="stockMatrixTable">
+                        <thead id="stockMatrixHead"></thead>
+                        <tbody id="stockMatrixBody"><tr><td class="py-4 text-center text-gray-400">Loading…</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Transfer plan -->
+            <div class="card mb-8">
+                <div class="flex flex-wrap justify-between items-center mb-3 gap-2">
+                    <h2 class="text-xl font-semibold">Transfer plan</h2>
+                    <button onclick="exportTransferPlan()" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700">Export CSV</button>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                            <th class="text-left py-2 px-3">Product</th><th class="text-left py-2 px-3">SKU</th>
+                            <th class="text-left py-2 px-3">From</th><th class="text-left py-2 px-3">To</th>
+                            <th class="text-right py-2 px-3">Qty</th><th class="py-2 px-3"></th>
+                        </tr></thead>
+                        <tbody id="transferPlanBody"><tr><td colspan="6" class="py-4 text-center text-gray-400">No moves planned yet — add from a product above.</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
 
         </div> <!-- end tab-stock -->
 
@@ -2697,6 +2706,12 @@
                 onBrandFilterChange();
             }
 
+            // Lazy-load stock/inventory tab on first visit
+            if (tab === 'stock' && !stockLoaded) {
+                stockLoaded = true;
+                loadStockTab();
+            }
+
             // Redraw charts when switching to sales (canvas visibility issue)
             if (tab === 'sales') {
                 setTimeout(() => {
@@ -2762,85 +2777,180 @@
             select.innerHTML = options.join('');
         }
 
-        // ============== Stock Overview ==============
+        // ============== Stock / Inventory planning ==============
+        let stockDays = 30;
+        let stockMatrixGroup = null;
+        let stockLoaded = false;
+        let transferPlanItems = [];
+        let _stockSearchTimer = null;
 
-        async function fetchStockOverview(location = '') {
-            try {
-                let url = `${API_BASE}/stock/overview`;
-                if (location) url += `?location=${encodeURIComponent(location)}`;
-                const response = await fetch(url);
-                return await response.json();
-            } catch (error) {
-                console.error('Error fetching stock overview:', error);
-                return [];
-            }
+        async function loadStockTab() {
+            await Promise.all([renderStockLocCards(), renderStockMatrix()]);
         }
 
-        async function fetchStockProducts(location = '') {
-            try {
-                let url = `${API_BASE}/stock/by-product?limit=20`;
-                if (location) url += `&location=${encodeURIComponent(location)}`;
-                const response = await fetch(url);
-                return await response.json();
-            } catch (error) {
-                console.error('Error fetching stock products:', error);
-                return [];
-            }
-        }
-
-        function updateStockTable(data) {
-            const tbody = document.getElementById('stockTable');
-            if (!data || data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">No stock data available</td></tr>';
-                return;
-            }
-            tbody.innerHTML = data.map(row => `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="py-3 px-4 font-medium">${row.location}</td>
-                    <td class="text-right py-3 px-4">${formatCurrency(row.sku_count)}</td>
-                    <td class="text-right py-3 px-4 font-semibold">${formatCurrency(row.on_hand)}</td>
-                    <td class="text-right py-3 px-4">${formatCurrency(row.allocated)}</td>
-                    <td class="text-right py-3 px-4 text-green-600 font-semibold">${formatCurrency(row.available)}</td>
-                    <td class="text-right py-3 px-4 text-blue-600">${formatCurrency(row.on_order)}</td>
-                </tr>
-            `).join('');
-        }
-
-        function updateStockProductsTable(data) {
-            const tbody = document.getElementById('stockProductsTable');
-            if (!data || data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">No stock data available</td></tr>';
-                return;
-            }
-            tbody.innerHTML = data.map(row => `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="py-2 px-4 font-mono text-xs">${row.sku}</td>
-                    <td class="py-2 px-4 text-gray-500">${row.location}</td>
-                    <td class="text-right py-2 px-4 font-semibold">${formatCurrency(row.on_hand)}</td>
-                    <td class="text-right py-2 px-4 text-green-600">${formatCurrency(row.available)}</td>
-                    <td class="text-right py-2 px-4 text-blue-600">${formatCurrency(row.on_order)}</td>
-                </tr>
-            `).join('');
-        }
-
-        function populateStockLocationDropdown(locations) {
-            const select = document.getElementById('stockLocationSelect');
-            if (!select) return;
-            const options = ['<option value="">All Locations</option>'];
-            locations.forEach(l => {
-                options.push(`<option value="${l}">${l}</option>`);
+        function setStockDays(d) {
+            stockDays = d;
+            ['30', '90'].forEach(x => {
+                const b = document.getElementById('stockDays-' + x);
+                if (!b) return;
+                b.className = 'px-3 py-1.5 ' + (x !== '30' ? 'border-l border-gray-200 ' : '') +
+                    (parseInt(x) === d ? 'bg-blue-600 text-white font-medium' : 'bg-white text-gray-600 hover:bg-gray-50');
             });
-            select.innerHTML = options.join('');
+            loadStockTab();
+            const panel = document.getElementById('stockProductPanel');
+            if (panel && !panel.classList.contains('hidden') && panel.dataset.sku) openStockProduct(panel.dataset.sku);
         }
 
-        async function onStockFilterChange() {
-            const location = document.getElementById('stockLocationSelect')?.value || '';
-            const [overview, products] = await Promise.all([
-                fetchStockOverview(location),
-                fetchStockProducts(location),
-            ]);
-            updateStockTable(overview);
-            updateStockProductsTable(products);
+        function coverBadge(days) {
+            if (days === null || days === undefined) return '<span class="text-gray-400">—</span>';
+            let cls = 'text-gray-600';
+            if (days < 14) cls = 'text-red-600 font-semibold';
+            else if (days > 120) cls = 'text-amber-600 font-semibold';
+            return `<span class="${cls}">${days}d</span>`;
+        }
+        function fmtCell(v) { return v ? formatCurrency(v) : '<span class="text-gray-300">·</span>'; }
+        function escAttr(s) { return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+        function shortLoc(l) { return l.replace('Livid ', '').replace('Sentrallager', 'Lager'); }
+
+        async function renderStockLocCards() {
+            const el = document.getElementById('stockLocCards');
+            try {
+                const d = await (await fetch(`${API_BASE}/stock/locations-summary?days=${stockDays}`)).json();
+                el.innerHTML = d.locations.map(l => `
+                    <div class="card !p-3">
+                        <div class="text-xs text-gray-500 font-medium truncate" title="${l.location}">${shortLoc(l.location)}${l.is_warehouse ? ' 🏭' : ''}</div>
+                        <div class="text-xl font-bold text-gray-900">${formatCurrency(l.available)}</div>
+                        <div class="text-xs text-gray-400">avail · ${formatCurrency(l.on_hand)} on hand</div>
+                        <div class="text-xs mt-1">sold ${stockDays}d: <span class="font-medium">${l.sold}</span></div>
+                        <div class="text-xs">cover: ${coverBadge(l.days_cover)}</div>
+                    </div>`).join('') + `
+                    <div class="card !p-3 bg-blue-50">
+                        <div class="text-xs text-gray-500 font-medium">Online demand</div>
+                        <div class="text-xl font-bold text-blue-700">${d.online_demand}</div>
+                        <div class="text-xs text-gray-400">units ${stockDays}d (ex physical stock)</div>
+                    </div>`;
+            } catch (e) { el.innerHTML = '<div class="text-gray-400 text-sm">Failed to load.</div>'; }
+        }
+
+        function stockHeadRow(first, locations, lastLabel) {
+            return `<tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                <th class="text-left py-2 px-3">${first}</th>
+                ${locations.map(l => `<th class="text-right py-2 px-3">${shortLoc(l)}</th>`).join('')}
+                <th class="text-right py-2 px-3">On hand</th>
+                <th class="text-right py-2 px-3">${lastLabel}</th></tr>`;
+        }
+
+        async function renderStockMatrix() {
+            const head = document.getElementById('stockMatrixHead');
+            const body = document.getElementById('stockMatrixBody');
+            const crumb = document.getElementById('stockMatrixCrumb');
+            try {
+                if (!stockMatrixGroup) {
+                    crumb.innerHTML = '';
+                    const d = await (await fetch(`${API_BASE}/stock/matrix?days=${stockDays}`)).json();
+                    head.innerHTML = stockHeadRow('Category', d.locations, 'Sold ' + stockDays + 'd');
+                    body.innerHTML = d.rows.map(row => `
+                        <tr class="border-b hover:bg-blue-50 cursor-pointer" onclick="drillStockGroup('${escAttr(row.group)}')">
+                            <td class="py-2 px-3 font-medium text-blue-700">${row.group}</td>
+                            ${d.locations.map(loc => `<td class="text-right py-2 px-3">${fmtCell(row.cells[loc])}</td>`).join('')}
+                            <td class="text-right py-2 px-3 font-semibold">${formatCurrency(row.on_hand)}</td>
+                            <td class="text-right py-2 px-3 text-gray-500">${row.sold}</td>
+                        </tr>`).join('');
+                } else {
+                    crumb.innerHTML = `<button onclick="drillStockGroup(null)" class="text-blue-600 hover:underline">‹ All categories</button> › <span class="font-medium text-gray-700">${stockMatrixGroup}</span>`;
+                    const d = await (await fetch(`${API_BASE}/stock/matrix/products?category_group=${encodeURIComponent(stockMatrixGroup)}&days=${stockDays}`)).json();
+                    head.innerHTML = stockHeadRow('Product', d.locations, 'Total');
+                    body.innerHTML = d.products.map(p => `
+                        <tr class="border-b hover:bg-blue-50 cursor-pointer" onclick="openStockProduct('${escAttr(p.parent_sku)}')">
+                            <td class="py-2 px-3"><div class="font-medium text-blue-700 text-xs">${p.name || p.parent_sku}</div><div class="text-xs text-gray-400 font-mono">${p.parent_sku}</div></td>
+                            ${d.locations.map(loc => `<td class="text-right py-2 px-3">${fmtCell(p.cells[loc])}</td>`).join('')}
+                            <td class="text-right py-2 px-3 font-semibold">${formatCurrency(p.on_hand)}</td><td></td>
+                        </tr>`).join('') || `<tr><td class="py-4 text-center text-gray-400">No products.</td></tr>`;
+                }
+            } catch (e) { body.innerHTML = `<tr><td class="py-4 text-center text-gray-400">Failed to load.</td></tr>`; }
+        }
+
+        function drillStockGroup(g) { stockMatrixGroup = g; renderStockMatrix(); }
+
+        function onStockSearch() {
+            clearTimeout(_stockSearchTimer);
+            const q = document.getElementById('stockSearch').value.trim();
+            const out = document.getElementById('stockSearchResults');
+            if (q.length < 2) { out.innerHTML = ''; return; }
+            _stockSearchTimer = setTimeout(async () => {
+                try {
+                    const d = await (await fetch(`${API_BASE}/stock/search?q=${encodeURIComponent(q)}`)).json();
+                    out.innerHTML = d.length ? d.map(p => `
+                        <div class="flex justify-between items-center py-1.5 border-b cursor-pointer hover:bg-blue-50 px-2 rounded" onclick="openStockProduct('${escAttr(p.parent_sku)}')">
+                            <div><span class="text-sm font-medium">${p.name}</span> <span class="text-xs text-gray-400 font-mono">${p.parent_sku}</span></div>
+                            <div class="text-sm text-gray-600">${formatCurrency(p.on_hand)} on hand</div>
+                        </div>`).join('') : '<div class="text-sm text-gray-400">No matches.</div>';
+                } catch (e) { out.innerHTML = '<div class="text-sm text-gray-400">Search failed.</div>'; }
+            }, 250);
+        }
+
+        async function openStockProduct(sku) {
+            const panel = document.getElementById('stockProductPanel');
+            panel.classList.remove('hidden');
+            panel.dataset.sku = sku;
+            panel.innerHTML = '<div class="text-gray-400 text-sm">Loading…</div>';
+            panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            try {
+                const d = await (await fetch(`${API_BASE}/stock/product-detail?sku=${encodeURIComponent(sku)}&days=${stockDays}`)).json();
+                const rows = d.by_location.map(l => `
+                    <tr class="border-b"><td class="py-1.5 px-3">${l.location}</td>
+                        <td class="text-right py-1.5 px-3">${formatCurrency(l.on_hand)}</td>
+                        <td class="text-right py-1.5 px-3 text-green-600">${formatCurrency(l.available)}</td>
+                        <td class="text-right py-1.5 px-3 text-gray-500">${l.sold}</td></tr>`).join('');
+                const sugg = (d.suggested_moves || []).map(m => `
+                    <div class="flex items-center gap-2 text-sm py-1">
+                        <span class="text-amber-700">Move <b>${m.qty}</b>: ${m.from} → ${m.to}</span>
+                        <button onclick="addToPlan('${escAttr(d.name)}','${escAttr(sku)}','${escAttr(m.from)}','${escAttr(m.to)}',${m.qty})" class="text-xs px-2 py-0.5 bg-blue-600 text-white rounded">add</button>
+                    </div>`).join('') || '<div class="text-sm text-gray-400">No automatic suggestion — add a move manually below.</div>';
+                const opts = d.by_location.map(l => `<option value="${escAttr(l.location)}">${l.location}</option>`).join('');
+                panel.innerHTML = `
+                    <div class="flex justify-between items-start mb-2">
+                        <div><h3 class="text-lg font-semibold">${d.name}</h3><div class="text-xs text-gray-400 font-mono">${sku}</div></div>
+                        <button onclick="document.getElementById('stockProductPanel').classList.add('hidden')" class="text-gray-400 hover:text-gray-600">✕</button>
+                    </div>
+                    <div class="overflow-x-auto mb-3"><table class="w-full text-sm">
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase"><th class="text-left py-2 px-3">Location</th><th class="text-right py-2 px-3">On hand</th><th class="text-right py-2 px-3">Available</th><th class="text-right py-2 px-3">Sold ${stockDays}d</th></tr></thead>
+                        <tbody>${rows}</tbody></table></div>
+                    <div class="mb-3"><div class="text-sm font-medium mb-1">Suggested moves</div>${sugg}</div>
+                    <div class="flex flex-wrap items-end gap-2 border-t pt-3">
+                        <div><label class="text-xs text-gray-500 block">From</label><select id="mvFrom" class="border rounded px-2 py-1 text-sm">${opts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">To</label><select id="mvTo" class="border rounded px-2 py-1 text-sm">${opts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">Qty</label><input id="mvQty" type="number" min="1" value="1" class="border rounded px-2 py-1 text-sm w-20"></div>
+                        <button onclick="addToPlan('${escAttr(d.name)}','${escAttr(sku)}',document.getElementById('mvFrom').value,document.getElementById('mvTo').value,parseInt(document.getElementById('mvQty').value)||0)" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm">Add to plan</button>
+                    </div>`;
+            } catch (e) { panel.innerHTML = '<div class="text-gray-400 text-sm">Failed to load product.</div>'; }
+        }
+
+        function addToPlan(name, sku, from, to, qty) {
+            if (!from || !to || from === to || !qty || qty < 1) { alert('Pick different From/To locations and a positive quantity.'); return; }
+            transferPlanItems.push({ name, sku, from, to, qty });
+            renderTransferPlan();
+        }
+        function removeFromPlan(i) { transferPlanItems.splice(i, 1); renderTransferPlan(); }
+        function renderTransferPlan() {
+            const b = document.getElementById('transferPlanBody');
+            if (!transferPlanItems.length) { b.innerHTML = '<tr><td colspan="6" class="py-4 text-center text-gray-400">No moves planned yet — add from a product above.</td></tr>'; return; }
+            b.innerHTML = transferPlanItems.map((m, i) => `
+                <tr class="border-b">
+                    <td class="py-2 px-3">${m.name}</td><td class="py-2 px-3 font-mono text-xs">${m.sku}</td>
+                    <td class="py-2 px-3">${m.from}</td><td class="py-2 px-3">${m.to}</td>
+                    <td class="text-right py-2 px-3 font-semibold">${m.qty}</td>
+                    <td class="py-2 px-3 text-right"><button onclick="removeFromPlan(${i})" class="text-red-500 hover:text-red-700 text-xs">remove</button></td>
+                </tr>`).join('');
+        }
+        function exportTransferPlan() {
+            if (!transferPlanItems.length) { alert('No moves to export.'); return; }
+            const rows = [['Product', 'SKU', 'From', 'To', 'Qty'], ...transferPlanItems.map(m => [m.name, m.sku, m.from, m.to, m.qty])];
+            const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+            a.download = `transfer_plan_${new Date().toISOString().slice(0, 10)}.csv`;
+            a.click();
         }
 
         // ============== Enhanced refresh with new sections ==============
@@ -2850,28 +2960,17 @@
         refreshDashboard = async function() {
             await _originalRefresh();
 
-            // Load budget and stock data in parallel
-            const [budgetData, stockOverview, stockProducts] = await Promise.all([
-                fetchBudgetVsActual(),
-                fetchStockOverview(),
-                fetchStockProducts(),
-            ]);
-
+            // Load budget data
+            const budgetData = await fetchBudgetVsActual();
             updateBudgetTable(budgetData);
-            updateStockTable(stockOverview);
-            updateStockProductsTable(stockProducts);
 
             // Populate store dropdown from budget data
             if (budgetData && budgetData.length > 0) {
-                const stores = budgetData.map(r => r.store);
-                populateBudgetStoreDropdown(stores);
+                populateBudgetStoreDropdown(budgetData.map(r => r.store));
             }
 
-            // Populate stock location dropdown from overview data
-            if (stockOverview && stockOverview.length > 0) {
-                const locs = stockOverview.map(r => r.location);
-                populateStockLocationDropdown(locs);
-            }
+            // Refresh the stock tab if it's been opened (independent of date range)
+            if (stockLoaded) loadStockTab();
 
             // Refresh brands if the tab has been visited
             if (brandsLoaded) {

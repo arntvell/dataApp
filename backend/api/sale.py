@@ -22,9 +22,9 @@ from database.config import get_db
 from database.models import (
     ProductMaster, ParentSkuMapping, Cin7Stock, RawShopifyProduct,
     SalesOrder, SalesOrderItem,
-    SaleSeason, SalePlanItem, SaleVariantOverride,
+    SaleSeason, SalePlanItem, SaleVariantOverride, SaleAllocation,
 )
-from api.stock import PHYSICAL_LOCATIONS, _pm_sku, _since
+from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since
 
 # Shopify collection-season tags look like ss20 / FW24 / AW23 (not the SALE_* tags)
 _SEASON_RE = re.compile(r"^(SS|FW|AW|HO|PRE|RESORT)\s?\d{2}$", re.IGNORECASE)
@@ -456,6 +456,123 @@ async def bulk_update(payload: dict = Body(...), db: Session = Depends(get_db)):
         n += 1
     db.commit()
     return {"ok": True, "updated": n}
+
+
+# ---------- validation & store allocation ----------
+
+def _store_weights(db):
+    """Normalized store weight = each store's units sold in the last 90 days (size/market proxy)."""
+    since = _since(90)
+    w = {s: 0.0 for s in RETAIL_STORES}
+    for loc, q in db.query(SalesOrder.location, func.sum(SalesOrderItem.quantity)).join(
+        SalesOrderItem, SalesOrderItem.order_id == SalesOrder.id
+    ).filter(SalesOrder.order_date >= since, SalesOrder.location.in_(RETAIL_STORES)).group_by(SalesOrder.location):
+        w[loc] = float(q or 0)
+    tot = sum(w.values()) or 1.0
+    return {s: w[s] / tot for s in RETAIL_STORES}
+
+
+def _recommend_style(total_units, norm_w):
+    """Distribute a style's total units across stores: coverage floor of 1, remainder sales-weighted."""
+    stores = RETAIL_STORES
+    n = len(stores)
+    t = int(round(total_units or 0))
+    alloc = {s: 0 for s in stores}
+    if t <= 0:
+        return alloc
+    order = sorted(stores, key=lambda s: norm_w.get(s, 0), reverse=True)
+    if t <= n:
+        for s in order[:t]:
+            alloc[s] = 1
+        return alloc
+    for s in stores:
+        alloc[s] = 1                       # baseline coverage
+    rem = t - n
+    raw = {s: rem * norm_w.get(s, 0) for s in stores}
+    for s in stores:
+        alloc[s] += int(raw[s])
+    leftover = rem - sum(int(raw[s]) for s in stores)
+    for s in sorted(stores, key=lambda s: raw[s] - int(raw[s]), reverse=True)[:leftover]:
+        alloc[s] += 1
+    return alloc
+
+
+@router.get("/validation")
+async def validation(season_id: int = Query(...), db: Session = Depends(get_db)):
+    """On-sale (with per-store/warehouse stock + recommended/saved store targets) and
+    not-on-sale style lists, both sorted by brand, for final review + allocation."""
+    season = _season_or_404(db, season_id)
+    rounds = season.rounds or []
+    styles = _aggregate_styles(db)
+    plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season_id)}
+
+    stock_ps = {}
+    for parent, loc, oh in db.query(
+        ProductMaster.parent_sku, Cin7Stock.location, func.sum(Cin7Stock.on_hand)
+    ).select_from(Cin7Stock).join(ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)).filter(
+        Cin7Stock.location.in_(PHYSICAL_LOCATIONS), ProductMaster.parent_sku.isnot(None)
+    ).group_by(ProductMaster.parent_sku, Cin7Stock.location):
+        stock_ps.setdefault(parent, {})[loc] = float(oh or 0)
+
+    norm_w = _store_weights(db)
+    saved = {}
+    for a in db.query(SaleAllocation).filter(SaleAllocation.season_id == season_id):
+        saved[(a.parent_sku, a.store)] = a.target_qty
+    wh = WAREHOUSE[0]
+
+    on_sale, not_on = [], []
+    for parent, st in styles.items():
+        if st["on_hand"] <= 0:
+            continue
+        loc_stock = stock_ps.get(parent, {})
+        store_stock = {s: loc_stock.get(s, 0) for s in RETAIL_STORES}
+        row = {
+            "parent_sku": parent, "brand": st["brand"], "name": st["name"], "gender": st["gender"],
+            "season": st["season"], "sold": st["sold"],
+            "store_stock": store_stock, "warehouse": loc_stock.get(wh, 0), "total": st["on_hand"],
+        }
+        pi = plan.get(parent)
+        included = pi.included if pi else True
+        if included:
+            style_pcts = (pi.round_pcts if pi else None) or []
+            row["discount"] = _resolve_pct(rounds, style_pcts, None, 0) if rounds else None
+            if any((parent, s) in saved for s in RETAIL_STORES):
+                row["target"] = {s: saved.get((parent, s), 0) for s in RETAIL_STORES}
+            else:
+                row["target"] = _recommend_style(st["on_hand"], norm_w)
+            on_sale.append(row)
+        else:
+            not_on.append(row)
+
+    on_sale.sort(key=lambda r: (r["brand"], r["name"]))
+    not_on.sort(key=lambda r: (r["brand"], r["name"]))
+    return {"season": _season_dict(season), "stores": RETAIL_STORES, "warehouse": wh,
+            "on_sale": on_sale, "not_on_sale": not_on}
+
+
+@router.post("/allocation")
+async def save_allocation(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Upsert store target quantities. items: [{parent_sku, store, qty}]"""
+    season_id = payload["season_id"]
+    for it in payload.get("items") or []:
+        a = db.query(SaleAllocation).filter(
+            SaleAllocation.season_id == season_id,
+            SaleAllocation.parent_sku == it["parent_sku"],
+            SaleAllocation.store == it["store"]).first()
+        if not a:
+            a = SaleAllocation(season_id=season_id, parent_sku=it["parent_sku"], store=it["store"])
+            db.add(a)
+        a.target_qty = int(it.get("qty") or 0)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/allocation/reset")
+async def reset_allocation(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Discard manual store targets so the recommendation is used again."""
+    db.query(SaleAllocation).filter(SaleAllocation.season_id == payload["season_id"]).delete()
+    db.commit()
+    return {"ok": True}
 
 
 # ---------- export ----------

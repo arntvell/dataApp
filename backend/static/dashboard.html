@@ -38,7 +38,7 @@
         }
 
         /* Sticky column header within each brand's scrollable table body */
-        #saleStyles thead th {
+        #saleStyles thead th, #valBody thead th {
             position: sticky;
             top: 0;
             background: #f9fafb;
@@ -793,6 +793,24 @@
             <!-- Styles grouped by brand -->
             <div class="card mb-4">
                 <div id="saleStyles"><div class="py-4 text-center text-gray-400">Loading…</div></div>
+            </div>
+
+            <!-- Validation & store allocation -->
+            <div class="card mb-4">
+                <div class="flex flex-wrap items-center gap-2 mb-2">
+                    <h2 class="text-base font-semibold">Validation &amp; allocation</h2>
+                    <button onclick="loadValidation()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Refresh</button>
+                    <button onclick="resetAllocation()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50" title="Discard manual edits, restore recommended allocation">Reset to recommendation</button>
+                    <span class="flex-1"></span>
+                    <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
+                        <button id="valTab-on" onclick="setValTab('on')" class="px-3 py-1 bg-blue-600 text-white font-medium">On sale</button>
+                        <button id="valTab-off" onclick="setValTab('off')" class="px-3 py-1 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">Not on sale</button>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-400 mb-2">Per-store + warehouse stock with recommended store targets (editable). Transfer = target − current store stock.</p>
+                <div id="valBody" class="overflow-auto" style="max-height:75vh">
+                    <div class="py-6 text-center"><button onclick="loadValidation()" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Load validation list</button></div>
+                </div>
             </div>
 
             <!-- Export -->
@@ -3347,6 +3365,82 @@
         }
         function exportSale(target, round) {
             window.open(`${API_BASE}/sale/export/${target}?season_id=${saleSeason.id}&round=${round}`, '_blank');
+        }
+
+        // ----- Validation & store allocation -----
+        let valData = null, valTab = 'on';
+        async function loadValidation() {
+            if (!saleSeason) return;
+            const body = document.getElementById('valBody');
+            body.innerHTML = '<div class="py-4 text-center text-gray-400">Loading…</div>';
+            try {
+                valData = await (await fetch(`${API_BASE}/sale/validation?season_id=${saleSeason.id}`)).json();
+                renderValidation();
+            } catch (e) { body.innerHTML = '<div class="py-4 text-center text-gray-400">Failed to load.</div>'; }
+        }
+        function setValTab(t) {
+            valTab = t;
+            document.getElementById('valTab-on').className = 'px-3 py-1 ' + (t === 'on' ? 'bg-blue-600 text-white font-medium' : 'bg-white text-gray-600 hover:bg-gray-50');
+            document.getElementById('valTab-off').className = 'px-3 py-1 border-l border-gray-200 ' + (t === 'off' ? 'bg-blue-600 text-white font-medium' : 'bg-white text-gray-600 hover:bg-gray-50');
+            if (valData) renderValidation(); else loadValidation();
+        }
+        function sendTag(send) {
+            return send > 0 ? `<span class="text-green-600">+${send}</span>`
+                : (send < 0 ? `<span class="text-gray-400">${send}</span>` : '<span class="text-gray-300">0</span>');
+        }
+        function renderValidation() {
+            const body = document.getElementById('valBody');
+            if (!valData) return;
+            const stores = valData.stores;
+            if (valTab === 'off') {
+                const rows = valData.not_on_sale;
+                body.innerHTML = `<table class="w-full text-sm"><thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                    <th class="text-left py-1.5 px-2">Brand</th><th class="text-left py-1.5 px-2">Style</th>
+                    ${stores.map(s => `<th class="text-right py-1.5 px-2">${shortLoc(s)}</th>`).join('')}
+                    <th class="text-right py-1.5 px-2">WH</th><th class="text-right py-1.5 px-2">Total</th></tr></thead>
+                    <tbody>${rows.length ? rows.map(r => `<tr class="border-b">
+                        <td class="py-1 px-2 text-gray-500">${r.brand}</td>
+                        <td class="py-1 px-2">${r.name}<div class="text-[10px] text-gray-400 font-mono">${r.parent_sku}</div></td>
+                        ${stores.map(s => `<td class="text-right py-1 px-2">${formatCurrency(r.store_stock[s] || 0)}</td>`).join('')}
+                        <td class="text-right py-1 px-2 text-gray-500">${formatCurrency(r.warehouse)}</td>
+                        <td class="text-right py-1 px-2 font-semibold">${formatCurrency(r.total)}</td></tr>`).join('') : `<tr><td colspan="${stores.length + 4}" class="py-4 text-center text-gray-400">Nothing excluded.</td></tr>`}</tbody></table>`;
+                return;
+            }
+            const rows = valData.on_sale;
+            body.innerHTML = `<table class="w-full text-sm"><thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                <th class="text-left py-1.5 px-2">Brand</th><th class="text-left py-1.5 px-2">Style</th><th class="text-right py-1.5 px-2">Disc</th>
+                ${stores.map(s => `<th class="text-center py-1.5 px-2">${shortLoc(s)}</th>`).join('')}
+                <th class="text-right py-1.5 px-2">WH</th><th class="text-right py-1.5 px-2">Total</th></tr></thead>
+                <tbody>${rows.map(r => valRow(r, stores)).join('')}</tbody></table>`;
+        }
+        function valRow(r, stores) {
+            const cells = stores.map(s => {
+                const stock = Math.round(r.store_stock[s] || 0), tgt = r.target[s] || 0;
+                return `<td class="py-1 px-2 text-center">
+                    <input type="number" min="0" value="${tgt}" onchange="saveAllocCell('${escAttr(r.parent_sku)}','${escAttr(s)}',this)" class="border rounded px-1 py-0.5 text-xs w-12 text-center">
+                    <div class="text-[10px] text-gray-400">have ${stock} · <span class="alSend">${sendTag(tgt - stock)}</span></div></td>`;
+            }).join('');
+            return `<tr class="border-b hover:bg-gray-50">
+                <td class="py-1 px-2 text-gray-500">${r.brand}</td>
+                <td class="py-1 px-2">${r.name}<div class="text-[10px] text-gray-400 font-mono">${r.parent_sku}</div></td>
+                <td class="py-1 px-2 text-right">${r.discount != null ? r.discount + '%' : '—'}</td>
+                ${cells}
+                <td class="py-1 px-2 text-right text-gray-500">${formatCurrency(r.warehouse)}</td>
+                <td class="py-1 px-2 text-right font-semibold">${formatCurrency(r.total)}</td></tr>`;
+        }
+        async function saveAllocCell(parent, store, el) {
+            const qty = parseInt(el.value) || 0;
+            const row = valData.on_sale.find(r => r.parent_sku === parent);
+            if (row) row.target[store] = qty;
+            const stock = row ? Math.round(row.store_stock[store] || 0) : 0;
+            const div = el.parentElement.querySelector('.alSend');
+            if (div) div.innerHTML = sendTag(qty - stock);
+            await fetch(`${API_BASE}/sale/allocation`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, items: [{ parent_sku: parent, store, qty }] }) });
+        }
+        async function resetAllocation() {
+            if (!saleSeason || !confirm('Discard manual store targets and restore the recommended allocation?')) return;
+            await fetch(`${API_BASE}/sale/allocation/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id }) });
+            loadValidation();
         }
 
         // Extend the original refreshDashboard to also load budget + stock + brands

@@ -582,3 +582,18 @@ class SaleVariantOverride(Base):
     excluded = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class SaleAllocation(Base):
+    """Target units of a style (parent SKU) to hold at a store for a sale season.
+    Transfers = target_qty - current store on-hand. Recommendation pre-fills this."""
+    __tablename__ = "sale_allocations"
+    __table_args__ = (UniqueConstraint("season_id", "parent_sku", "store", name="uq_sale_alloc"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    season_id = Column(Integer, ForeignKey("sale_seasons.id"), nullable=False, index=True)
+    parent_sku = Column(String, nullable=False, index=True)
+    store = Column(String, nullable=False)
+    target_qty = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

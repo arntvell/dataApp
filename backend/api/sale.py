@@ -9,6 +9,7 @@ optional per-variant override), and exports Sitoo / Shopify price-list CSVs.
 import csv
 import io
 import logging
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional, List
 
@@ -19,11 +20,24 @@ from sqlalchemy.orm import Session
 
 from database.config import get_db
 from database.models import (
-    ProductMaster, ParentSkuMapping, Cin7Stock,
+    ProductMaster, ParentSkuMapping, Cin7Stock, RawShopifyProduct,
     SalesOrder, SalesOrderItem,
     SaleSeason, SalePlanItem, SaleVariantOverride,
 )
 from api.stock import PHYSICAL_LOCATIONS, _pm_sku, _since
+
+# Shopify collection-season tags look like ss20 / FW24 / AW23 (not the SALE_* tags)
+_SEASON_RE = re.compile(r"^(SS|FW|AW|HO|PRE|RESORT)\s?\d{2}$", re.IGNORECASE)
+
+
+def _pick_season(tokens):
+    """From a set of season tags pick the earliest (origin collection)."""
+    if not tokens:
+        return None
+    def yr(t):
+        m = re.search(r"\d{2}$", t)
+        return int(m.group()) if m else 99
+    return sorted(tokens, key=lambda t: (yr(t), t))[0]
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dashboard/sale", tags=["Sale Planner"])
@@ -171,6 +185,16 @@ def _aggregate_styles(db):
     ).group_by(ProductMaster.parent_sku):
         age[p] = (firstsold.year if firstsold else None, int(yrs or 0))
 
+    # season tags per parent (from Shopify collection tags)
+    season_tokens = {}
+    for parent, tags in db.query(ProductMaster.parent_sku, RawShopifyProduct.tags).join(
+        RawShopifyProduct, ProductMaster.sku == _pm_sku(RawShopifyProduct.sku)
+    ).filter(ProductMaster.parent_sku.isnot(None), RawShopifyProduct.tags.isnot(None)):
+        for t in (tags or "").split(","):
+            t = t.strip()
+            if _SEASON_RE.match(t):
+                season_tokens.setdefault(parent, set()).add(t.upper().replace(" ", ""))
+
     styles = {}
     for parent, brand, gender, category, name, price in db.query(
         ProductMaster.parent_sku, func.min(ProductMaster.sold_as_vendor),
@@ -186,6 +210,7 @@ def _aggregate_styles(db):
             "on_hand": float(stock.get(parent, 0) or 0),
             "sold": int(sold.get(parent, 0) or 0),
             "first_sold_year": first_yr, "years_active": yrs_active,
+            "season": _pick_season(season_tokens.get(parent)),
             "old_flag": bool(first_yr and first_yr <= cur_year - AGE_CUTOFF_YEARS),
             "carryover_flag": bool(yrs_active >= CARRYOVER_YEARS),
         }

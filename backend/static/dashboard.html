@@ -36,12 +36,21 @@
             /* final guard: never let the page scroll sideways on phones */
             html, body { overflow-x: hidden; }
         }
+
+        /* Sticky column header within each brand's scrollable table body */
+        #saleStyles thead th {
+            position: sticky;
+            top: 0;
+            background: #f9fafb;
+            z-index: 20;
+            box-shadow: inset 0 -1px 0 #e5e7eb;
+        }
     </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
 
     <!-- Sticky header bar -->
-    <div class="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
+    <div id="appHeader" class="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
         <div class="container mx-auto px-4 max-w-7xl">
             <div class="flex flex-wrap justify-between items-center py-3 gap-3">
                 <div class="flex items-center gap-3">
@@ -3080,7 +3089,14 @@
         let saleStyleMap = {};       // parent_sku -> style obj
         let _saleSearchTimer = null;
 
+        function updateAppHeaderOffset() {
+            const h = document.getElementById('appHeader')?.offsetHeight || 56;
+            document.documentElement.style.setProperty('--appHeaderH', h + 'px');
+        }
+        window.addEventListener('resize', updateAppHeaderOffset);
+
         async function initSalePlanner() {
+            updateAppHeaderOffset();
             try {
                 const [brands, cats] = await Promise.all([
                     fetch(`${API_BASE}/vendors/list`).then(r => r.json()).catch(() => []),
@@ -3201,12 +3217,12 @@
             chev.textContent = '▾';
             const arr = saleStylesData.filter(s => s.brand === brand);
             const rounds = saleSeason.rounds || [];
-            body.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
+            body.innerHTML = `<div class="overflow-auto" style="max-height:70vh"><table class="w-full text-sm">
                 <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
                     <th class="py-1.5 px-2 text-left" title="Include in sale">In</th>
                     <th class="py-1.5 px-2 text-center" title="Mark as carry-over">CO</th>
                     <th class="py-1.5 px-2 text-left">Style</th>
-                    <th class="py-1.5 px-2 text-left">Gender</th><th class="py-1.5 px-2 text-right">Stock</th>
+                    <th class="py-1.5 px-2 text-left">Gender</th><th class="py-1.5 px-2 text-left">Season</th><th class="py-1.5 px-2 text-right">Stock</th>
                     <th class="py-1.5 px-2 text-right">Sold</th><th class="py-1.5 px-2 text-right">Price</th>
                     ${rounds.map((r, i) => `<th class="py-1.5 px-2 text-right">${r.label || ('R' + (i + 1))} %</th>`).join('')}
                 </tr></thead><tbody>${arr.map(s => saleStyleRow(s, rounds)).join('')}</tbody></table></div>`;
@@ -3229,6 +3245,7 @@
                 <td class="py-1 px-2 text-center"><input type="checkbox" ${s.is_carryover ? 'checked' : ''} title="Mark as carry-over" onchange="onStyleCarryover('${escAttr(s.parent_sku)}',this.checked)"></td>
                 <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')"><span class="text-blue-700">${s.name}</span> ${hint}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
                 <td class="py-1 px-2 text-gray-500">${s.gender}</td>
+                <td class="py-1 px-2 text-gray-500 text-xs">${s.season || '—'}</td>
                 <td class="py-1 px-2 text-right">${formatCurrency(s.on_hand)}</td>
                 <td class="py-1 px-2 text-right text-gray-500">${s.sold}</td>
                 <td class="py-1 px-2 text-right">${s.price != null ? formatCurrency(s.price) : '—'}</td>
@@ -3266,7 +3283,7 @@
             if (next && next.dataset.varfor === parent) { next.remove(); return; }
             const d = await (await fetch(`${API_BASE}/sale/candidates/variants?season_id=${saleSeason.id}&parent_sku=${encodeURIComponent(parent)}`)).json();
             const rounds = saleSeason.rounds || [];
-            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${7 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
+            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${8 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
                 <table class="w-full text-xs"><thead><tr class="text-gray-400"><th class="text-left py-1">Size</th><th class="text-right">Stock</th><th class="text-right">Sold</th>${rounds.map((r, i) => `<th class="text-right">${r.label || ('R' + (i + 1))}</th>`).join('')}</tr></thead>
                 <tbody>${d.variants.map(v => `<tr><td class="py-0.5">${v.size}</td><td class="text-right">${formatCurrency(v.on_hand)}</td><td class="text-right text-gray-400">${v.sold}</td>${v.sale_prices.map(sp => `<td class="text-right">${sp != null ? formatCurrency(sp) : '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></td></tr>`;
             row.insertAdjacentHTML('afterend', html);

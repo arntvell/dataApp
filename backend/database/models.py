@@ -562,6 +562,7 @@ class SalePlanItem(Base):
     season_id = Column(Integer, ForeignKey("sale_seasons.id"), nullable=False, index=True)
     parent_sku = Column(String, nullable=False, index=True)
     included = Column(Boolean, default=True)
+    is_carryover = Column(Boolean, default=False)  # user-assigned, not auto-detected
     # array aligned to season.rounds; null at an index => inherit that round's season default
     round_pcts = Column(JSON, default=list)
     note = Column(Text, nullable=True)

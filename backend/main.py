@@ -42,6 +42,7 @@ def _run_migrations():
             "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
             "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
             "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
+            "ALTER TABLE sale_plan_items ADD COLUMN IF NOT EXISTS is_carryover BOOLEAN DEFAULT FALSE",
         ]:
             conn.execute(text(sql))
 

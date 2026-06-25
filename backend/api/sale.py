@@ -196,7 +196,8 @@ def _aggregate_styles(db):
 async def candidates(
     season_id: int = Query(...),
     brand: str = Query(None), gender: str = Query(None), category: str = Query(None),
-    q: str = Query(None), in_stock: int = Query(1), include_flagged: int = Query(0),
+    q: str = Query(None), in_stock: int = Query(1),
+    carryover: str = Query("all"),  # all | yes | no  (user-assigned flag)
     db: Session = Depends(get_db),
 ):
     season = _season_or_404(db, season_id)
@@ -217,17 +218,20 @@ async def candidates(
         if q and q.lower() not in (st["name"] or "").lower() and q.lower() not in (st["parent_sku"] or "").lower():
             continue
 
-        flagged = st["old_flag"] or st["carryover_flag"]
         pi = plan.get(st["parent_sku"])
-        included = pi.included if pi else (not flagged)
-        if not include_flagged and flagged and not (pi and pi.included):
-            continue  # hidden by default; toggle reveals
+        included = pi.included if pi else True          # everything included by default; user excludes
+        is_carryover = bool(pi.is_carryover) if pi else False
+        if carryover == "yes" and not is_carryover:
+            continue
+        if carryover == "no" and is_carryover:
+            continue
 
         style_pcts = (pi.round_pcts if pi else None) or []
         resolved = [_resolve_pct(rounds, style_pcts, None, i) for i in range(len(rounds))]
         out.append({
             **st,
             "included": included,
+            "is_carryover": is_carryover,
             "round_pcts": style_pcts,                       # raw style overrides (null=inherit)
             "resolved_pcts": resolved,                       # effective % per round
             "sale_prices": [_sale_price(st["price"], p) for p in resolved],
@@ -297,6 +301,8 @@ async def upsert_plan_item(payload: dict = Body(...), db: Session = Depends(get_
         db.add(pi)
     if "included" in payload:
         pi.included = bool(payload["included"])
+    if "is_carryover" in payload:
+        pi.is_carryover = bool(payload["is_carryover"])
     if "round_pcts" in payload:
         pi.round_pcts = payload["round_pcts"]
     if "note" in payload:
@@ -342,6 +348,8 @@ async def bulk_update(payload: dict = Body(...), db: Session = Depends(get_db)):
             db.add(pi)
         if "included" in setvals:
             pi.included = bool(setvals["included"])
+        if "is_carryover" in setvals:
+            pi.is_carryover = bool(setvals["is_carryover"])
         if "round_index" in setvals:
             arr = list(pi.round_pcts or [])
             while len(arr) < n_rounds:
@@ -370,9 +378,8 @@ def _included_variant_rows(db, season, round_index):
     for parent, st in styles.items():
         if st["on_hand"] <= 0:
             continue
-        flagged = st["old_flag"] or st["carryover_flag"]
         pi = plan.get(parent)
-        included = pi.included if pi else (not flagged)
+        included = pi.included if pi else True   # everything included unless explicitly excluded
         if included:
             included_parents.append(parent)
 

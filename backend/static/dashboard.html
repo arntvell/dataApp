@@ -760,7 +760,11 @@
                     <select id="saleCategory" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"></select>
                     <input id="saleSearch" oninput="onSaleSearchInput()" placeholder="Search name / SKU…" class="px-2 py-1.5 border rounded-lg text-sm flex-1 min-w-40">
                     <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="saleInStock" checked onchange="loadSaleCandidates()"> In stock</label>
-                    <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="saleShowFlagged" onchange="loadSaleCandidates()"> Show old / carry-over</label>
+                    <select id="saleCarryover" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white">
+                        <option value="all">Carry-over: all</option>
+                        <option value="no">Hide carry-overs</option>
+                        <option value="yes">Carry-overs only</option>
+                    </select>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t">
                     <span class="text-xs text-gray-500" id="saleSummary"></span>
@@ -3149,7 +3153,7 @@
             const c = document.getElementById('saleCategory').value; if (c) p.set('category', c);
             const q = document.getElementById('saleSearch').value.trim(); if (q) p.set('q', q);
             p.set('in_stock', document.getElementById('saleInStock').checked ? 1 : 0);
-            p.set('include_flagged', document.getElementById('saleShowFlagged').checked ? 1 : 0);
+            p.set('carryover', document.getElementById('saleCarryover').value);
             return p.toString();
         }
 
@@ -3199,7 +3203,9 @@
             const rounds = saleSeason.rounds || [];
             body.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
                 <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
-                    <th class="py-1.5 px-2 text-left">In</th><th class="py-1.5 px-2 text-left">Style</th>
+                    <th class="py-1.5 px-2 text-left" title="Include in sale">In</th>
+                    <th class="py-1.5 px-2 text-center" title="Mark as carry-over">CO</th>
+                    <th class="py-1.5 px-2 text-left">Style</th>
                     <th class="py-1.5 px-2 text-left">Gender</th><th class="py-1.5 px-2 text-right">Stock</th>
                     <th class="py-1.5 px-2 text-right">Sold</th><th class="py-1.5 px-2 text-right">Price</th>
                     ${rounds.map((r, i) => `<th class="py-1.5 px-2 text-right">${r.label || ('R' + (i + 1))} %</th>`).join('')}
@@ -3208,8 +3214,9 @@
         }
 
         function saleStyleRow(s, rounds) {
-            const badge = (s.old_flag || s.carryover_flag) ?
-                `<span class="ml-1 text-[10px] px-1 rounded bg-amber-100 text-amber-700" title="first sold ${s.first_sold_year}, ${s.years_active} seasons">${s.old_flag ? 'old' : 'carry-over'}</span>` : '';
+            // neutral age hint (not a hard flag) — first-sold year + seasons active
+            const hint = s.first_sold_year ?
+                `<span class="ml-1 text-[10px] text-gray-400" title="first sold ${s.first_sold_year}, sold across ${s.years_active} year(s)">'${String(s.first_sold_year).slice(2)} · ${s.years_active}y</span>` : '';
             const pcts = rounds.map((r, i) => {
                 const sp = s.sale_prices[i];
                 const v = (s.round_pcts && s.round_pcts[i] != null) ? s.round_pcts[i] : (s.resolved_pcts[i] ?? '');
@@ -3217,9 +3224,10 @@
                     <input type="number" min="0" max="90" value="${v}" onchange="onStylePct('${escAttr(s.parent_sku)}',${i},this)" class="border rounded px-1 py-0.5 text-xs w-14 text-right">
                     <div class="text-[10px] text-gray-400 salePxCell">${sp != null ? formatCurrency(sp) : ''}</div></td>`;
             }).join('');
-            return `<tr class="border-b hover:bg-gray-50">
+            return `<tr class="border-b hover:bg-gray-50 ${s.is_carryover ? 'bg-amber-50/40' : ''}">
                 <td class="py-1 px-2"><input type="checkbox" ${s.included ? 'checked' : ''} onchange="onStyleInclude('${escAttr(s.parent_sku)}',this.checked)"></td>
-                <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')"><span class="text-blue-700">${s.name}</span> ${badge}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
+                <td class="py-1 px-2 text-center"><input type="checkbox" ${s.is_carryover ? 'checked' : ''} title="Mark as carry-over" onchange="onStyleCarryover('${escAttr(s.parent_sku)}',this.checked)"></td>
+                <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')"><span class="text-blue-700">${s.name}</span> ${hint}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
                 <td class="py-1 px-2 text-gray-500">${s.gender}</td>
                 <td class="py-1 px-2 text-right">${formatCurrency(s.on_hand)}</td>
                 <td class="py-1 px-2 text-right text-gray-500">${s.sold}</td>
@@ -3230,6 +3238,13 @@
         async function onStyleInclude(parent, checked) {
             saleStyleMap[parent].included = checked;
             await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, included: checked }) });
+        }
+        async function onStyleCarryover(parent, checked) {
+            const s = saleStyleMap[parent]; if (s) s.is_carryover = checked;
+            // row tint follows the flag
+            const cb = event && event.target; const tr = cb && cb.closest('tr');
+            if (tr) tr.classList.toggle('bg-amber-50/40', checked);
+            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, is_carryover: checked }) });
         }
         async function onStylePct(parent, i, inputEl) {
             const s = saleStyleMap[parent];
@@ -3251,7 +3266,7 @@
             if (next && next.dataset.varfor === parent) { next.remove(); return; }
             const d = await (await fetch(`${API_BASE}/sale/candidates/variants?season_id=${saleSeason.id}&parent_sku=${encodeURIComponent(parent)}`)).json();
             const rounds = saleSeason.rounds || [];
-            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${6 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
+            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${7 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
                 <table class="w-full text-xs"><thead><tr class="text-gray-400"><th class="text-left py-1">Size</th><th class="text-right">Stock</th><th class="text-right">Sold</th>${rounds.map((r, i) => `<th class="text-right">${r.label || ('R' + (i + 1))}</th>`).join('')}</tr></thead>
                 <tbody>${d.variants.map(v => `<tr><td class="py-0.5">${v.size}</td><td class="text-right">${formatCurrency(v.on_hand)}</td><td class="text-right text-gray-400">${v.sold}</td>${v.sale_prices.map(sp => `<td class="text-right">${sp != null ? formatCurrency(sp) : '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></td></tr>`;
             row.insertAdjacentHTML('afterend', html);

@@ -15,7 +15,7 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Query, Body, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, and_, or_, distinct
+from sqlalchemy import func, and_, or_, distinct, case
 from sqlalchemy.orm import Session
 
 from database.config import get_db
@@ -191,6 +191,30 @@ def _aggregate_styles(db):
         SalesOrder.order_date >= since, ProductMaster.parent_sku.isnot(None)
     ).group_by(ProductMaster.parent_sku).all())
 
+    # sold last 30 days per parent
+    since30 = _since(30)
+    sold30 = dict(db.query(
+        ProductMaster.parent_sku, func.sum(SalesOrderItem.quantity)
+    ).select_from(SalesOrderItem).join(
+        SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+    ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
+        SalesOrder.order_date >= since30, ProductMaster.parent_sku.isnot(None)
+    ).group_by(ProductMaster.parent_sku).all())
+
+    # sold split full-price vs discounted over the velocity window
+    split = {}
+    for p, disc_u, full_u in db.query(
+        ProductMaster.parent_sku,
+        func.sum(case((SalesOrderItem.discount_amount > 0, SalesOrderItem.quantity), else_=0)),
+        func.sum(case((or_(SalesOrderItem.discount_amount == 0, SalesOrderItem.discount_amount.is_(None)),
+                       SalesOrderItem.quantity), else_=0)),
+    ).select_from(SalesOrderItem).join(
+        SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+    ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
+        SalesOrder.order_date >= since, ProductMaster.parent_sku.isnot(None)
+    ).group_by(ProductMaster.parent_sku):
+        split[p] = (int(disc_u or 0), int(full_u or 0))
+
     age = {}
     for p, firstsold, yrs in db.query(
         ProductMaster.parent_sku, func.min(SalesOrder.order_date),
@@ -228,6 +252,9 @@ def _aggregate_styles(db):
             "price": float(price) if price else None,
             "on_hand": float(stock.get(parent, 0) or 0),
             "sold": int(sold.get(parent, 0) or 0),
+            "sold_30d": int(sold30.get(parent, 0) or 0),
+            "sold_disc": split.get(parent, (0, 0))[0],
+            "sold_full": split.get(parent, (0, 0))[1],
             "first_sold_year": first_yr, "years_active": yrs_active,
             "season": _pick_season(season_tokens.get(parent)),
             "old_flag": bool(first_yr and first_yr <= cur_year - AGE_CUTOFF_YEARS),
@@ -292,8 +319,21 @@ async def candidates(
     seasons_sorted = sorted(available_seasons,
                             key=lambda s: (int(re.search(r"\d{2}$", s).group()) if re.search(r"\d{2}$", s) else 99, s),
                             reverse=True)
+
+    # header stats over the shown set: 30-day sold + sell-through split full/discounted.
+    on_hand = sum(s["on_hand"] for s in out)
+    sold_full = sum(s["sold_full"] for s in out)
+    sold_disc = sum(s["sold_disc"] for s in out)
+    sold_30d = sum(s["sold_30d"] for s in out)
+    denom = sold_full + sold_disc + on_hand
+    stats = {
+        "sold_30d": sold_30d,
+        "on_hand": round(on_hand),
+        "sell_through_full": round(sold_full / denom * 100, 1) if denom else 0,
+        "sell_through_disc": round(sold_disc / denom * 100, 1) if denom else 0,
+    }
     return {"season": _season_dict(season), "count": len(out),
-            "available_seasons": seasons_sorted, "styles": out}
+            "available_seasons": seasons_sorted, "stats": stats, "styles": out}
 
 
 @router.get("/candidates/variants")

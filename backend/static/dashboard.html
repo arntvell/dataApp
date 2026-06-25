@@ -3198,7 +3198,10 @@
                 }
                 saleStylesData = d.styles; saleStyleMap = {}; d.styles.forEach(s => saleStyleMap[s.parent_sku] = s);
                 const incl = d.styles.filter(s => s.included).length;
-                document.getElementById('saleSummary').textContent = `${d.count} styles shown · ${incl} included in sale`;
+                const st = d.stats || {};
+                document.getElementById('saleSummary').innerHTML =
+                    `${d.count} styles · ${incl} in sale · <b>${st.sold_30d ?? 0}</b> sold 30d · sell-through: ` +
+                    `<b>${st.sell_through_full ?? 0}%</b> full / <b>${st.sell_through_disc ?? 0}%</b> discounted`;
                 renderSaleStyles(d.styles);
             } catch (e) { cont.innerHTML = '<div class="py-4 text-center text-gray-400">Failed to load.</div>'; }
         }
@@ -3264,9 +3267,10 @@
                     <input type="number" min="0" max="90" value="${v}" onchange="onStylePct('${escAttr(s.parent_sku)}',${i},this)" class="border rounded px-1 py-0.5 text-xs w-14 text-right">
                     <div class="text-[10px] text-gray-400 salePxCell">${sp != null ? formatCurrency(sp) : ''}</div></td>`;
             }).join('');
-            return `<tr class="border-b hover:bg-gray-50 ${s.is_carryover ? 'bg-amber-50/40' : ''}">
-                <td class="py-1 px-2"><input type="checkbox" ${s.included ? 'checked' : ''} onchange="onStyleInclude('${escAttr(s.parent_sku)}',this.checked)"></td>
-                <td class="py-1 px-2 text-center"><input type="checkbox" ${s.is_carryover ? 'checked' : ''} title="Mark as carry-over" onchange="onStyleCarryover('${escAttr(s.parent_sku)}',this.checked)"></td>
+            const tint = !s.included ? 'bg-amber-100' : (s.is_carryover ? 'bg-amber-50' : '');
+            return `<tr class="border-b hover:bg-gray-50 ${tint}">
+                <td class="py-1 px-2"><input type="checkbox" ${s.included ? 'checked' : ''} onchange="onStyleInclude('${escAttr(s.parent_sku)}',this)"></td>
+                <td class="py-1 px-2 text-center"><input type="checkbox" ${s.is_carryover ? 'checked' : ''} title="Carry-over (auto-excludes from sale)" onchange="onStyleCarryover('${escAttr(s.parent_sku)}',this)"></td>
                 <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')"><span class="text-blue-700">${s.name}</span> ${hint}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
                 <td class="py-1 px-2 text-gray-500">${s.gender}</td>
                 <td class="py-1 px-2 text-gray-500 text-xs">${s.season || '—'}</td>
@@ -3276,16 +3280,30 @@
                 ${pcts}</tr>`;
         }
 
-        async function onStyleInclude(parent, checked) {
-            saleStyleMap[parent].included = checked;
-            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, included: checked }) });
+        function applyRowTint(tr, s) {
+            if (!tr) return;
+            tr.classList.remove('bg-amber-100', 'bg-amber-50');
+            if (s && !s.included) tr.classList.add('bg-amber-100');        // excluded = stronger yellow
+            else if (s && s.is_carryover) tr.classList.add('bg-amber-50'); // carry-over but kept in
         }
-        async function onStyleCarryover(parent, checked) {
-            const s = saleStyleMap[parent]; if (s) s.is_carryover = checked;
-            // row tint follows the flag
-            const cb = event && event.target; const tr = cb && cb.closest('tr');
-            if (tr) tr.classList.toggle('bg-amber-50/40', checked);
-            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, is_carryover: checked }) });
+        async function onStyleInclude(parent, el) {
+            const s = saleStyleMap[parent]; if (s) s.included = el.checked;
+            applyRowTint(el.closest('tr'), s);
+            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, included: el.checked }) });
+        }
+        async function onStyleCarryover(parent, el) {
+            const s = saleStyleMap[parent];
+            const tr = el.closest('tr');
+            const payload = { season_id: saleSeason.id, parent_sku: parent, is_carryover: el.checked };
+            if (s) s.is_carryover = el.checked;
+            if (el.checked) {                       // carry-over auto-excludes from the sale
+                if (s) s.included = false;
+                payload.included = false;
+                const inc = tr && tr.querySelector('input[type=checkbox]');
+                if (inc) inc.checked = false;
+            }
+            applyRowTint(tr, s);
+            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         }
         async function onStylePct(parent, i, inputEl) {
             const s = saleStyleMap[parent];

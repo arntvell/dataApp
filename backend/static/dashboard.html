@@ -3210,18 +3210,32 @@
             styles.forEach(s => { (groups[s.brand] = groups[s.brand] || []).push(s); });
             cont.innerHTML = Object.keys(groups).sort().map(brand => {
                 const arr = groups[brand], incl = arr.filter(s => s.included).length;
+                const b = escAttr(brand);
                 return `<div class="border-b">
-                    <div class="flex items-center gap-2 py-2 px-2 cursor-pointer hover:bg-gray-50 font-medium" onclick="toggleSaleBrand(this,'${escAttr(brand)}')">
-                        <span class="saleChevron text-gray-400">▸</span> ${brand}
-                        <span class="text-xs text-gray-400 font-normal">${arr.length} styles · ${incl} in sale</span>
+                    <div class="flex items-center gap-2 py-2 px-2 hover:bg-gray-50 font-medium">
+                        <div class="flex items-center gap-2 cursor-pointer flex-1" onclick="toggleSaleBrand(this,'${b}')">
+                            <span class="saleChevron text-gray-400">▸</span> ${brand}
+                            <span class="text-xs text-gray-400 font-normal">${arr.length} styles · ${incl} in sale</span>
+                        </div>
+                        <button onclick="event.stopPropagation(); brandSetIncluded('${b}', true)" class="text-xs px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200">Include all</button>
+                        <button onclick="event.stopPropagation(); brandSetIncluded('${b}', false)" class="text-xs px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200" title="Exclude this whole brand from the sale">Exclude all</button>
                     </div>
                     <div class="saleBrandBody hidden"></div>
                 </div>`;
             }).join('');
         }
 
+        async function brandSetIncluded(brand, inc) {
+            const parents = saleStylesData.filter(s => s.brand === brand).map(s => s.parent_sku);
+            if (!parents.length) return;
+            await fetch(`${API_BASE}/sale/bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ season_id: saleSeason.id, parent_skus: parents, set: { included: inc } }) });
+            loadSaleCandidates();
+        }
+
         function toggleSaleBrand(hdr, brand) {
-            const body = hdr.parentElement.querySelector('.saleBrandBody');
+            const section = hdr.closest('.border-b');
+            const body = section.querySelector('.saleBrandBody');
             const chev = hdr.querySelector('.saleChevron');
             if (!body.classList.contains('hidden')) { body.classList.add('hidden'); chev.textContent = '▸'; return; }
             chev.textContent = '▾';

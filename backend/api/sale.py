@@ -49,7 +49,7 @@ VELOCITY_DAYS = 365         # window for the "sold" velocity column
 
 # Noise: stored items that aren't sellable products — excluded from candidates & exports.
 NOISE_BRANDS = {"EXT", "LAGER", "STORAGE", "WRAPIN", "--", "—", "", "NONE"}
-NOISE_SKU_PREFIXES = ("B2B", "OLD")
+NOISE_SKU_PREFIXES = ("B2B", "OLD", "IMP")
 NOISE_SKU_CONTAINS = (
     "LIV-IMP", "LIV-SKRD", "LIV-MSCSMPL", "2526-1208", "LIV-PCKUP",
     "LIV-REPS", "LIV-RSDIST", "LIV-SVD", "LIV-SLGSV", "LIV-SMPLS",

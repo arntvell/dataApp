@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, ForeignKey, Text, Index, UniqueConstraint, Date
+from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, ForeignKey, Text, Index, UniqueConstraint, Date, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .config import Base
@@ -532,5 +532,52 @@ class ProductMaster(Base):
     sitoo_product_id = Column(String, nullable=True)
     cin7_product_id = Column(String, nullable=True)
 
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+# ============== SEASONAL SALE PLANNER ==============
+
+class SaleSeason(Base):
+    """A sale season with a dynamic list of discount rounds (1-6)."""
+    __tablename__ = "sale_seasons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    starts_on = Column(Date, nullable=True)
+    status = Column(String, default="draft")  # draft | active | archived
+    shopify_sale_tag = Column(String, nullable=True)
+    # ordered list (max 6) of {"label": str, "pct": number, "date": "YYYY-MM-DD"|null}
+    rounds = Column(JSON, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class SalePlanItem(Base):
+    """Per-style (parent SKU) curation + discounts for a season."""
+    __tablename__ = "sale_plan_items"
+    __table_args__ = (UniqueConstraint("season_id", "parent_sku", name="uq_sale_plan_item"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    season_id = Column(Integer, ForeignKey("sale_seasons.id"), nullable=False, index=True)
+    parent_sku = Column(String, nullable=False, index=True)
+    included = Column(Boolean, default=True)
+    # array aligned to season.rounds; null at an index => inherit that round's season default
+    round_pcts = Column(JSON, default=list)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class SaleVariantOverride(Base):
+    """Optional per-variant (size) override within a season."""
+    __tablename__ = "sale_variant_overrides"
+    __table_args__ = (UniqueConstraint("season_id", "sku", name="uq_sale_variant_override"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    season_id = Column(Integer, ForeignKey("sale_seasons.id"), nullable=False, index=True)
+    sku = Column(String, nullable=False, index=True)
+    round_pcts = Column(JSON, default=list)  # null per index => inherit style
+    excluded = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

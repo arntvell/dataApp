@@ -152,6 +152,10 @@
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Stock
             </button>
+            <button onclick="showTab('sale-planner')" id="tab-btn-sale-planner"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Sale Planner
+            </button>
         </div>
 
         <!-- TAB: Sales -->
@@ -730,6 +734,59 @@
             </div>
 
         </div> <!-- end tab-stock -->
+
+        <!-- TAB: Sale Planner -->
+        <div id="tab-sale-planner" class="hidden">
+
+            <!-- Season bar + rounds editor -->
+            <div class="card mb-4">
+                <div class="flex flex-wrap items-center gap-3 mb-3">
+                    <h2 class="text-xl font-semibold">Sale Planner</h2>
+                    <select id="saleSeasonSelect" onchange="onSeasonChange()" class="px-3 py-1.5 border rounded-lg text-sm bg-white"></select>
+                    <button onclick="newSeasonPrompt()" class="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">+ New season</button>
+                    <span class="text-sm text-gray-400" id="saleSeasonMeta"></span>
+                </div>
+                <div class="text-xs text-gray-400 mb-1">Discount rounds (max 6) — % off the regular price. Cascades to all variants; override per size if needed.</div>
+                <div class="flex flex-wrap items-end gap-2" id="saleRoundsEditor"></div>
+            </div>
+
+            <!-- Filters + bulk -->
+            <div class="card mb-4">
+                <div class="flex flex-wrap items-center gap-3">
+                    <select id="saleBrand" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"></select>
+                    <select id="saleGender" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white">
+                        <option value="">All genders</option><option value="men">Men</option><option value="women">Women</option><option value="unisex">Unisex</option>
+                    </select>
+                    <select id="saleCategory" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"></select>
+                    <input id="saleSearch" oninput="onSaleSearchInput()" placeholder="Search name / SKU…" class="px-2 py-1.5 border rounded-lg text-sm flex-1 min-w-40">
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="saleInStock" checked onchange="loadSaleCandidates()"> In stock</label>
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="saleShowFlagged" onchange="loadSaleCandidates()"> Show old / carry-over</label>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t">
+                    <span class="text-xs text-gray-500" id="saleSummary"></span>
+                    <span class="flex-1"></span>
+                    <span class="text-xs text-gray-500">Bulk (shown styles):</span>
+                    <button onclick="bulkInclude(true)" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">Include all</button>
+                    <button onclick="bulkInclude(false)" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">Exclude all</button>
+                    <select id="bulkRound" class="text-xs border rounded px-1 py-1"></select>
+                    <input id="bulkPct" type="number" min="0" max="90" placeholder="%" class="text-xs border rounded px-2 py-1 w-16">
+                    <button onclick="bulkSetPct()" class="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">Set %</button>
+                </div>
+            </div>
+
+            <!-- Styles grouped by brand -->
+            <div class="card mb-4">
+                <div id="saleStyles"><div class="py-4 text-center text-gray-400">Loading…</div></div>
+            </div>
+
+            <!-- Export -->
+            <div class="card mb-8">
+                <h2 class="text-base font-semibold mb-1">Export price lists</h2>
+                <p class="text-xs text-gray-400 mb-3">One CSV per round of included items (sale price + regular as compare-at). Import into Shopify / Sitoo.</p>
+                <div id="saleExportButtons" class="flex flex-wrap gap-2"></div>
+            </div>
+
+        </div> <!-- end tab-sale-planner -->
 
         <!-- Sync Status -->
         <div class="mt-8 text-center text-sm text-gray-400" id="syncStatus">
@@ -2696,7 +2753,7 @@
 
         let currentTab = 'sales';
 
-        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock'];
+        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner'];
 
         function showTab(tab) {
             currentTab = tab;
@@ -2728,6 +2785,12 @@
             if (tab === 'stock' && !stockLoaded) {
                 stockLoaded = true;
                 loadStockTab();
+            }
+
+            // Lazy-load sale planner tab on first visit
+            if (tab === 'sale-planner' && !salePlannerLoaded) {
+                salePlannerLoaded = true;
+                initSalePlanner();
             }
 
             // Redraw charts when switching to sales (canvas visibility issue)
@@ -3004,6 +3067,213 @@
         }
 
         // ============== Enhanced refresh with new sections ==============
+
+        // ============== Sale Planner ==============
+        let salePlannerLoaded = false;
+        let saleSeasons = [];
+        let saleSeason = null;       // current season {id,name,rounds,...}
+        let saleStylesData = [];     // current candidate styles
+        let saleStyleMap = {};       // parent_sku -> style obj
+        let _saleSearchTimer = null;
+
+        async function initSalePlanner() {
+            try {
+                const [brands, cats] = await Promise.all([
+                    fetch(`${API_BASE}/vendors/list`).then(r => r.json()).catch(() => []),
+                    fetch(`${API_BASE}/categories/groups`).then(r => r.json()).catch(() => []),
+                ]);
+                document.getElementById('saleBrand').innerHTML = '<option value="">All brands</option>' +
+                    (brands || []).filter(b => b && b !== 'All').map(b => `<option>${b}</option>`).join('');
+                document.getElementById('saleCategory').innerHTML = '<option value="">All categories</option>' +
+                    (cats || []).map(c => `<option>${c}</option>`).join('');
+            } catch (e) { /* non-fatal */ }
+            await refreshSeasons();
+        }
+
+        async function refreshSeasons() {
+            saleSeasons = await (await fetch(`${API_BASE}/sale/seasons`)).json();
+            const sel = document.getElementById('saleSeasonSelect');
+            if (!saleSeasons.length) {
+                sel.innerHTML = '<option>— no seasons —</option>';
+                saleSeason = null; renderRoundsEditor();
+                document.getElementById('saleStyles').innerHTML = '<div class="py-6 text-center text-gray-400">Create a season to start planning.</div>';
+                return;
+            }
+            sel.innerHTML = saleSeasons.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+            saleSeason = saleSeasons[0]; sel.value = saleSeason.id;
+            renderRoundsEditor(); loadSaleCandidates();
+        }
+
+        function onSeasonChange() {
+            saleSeason = saleSeasons.find(s => s.id === parseInt(document.getElementById('saleSeasonSelect').value)) || null;
+            renderRoundsEditor(); loadSaleCandidates();
+        }
+
+        async function newSeasonPrompt() {
+            const name = prompt('Season name:', 'Summer Sale 2026'); if (!name) return;
+            const starts = prompt('Start date (YYYY-MM-DD):', '2026-07-12') || null;
+            const s = await (await fetch(`${API_BASE}/sale/seasons`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, starts_on: starts, rounds: [{ label: 'Round 1', pct: 20 }, { label: 'Round 2', pct: 40 }, { label: 'Round 3', pct: 60 }] }) })).json();
+            await refreshSeasons();
+            document.getElementById('saleSeasonSelect').value = s.id; onSeasonChange();
+        }
+
+        function renderRoundsEditor() {
+            const el = document.getElementById('saleRoundsEditor');
+            const meta = document.getElementById('saleSeasonMeta');
+            if (!saleSeason) { el.innerHTML = ''; meta.textContent = ''; return; }
+            meta.textContent = saleSeason.starts_on ? `starts ${saleSeason.starts_on}` : '';
+            const rounds = saleSeason.rounds || [];
+            el.innerHTML = rounds.map((r, i) => `
+                <div class="flex items-center gap-1 border rounded-lg px-2 py-1.5 bg-gray-50">
+                    <span class="text-[10px] text-gray-400">${r.label || ('R' + (i + 1))}</span>
+                    <input type="number" min="0" max="90" value="${r.pct ?? ''}" onchange="updateRoundPct(${i}, this.value)" class="border rounded px-1 py-0.5 text-sm w-14 text-right">
+                    <span class="text-xs text-gray-400">%</span>
+                    ${rounds.length > 1 ? `<button onclick="removeRound(${i})" class="text-red-400 hover:text-red-600 text-xs ml-1">✕</button>` : ''}
+                </div>`).join('') +
+                (rounds.length < 6 ? `<button onclick="addRound()" class="px-2 py-1.5 text-sm border rounded-lg hover:bg-gray-50">+ Round</button>` : '');
+        }
+        async function saveRounds() {
+            await fetch(`${API_BASE}/sale/seasons/${saleSeason.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rounds: saleSeason.rounds }) });
+        }
+        function updateRoundPct(i, val) { saleSeason.rounds[i].pct = val === '' ? null : parseFloat(val); saveRounds().then(loadSaleCandidates); }
+        function addRound() { saleSeason.rounds.push({ label: `Round ${saleSeason.rounds.length + 1}`, pct: null }); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
+        function removeRound(i) { saleSeason.rounds.splice(i, 1); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
+
+        function onSaleSearchInput() { clearTimeout(_saleSearchTimer); _saleSearchTimer = setTimeout(loadSaleCandidates, 300); }
+
+        function saleFilterQuery() {
+            const p = new URLSearchParams({ season_id: saleSeason.id });
+            const b = document.getElementById('saleBrand').value; if (b) p.set('brand', b);
+            const g = document.getElementById('saleGender').value; if (g) p.set('gender', g);
+            const c = document.getElementById('saleCategory').value; if (c) p.set('category', c);
+            const q = document.getElementById('saleSearch').value.trim(); if (q) p.set('q', q);
+            p.set('in_stock', document.getElementById('saleInStock').checked ? 1 : 0);
+            p.set('include_flagged', document.getElementById('saleShowFlagged').checked ? 1 : 0);
+            return p.toString();
+        }
+
+        async function loadSaleCandidates() {
+            if (!saleSeason) return;
+            const cont = document.getElementById('saleStyles');
+            cont.innerHTML = '<div class="py-4 text-center text-gray-400">Loading…</div>';
+            const rounds = saleSeason.rounds || [];
+            document.getElementById('bulkRound').innerHTML = rounds.map((r, i) => `<option value="${i}">${r.label || ('R' + (i + 1))}</option>`).join('');
+            document.getElementById('saleExportButtons').innerHTML = rounds.map((r, i) => `
+                <span class="text-xs text-gray-500 self-center">${r.label || ('R' + (i + 1))}:</span>
+                <button onclick="exportSale('shopify',${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Shopify CSV</button>
+                <button onclick="exportSale('sitoo',${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Sitoo CSV</button>
+                <span class="mx-2"></span>`).join('');
+            try {
+                const d = await (await fetch(`${API_BASE}/sale/candidates?${saleFilterQuery()}`)).json();
+                saleStylesData = d.styles; saleStyleMap = {}; d.styles.forEach(s => saleStyleMap[s.parent_sku] = s);
+                const incl = d.styles.filter(s => s.included).length;
+                document.getElementById('saleSummary').textContent = `${d.count} styles shown · ${incl} included in sale`;
+                renderSaleStyles(d.styles);
+            } catch (e) { cont.innerHTML = '<div class="py-4 text-center text-gray-400">Failed to load.</div>'; }
+        }
+
+        function renderSaleStyles(styles) {
+            const cont = document.getElementById('saleStyles');
+            if (!styles.length) { cont.innerHTML = '<div class="py-6 text-center text-gray-400">No styles match.</div>'; return; }
+            const groups = {};
+            styles.forEach(s => { (groups[s.brand] = groups[s.brand] || []).push(s); });
+            cont.innerHTML = Object.keys(groups).sort().map(brand => {
+                const arr = groups[brand], incl = arr.filter(s => s.included).length;
+                return `<div class="border-b">
+                    <div class="flex items-center gap-2 py-2 px-2 cursor-pointer hover:bg-gray-50 font-medium" onclick="toggleSaleBrand(this,'${escAttr(brand)}')">
+                        <span class="saleChevron text-gray-400">▸</span> ${brand}
+                        <span class="text-xs text-gray-400 font-normal">${arr.length} styles · ${incl} in sale</span>
+                    </div>
+                    <div class="saleBrandBody hidden"></div>
+                </div>`;
+            }).join('');
+        }
+
+        function toggleSaleBrand(hdr, brand) {
+            const body = hdr.parentElement.querySelector('.saleBrandBody');
+            const chev = hdr.querySelector('.saleChevron');
+            if (!body.classList.contains('hidden')) { body.classList.add('hidden'); chev.textContent = '▸'; return; }
+            chev.textContent = '▾';
+            const arr = saleStylesData.filter(s => s.brand === brand);
+            const rounds = saleSeason.rounds || [];
+            body.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm">
+                <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                    <th class="py-1.5 px-2 text-left">In</th><th class="py-1.5 px-2 text-left">Style</th>
+                    <th class="py-1.5 px-2 text-left">Gender</th><th class="py-1.5 px-2 text-right">Stock</th>
+                    <th class="py-1.5 px-2 text-right">Sold</th><th class="py-1.5 px-2 text-right">Price</th>
+                    ${rounds.map((r, i) => `<th class="py-1.5 px-2 text-right">${r.label || ('R' + (i + 1))} %</th>`).join('')}
+                </tr></thead><tbody>${arr.map(s => saleStyleRow(s, rounds)).join('')}</tbody></table></div>`;
+            body.classList.remove('hidden');
+        }
+
+        function saleStyleRow(s, rounds) {
+            const badge = (s.old_flag || s.carryover_flag) ?
+                `<span class="ml-1 text-[10px] px-1 rounded bg-amber-100 text-amber-700" title="first sold ${s.first_sold_year}, ${s.years_active} seasons">${s.old_flag ? 'old' : 'carry-over'}</span>` : '';
+            const pcts = rounds.map((r, i) => {
+                const sp = s.sale_prices[i];
+                const v = (s.round_pcts && s.round_pcts[i] != null) ? s.round_pcts[i] : (s.resolved_pcts[i] ?? '');
+                return `<td class="py-1 px-2 text-right">
+                    <input type="number" min="0" max="90" value="${v}" onchange="onStylePct('${escAttr(s.parent_sku)}',${i},this)" class="border rounded px-1 py-0.5 text-xs w-14 text-right">
+                    <div class="text-[10px] text-gray-400 salePxCell">${sp != null ? formatCurrency(sp) : ''}</div></td>`;
+            }).join('');
+            return `<tr class="border-b hover:bg-gray-50">
+                <td class="py-1 px-2"><input type="checkbox" ${s.included ? 'checked' : ''} onchange="onStyleInclude('${escAttr(s.parent_sku)}',this.checked)"></td>
+                <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')"><span class="text-blue-700">${s.name}</span> ${badge}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
+                <td class="py-1 px-2 text-gray-500">${s.gender}</td>
+                <td class="py-1 px-2 text-right">${formatCurrency(s.on_hand)}</td>
+                <td class="py-1 px-2 text-right text-gray-500">${s.sold}</td>
+                <td class="py-1 px-2 text-right">${s.price != null ? formatCurrency(s.price) : '—'}</td>
+                ${pcts}</tr>`;
+        }
+
+        async function onStyleInclude(parent, checked) {
+            saleStyleMap[parent].included = checked;
+            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, included: checked }) });
+        }
+        async function onStylePct(parent, i, inputEl) {
+            const s = saleStyleMap[parent];
+            const arr = (s.round_pcts || []).slice();
+            while (arr.length < (saleSeason.rounds || []).length) arr.push(null);
+            arr[i] = inputEl.value === '' ? null : parseFloat(inputEl.value);
+            s.round_pcts = arr;
+            const reg = s.price;
+            const eff = arr[i] != null ? arr[i] : (saleSeason.rounds[i] || {}).pct;
+            const sp = (eff != null && reg != null) ? Math.round(reg * (1 - eff / 100)) : null;
+            const div = inputEl.parentElement.querySelector('.salePxCell');
+            if (div) div.textContent = sp != null ? formatCurrency(sp) : '';
+            await fetch(`${API_BASE}/sale/plan-item`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_sku: parent, included: s.included, round_pcts: arr }) });
+        }
+
+        async function toggleSaleVariants(cell, parent) {
+            const row = cell.closest('tr');
+            const next = row.nextElementSibling;
+            if (next && next.dataset.varfor === parent) { next.remove(); return; }
+            const d = await (await fetch(`${API_BASE}/sale/candidates/variants?season_id=${saleSeason.id}&parent_sku=${encodeURIComponent(parent)}`)).json();
+            const rounds = saleSeason.rounds || [];
+            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${6 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
+                <table class="w-full text-xs"><thead><tr class="text-gray-400"><th class="text-left py-1">Size</th><th class="text-right">Stock</th><th class="text-right">Sold</th>${rounds.map((r, i) => `<th class="text-right">${r.label || ('R' + (i + 1))}</th>`).join('')}</tr></thead>
+                <tbody>${d.variants.map(v => `<tr><td class="py-0.5">${v.size}</td><td class="text-right">${formatCurrency(v.on_hand)}</td><td class="text-right text-gray-400">${v.sold}</td>${v.sale_prices.map(sp => `<td class="text-right">${sp != null ? formatCurrency(sp) : '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></td></tr>`;
+            row.insertAdjacentHTML('afterend', html);
+        }
+
+        async function bulkInclude(inc) {
+            if (!saleStylesData.length || !confirm(`${inc ? 'Include' : 'Exclude'} all ${saleStylesData.length} shown styles?`)) return;
+            await fetch(`${API_BASE}/sale/bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_skus: saleStylesData.map(s => s.parent_sku), set: { included: inc } }) });
+            loadSaleCandidates();
+        }
+        async function bulkSetPct() {
+            const i = parseInt(document.getElementById('bulkRound').value);
+            const pct = parseFloat(document.getElementById('bulkPct').value);
+            if (isNaN(pct)) { alert('Enter a %'); return; }
+            const label = document.getElementById('bulkRound').selectedOptions[0].text;
+            if (!confirm(`Set ${label} = ${pct}% on all ${saleStylesData.length} shown styles?`)) return;
+            await fetch(`${API_BASE}/sale/bulk`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season_id: saleSeason.id, parent_skus: saleStylesData.map(s => s.parent_sku), set: { round_index: i, round_pct: pct } }) });
+            loadSaleCandidates();
+        }
+        function exportSale(target, round) {
+            window.open(`${API_BASE}/sale/export/${target}?season_id=${saleSeason.id}&round=${round}`, '_blank');
+        }
 
         // Extend the original refreshDashboard to also load budget + stock + brands
         const _originalRefresh = refreshDashboard;

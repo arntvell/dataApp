@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Query, Body, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
 from sqlalchemy import func, and_, or_, distinct, case
 from sqlalchemy.orm import Session
 
@@ -650,3 +650,192 @@ async def export_sitoo(season_id: int = Query(...), round: int = Query(1), db: S
     rows = _included_variant_rows(db, season, round - 1)
     out = [[r["sku"], r["sale"], r["regular"]] for r in rows]
     return _csv_stream(["sku", "price", "price_org"], out, ";", f"sitoo_sale_round{round}.csv")
+
+
+# ---------- store-manager list (#4) & transfer plan (#5) ----------
+
+@router.get("/stores")
+async def list_stores():
+    return {"stores": RETAIL_STORES, "warehouse": WAREHOUSE[0]}
+
+
+def _sale_export_rows(db, season):
+    """Included, in-stock styles with per-store/warehouse stock, store target (saved or
+    recommended), and resolved % per round. Shared by store list + transfer plan."""
+    rounds = season.rounds or []
+    styles = _aggregate_styles(db)
+    plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season.id)}
+    stock_ps = {}
+    for parent, loc, oh in db.query(
+        ProductMaster.parent_sku, Cin7Stock.location, func.sum(Cin7Stock.on_hand)
+    ).select_from(Cin7Stock).join(ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)).filter(
+        Cin7Stock.location.in_(PHYSICAL_LOCATIONS), ProductMaster.parent_sku.isnot(None)
+    ).group_by(ProductMaster.parent_sku, Cin7Stock.location):
+        stock_ps.setdefault(parent, {})[loc] = float(oh or 0)
+    norm_w = _store_weights(db)
+    saved = {}
+    for a in db.query(SaleAllocation).filter(SaleAllocation.season_id == season.id):
+        saved[(a.parent_sku, a.store)] = a.target_qty
+    wh = WAREHOUSE[0]
+
+    rows = []
+    for parent, st in styles.items():
+        if st["on_hand"] <= 0:
+            continue
+        pi = plan.get(parent)
+        if not (pi.included if pi else True):
+            continue
+        loc_stock = stock_ps.get(parent, {})
+        store_stock = {s: round(loc_stock.get(s, 0)) for s in RETAIL_STORES}
+        if any((parent, s) in saved for s in RETAIL_STORES):
+            target = {s: int(saved.get((parent, s), 0)) for s in RETAIL_STORES}
+        else:
+            target = _recommend_style(st["on_hand"], norm_w)
+        style_pcts = (pi.round_pcts if pi else None) or []
+        resolved = [_resolve_pct(rounds, style_pcts, None, i) for i in range(len(rounds))]
+        rows.append({
+            "parent_sku": parent, "brand": st["brand"], "name": st["name"], "price": st["price"],
+            "store_stock": store_stock, "warehouse": round(loc_stock.get(wh, 0)),
+            "target": target, "resolved": resolved,
+        })
+    rows.sort(key=lambda r: (r["brand"], r["name"]))
+    return rows, rounds, wh
+
+
+def _compute_transfers(rows, wh):
+    """Greedy per-style transfers: fill each store's shortfall from the warehouse first,
+    then from stores holding more than their target."""
+    moves = []
+    for r in rows:
+        need = {s: max(0, r["target"][s] - r["store_stock"][s]) for s in RETAIL_STORES}
+        excess = {s: max(0, r["store_stock"][s] - r["target"][s]) for s in RETAIL_STORES}
+        wh_avail = r["warehouse"]
+        for dest in RETAIL_STORES:
+            n = need[dest]
+            if n <= 0:
+                continue
+            take = min(n, wh_avail)
+            if take > 0:
+                moves.append({"from": wh, "to": dest, "brand": r["brand"], "name": r["name"],
+                              "parent_sku": r["parent_sku"], "qty": take})
+                wh_avail -= take
+                n -= take
+            for src in RETAIL_STORES:
+                if n <= 0:
+                    break
+                if src == dest or excess[src] <= 0:
+                    continue
+                t = min(n, excess[src])
+                moves.append({"from": src, "to": dest, "brand": r["brand"], "name": r["name"],
+                              "parent_sku": r["parent_sku"], "qty": t})
+                excess[src] -= t
+                n -= t
+    return moves
+
+
+@router.get("/export/transfers.csv")
+async def export_transfers_csv(season_id: int = Query(...), db: Session = Depends(get_db)):
+    season = _season_or_404(db, season_id)
+    rows, _, wh = _sale_export_rows(db, season)
+    moves = _compute_transfers(rows, wh)
+    out = [[m["from"], m["to"], m["brand"], m["name"], m["parent_sku"], m["qty"]] for m in moves]
+    return _csv_stream(["From", "To", "Brand", "Style", "SKU", "Qty"], out, ",",
+                       f"sale_transfers_{season.id}.csv")
+
+
+def _disc_color(pct):
+    """Each whole discount % gets its own colour: green (low) → red (deep)."""
+    if pct is None:
+        return "#f3f4f6"
+    h = max(0, 130 - float(pct) * 1.7)   # 0% green-ish → high% red
+    return f"hsl({h:.0f} 75% 88%)"
+
+
+_PRINT_CSS = """
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px;color:#111827}
+  h1{font-size:20px;margin:0 0 2px} .sub{color:#6b7280;font-size:13px;margin-bottom:16px}
+  table{border-collapse:collapse;width:100%;font-size:13px} th,td{padding:6px 10px;text-align:left;border-bottom:1px solid #e5e7eb}
+  th{background:#f9fafb;font-size:11px;text-transform:uppercase;color:#6b7280}
+  td.r,th.r{text-align:right} .brand{background:#eef2ff;font-weight:600}
+  .badge{font-size:10px;padding:1px 5px;border-radius:4px;background:#dbeafe;color:#1d4ed8;margin-left:6px}
+  .chg{color:#b45309;font-size:11px;margin-left:6px}
+  .pill{padding:1px 8px;border-radius:9999px;font-weight:600}
+  .noprint{margin-bottom:16px} @media print{.noprint{display:none}}
+  button{padding:6px 12px;border:1px solid #d1d5db;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+</style>
+"""
+
+
+@router.get("/export/store-list", response_class=HTMLResponse)
+async def export_store_list(season_id: int = Query(...), store: str = Query(...),
+                            round_no: int = Query(1, alias="round"), db: Session = Depends(get_db)):
+    season = _season_or_404(db, season_id)
+    rows, rounds, wh = _sale_export_rows(db, season)
+    ri = round_no - 1
+    if not (0 <= ri < len(rounds)):
+        raise HTTPException(400, "Invalid round")
+
+    items = []
+    for r in rows:
+        have = r["store_stock"].get(store, 0)
+        incoming = max(0, r["target"].get(store, 0) - have)
+        if have <= 0 and incoming <= 0:
+            continue
+        pct = r["resolved"][ri]
+        nxt = r["resolved"][ri + 1] if ri + 1 < len(rounds) else None
+        items.append({
+            "brand": r["brand"], "name": r["name"], "sku": r["parent_sku"],
+            "have": have, "incoming": incoming, "pct": pct,
+            "sale": _sale_price(r["price"], pct), "regular": round(r["price"]) if r["price"] else None,
+            "new": have <= 0 and incoming > 0,
+            "next": nxt if (nxt is not None and nxt != pct) else None,
+        })
+
+    body = []
+    last_brand = None
+    for it in items:
+        if it["brand"] != last_brand:
+            body.append(f'<tr class="brand"><td colspan="6">{it["brand"]}</td></tr>')
+            last_brand = it["brand"]
+        badge = '<span class="badge">NEW – being sent</span>' if it["new"] else ""
+        chg = f'<span class="chg">→ {it["next"]:.0f}% next round</span>' if it["next"] is not None else ""
+        pill = f'<span class="pill" style="background:{_disc_color(it["pct"])}">{it["pct"]:.0f}%</span>' if it["pct"] is not None else "—"
+        recv = f'+{it["incoming"]} incoming' if it["incoming"] else ""
+        body.append(
+            f'<tr><td>{it["name"]}{badge}{chg}<div style="font-size:10px;color:#9ca3af;font-family:monospace">{it["sku"]}</div></td>'
+            f'<td class="r">{it["have"]}</td><td class="r" style="color:#16a34a">{recv}</td>'
+            f'<td class="r">{pill}</td><td class="r" style="text-decoration:line-through;color:#9ca3af">{it["regular"] or ""}</td>'
+            f'<td class="r"><b>{it["sale"] if it["sale"] is not None else ""}</b></td></tr>'
+        )
+    rlabel = (rounds[ri].get("label") or f"Round {round_no}")
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><title>{store} — {season.name}</title>{_PRINT_CSS}</head>
+    <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
+    <h1>{store} — {season.name}</h1>
+    <div class="sub">{rlabel} · {len(items)} styles on sale · colour = discount depth · NEW = being sent to this store</div>
+    <table><thead><tr><th>Style</th><th class="r">In store</th><th class="r">Incoming</th>
+    <th class="r">Disc</th><th class="r">Was</th><th class="r">Now</th></tr></thead>
+    <tbody>{''.join(body)}</tbody></table></body></html>"""
+    return HTMLResponse(html)
+
+
+@router.get("/export/transfers", response_class=HTMLResponse)
+async def export_transfers_html(season_id: int = Query(...), db: Session = Depends(get_db)):
+    season = _season_or_404(db, season_id)
+    rows, _, wh = _sale_export_rows(db, season)
+    moves = sorted(_compute_transfers(rows, wh), key=lambda m: (m["to"], m["brand"], m["name"]))
+    body, last = [], None
+    for m in moves:
+        if m["to"] != last:
+            body.append(f'<tr class="brand"><td colspan="4">→ {m["to"]}</td></tr>')
+            last = m["to"]
+        body.append(f'<tr><td>{m["brand"]}</td><td>{m["name"]}'
+                     f'<div style="font-size:10px;color:#9ca3af;font-family:monospace">{m["parent_sku"]}</div></td>'
+                     f'<td>{m["from"]}</td><td class="r"><b>{m["qty"]}</b></td></tr>')
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Transfers — {season.name}</title>{_PRINT_CSS}</head>
+    <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
+    <h1>Store transfer plan — {season.name}</h1>
+    <div class="sub">{len(moves)} moves · grouped by destination store</div>
+    <table><thead><tr><th>Brand</th><th>Style</th><th>From</th><th class="r">Qty</th></tr></thead>
+    <tbody>{''.join(body)}</tbody></table></body></html>"""
+    return HTMLResponse(html)

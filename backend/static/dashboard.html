@@ -813,11 +813,24 @@
                 </div>
             </div>
 
-            <!-- Export -->
+            <!-- Exports -->
             <div class="card mb-8">
-                <h2 class="text-base font-semibold mb-1">Export price lists</h2>
-                <p class="text-xs text-gray-400 mb-3">One CSV per round of included items (sale price + regular as compare-at). Import into Shopify / Sitoo.</p>
-                <div id="saleExportButtons" class="flex flex-wrap gap-2"></div>
+                <h2 class="text-base font-semibold mb-3">Exports</h2>
+                <div class="text-xs font-medium text-gray-500 mb-1">Price lists — per round, included items (sale price + compare-at), for Shopify / Sitoo import</div>
+                <div id="saleExportButtons" class="flex flex-wrap gap-2 items-center mb-4"></div>
+
+                <div class="text-xs font-medium text-gray-500 mb-1">Store sale sheet — per-store list (have + incoming), discount-coloured, print to PDF</div>
+                <div class="flex flex-wrap gap-2 items-center mb-4">
+                    <select id="storeListStore" class="px-2 py-1 border rounded text-sm bg-white"></select>
+                    <select id="storeListRound" class="px-2 py-1 border rounded text-sm bg-white"></select>
+                    <button onclick="openStoreList()" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Open sheet (HTML / PDF)</button>
+                </div>
+
+                <div class="text-xs font-medium text-gray-500 mb-1">Store transfer plan — recommended moves to stock the sale</div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <button onclick="exportTransfers('html')" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Transfer sheet (print / PDF)</button>
+                    <button onclick="exportTransfers('csv')" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Transfer CSV</button>
+                </div>
             </div>
 
         </div> <!-- end tab-sale-planner -->
@@ -3108,6 +3121,7 @@
         let saleSeason = null;       // current season {id,name,rounds,...}
         let saleStylesData = [];     // current candidate styles
         let saleStyleMap = {};       // parent_sku -> style obj
+        let saleStores = [];         // physical store names (for exports)
         let _saleSearchTimer = null;
 
         function updateAppHeaderOffset() {
@@ -3127,6 +3141,7 @@
                     (brands || []).filter(b => b && b !== 'All').map(b => `<option>${b}</option>`).join('');
                 document.getElementById('saleCategory').innerHTML = '<option value="">All categories</option>' +
                     (cats || []).map(c => `<option>${c}</option>`).join('');
+                saleStores = ((await fetch(`${API_BASE}/sale/stores`).then(r => r.json()).catch(() => ({}))).stores) || [];
             } catch (e) { /* non-fatal */ }
             await refreshSeasons();
         }
@@ -3206,6 +3221,8 @@
                 <button onclick="exportSale('shopify',${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Shopify CSV</button>
                 <button onclick="exportSale('sitoo',${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Sitoo CSV</button>
                 <span class="mx-2"></span>`).join('');
+            document.getElementById('storeListRound').innerHTML = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
+            document.getElementById('storeListStore').innerHTML = saleStores.map(s => `<option>${s}</option>`).join('');
             try {
                 const d = await (await fetch(`${API_BASE}/sale/candidates?${saleFilterQuery()}`)).json();
                 // populate season (collection) filter, preserving selection
@@ -3370,6 +3387,17 @@
         }
         function exportSale(target, round) {
             window.open(`${API_BASE}/sale/export/${target}?season_id=${saleSeason.id}&round=${round}`, '_blank');
+        }
+        function openStoreList() {
+            const store = document.getElementById('storeListStore').value;
+            const round = document.getElementById('storeListRound').value || 1;
+            window.open(`${API_BASE}/sale/export/store-list?season_id=${saleSeason.id}&store=${encodeURIComponent(store)}&round=${round}`, '_blank');
+        }
+        function exportTransfers(fmt) {
+            const url = fmt === 'csv'
+                ? `${API_BASE}/sale/export/transfers.csv?season_id=${saleSeason.id}`
+                : `${API_BASE}/sale/export/transfers?season_id=${saleSeason.id}`;
+            window.open(url, '_blank');
         }
 
         // ----- Validation & store allocation -----

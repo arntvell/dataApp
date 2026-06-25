@@ -801,6 +801,8 @@
                     <h2 class="text-base font-semibold">Validation &amp; allocation</h2>
                     <button onclick="loadValidation()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Refresh</button>
                     <button onclick="resetAllocation()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50" title="Discard manual edits, restore recommended allocation">Reset to recommendation</button>
+                    <select id="valBrand" onchange="renderValidation()" class="px-2 py-1 border rounded text-sm bg-white"><option value="">All brands</option></select>
+                    <select id="valSeason" onchange="renderValidation()" class="px-2 py-1 border rounded text-sm bg-white"><option value="">All seasons</option></select>
                     <span class="flex-1"></span>
                     <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm">
                         <button id="valTab-on" onclick="setValTab('on')" class="px-3 py-1 bg-blue-600 text-white font-medium">On sale</button>
@@ -3285,7 +3287,7 @@
                     <th class="py-1.5 px-2 text-center" title="Mark as carry-over">CO</th>
                     <th class="py-1.5 px-2 text-left">Style</th>
                     <th class="py-1.5 px-2 text-left">Gender</th><th class="py-1.5 px-2 text-left">Season</th><th class="py-1.5 px-2 text-right">Stock</th>
-                    <th class="py-1.5 px-2 text-right">Sold 30d</th><th class="py-1.5 px-2 text-right" title="Units sold (last 365d) ÷ (sold + current stock)">Sell-thru</th><th class="py-1.5 px-2 text-right">Price</th>
+                    <th class="py-1.5 px-2 text-right">Sold 30d</th><th class="py-1.5 px-2 text-right">Sold 1y</th><th class="py-1.5 px-2 text-right" title="Sell-through of (sold+stock), split full-price / discounted">Sell-thru f/d</th><th class="py-1.5 px-2 text-right">Price</th>
                     ${rounds.map((r, i) => `<th class="py-1.5 px-2 text-right">${r.label || ('R' + (i + 1))} %</th>`).join('')}
                 </tr></thead><tbody>${arr.map(s => saleStyleRow(s, rounds)).join('')}</tbody></table></div>`;
             body.classList.remove('hidden');
@@ -3304,18 +3306,25 @@
             }).join('');
             const tint = !s.included ? 'bg-amber-100' : (s.is_carryover ? 'bg-amber-50' : '');
             const denom = (s.sold || 0) + (s.on_hand || 0);
-            const stPct = denom > 0 ? Math.round((s.sold || 0) / denom * 100) : 0;
-            const stClass = stPct < 30 ? 'text-red-600' : (stPct >= 70 ? 'text-green-600' : 'text-gray-600');
-            const stTitle = denom > 0 ? `full ${Math.round((s.sold_full || 0) / denom * 100)}% / discounted ${Math.round((s.sold_disc || 0) / denom * 100)}% · ${s.sold} sold in 365d` : 'no sales in 365d';
+            const fullPct = denom > 0 ? Math.round((s.sold_full || 0) / denom * 100) : 0;
+            const discPct = denom > 0 ? Math.round((s.sold_disc || 0) / denom * 100) : 0;
+            const overall = fullPct + discPct;
+            const stClass = overall < 30 ? 'text-red-600' : (overall >= 70 ? 'text-green-600' : 'text-gray-600');
+            const stTitle = denom > 0 ? `full ${fullPct}% / discounted ${discPct}% of (sold+stock) · ${s.sold} sold 1y · ${s.sold_30d} sold 30d` : 'no sales in 365d';
             return `<tr class="border-b hover:bg-gray-50 ${tint}">
                 <td class="py-1 px-2"><input type="checkbox" ${s.included ? 'checked' : ''} onchange="onStyleInclude('${escAttr(s.parent_sku)}',this)"></td>
                 <td class="py-1 px-2 text-center"><input type="checkbox" ${s.is_carryover ? 'checked' : ''} title="Carry-over (auto-excludes from sale)" onchange="onStyleCarryover('${escAttr(s.parent_sku)}',this)"></td>
-                <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')"><span class="text-blue-700">${s.name}</span> ${hint}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
+                <td class="py-1 px-2 cursor-pointer" onclick="toggleSaleVariants(this,'${escAttr(s.parent_sku)}')">
+                    <div class="flex items-center gap-2">
+                        ${s.image_url ? `<img src="${s.image_url}" class="w-9 h-9 object-cover rounded border border-gray-200 flex-shrink-0" loading="lazy">` : '<div class="w-9 h-9 rounded bg-gray-100 flex-shrink-0"></div>'}
+                        <div><span class="text-blue-700">${s.name}</span> ${hint}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></div>
+                    </div></td>
                 <td class="py-1 px-2 text-gray-500">${s.gender}</td>
                 <td class="py-1 px-2 text-gray-500 text-xs">${s.season || '—'}</td>
                 <td class="py-1 px-2 text-right">${formatCurrency(s.on_hand)}</td>
                 <td class="py-1 px-2 text-right text-gray-500">${s.sold_30d}</td>
-                <td class="py-1 px-2 text-right ${stClass}" title="${stTitle}">${stPct}%</td>
+                <td class="py-1 px-2 text-right text-gray-500">${s.sold}</td>
+                <td class="py-1 px-2 text-right ${stClass}" title="${stTitle}"><b>${fullPct}%</b><span class="text-gray-400 font-normal"> / ${discPct}%</span></td>
                 <td class="py-1 px-2 text-right">${s.price != null ? formatCurrency(s.price) : '—'}</td>
                 ${pcts}</tr>`;
         }
@@ -3365,7 +3374,7 @@
             if (next && next.dataset.varfor === parent) { next.remove(); return; }
             const d = await (await fetch(`${API_BASE}/sale/candidates/variants?season_id=${saleSeason.id}&parent_sku=${encodeURIComponent(parent)}`)).json();
             const rounds = saleSeason.rounds || [];
-            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${9 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
+            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${10 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
                 <table class="w-full text-xs"><thead><tr class="text-gray-400"><th class="text-left py-1">Size</th><th class="text-right">Stock</th><th class="text-right">Sold</th>${rounds.map((r, i) => `<th class="text-right">${r.label || ('R' + (i + 1))}</th>`).join('')}</tr></thead>
                 <tbody>${d.variants.map(v => `<tr><td class="py-0.5">${v.size}</td><td class="text-right">${formatCurrency(v.on_hand)}</td><td class="text-right text-gray-400">${v.sold}</td>${v.sale_prices.map(sp => `<td class="text-right">${sp != null ? formatCurrency(sp) : '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></td></tr>`;
             row.insertAdjacentHTML('afterend', html);
@@ -3408,6 +3417,13 @@
             body.innerHTML = '<div class="py-4 text-center text-gray-400">Loading…</div>';
             try {
                 valData = await (await fetch(`${API_BASE}/sale/validation?season_id=${saleSeason.id}`)).json();
+                const all = [...valData.on_sale, ...valData.not_on_sale];
+                const bsel = document.getElementById('valBrand'), bcur = bsel.value;
+                bsel.innerHTML = '<option value="">All brands</option>' +
+                    [...new Set(all.map(r => r.brand))].sort().map(b => `<option ${b === bcur ? 'selected' : ''}>${b}</option>`).join('');
+                const ssel = document.getElementById('valSeason'), scur = ssel.value;
+                ssel.innerHTML = '<option value="">All seasons</option>' +
+                    [...new Set(all.map(r => r.season).filter(Boolean))].sort().reverse().map(s => `<option ${s === scur ? 'selected' : ''}>${s}</option>`).join('');
                 renderValidation();
             } catch (e) { body.innerHTML = '<div class="py-4 text-center text-gray-400">Failed to load.</div>'; }
         }
@@ -3425,8 +3441,10 @@
             const body = document.getElementById('valBody');
             if (!valData) return;
             const stores = valData.stores;
+            const fb = document.getElementById('valBrand').value, fs = document.getElementById('valSeason').value;
+            const filt = arr => arr.filter(r => (!fb || r.brand === fb) && (!fs || r.season === fs));
             if (valTab === 'off') {
-                const rows = valData.not_on_sale;
+                const rows = filt(valData.not_on_sale);
                 body.innerHTML = `<table class="w-full text-sm"><thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
                     <th class="text-left py-1.5 px-2">Brand</th><th class="text-left py-1.5 px-2">Style</th>
                     ${stores.map(s => `<th class="text-right py-1.5 px-2">${shortLoc(s)}</th>`).join('')}
@@ -3439,7 +3457,7 @@
                         <td class="text-right py-1 px-2 font-semibold">${formatCurrency(r.total)}</td></tr>`).join('') : `<tr><td colspan="${stores.length + 4}" class="py-4 text-center text-gray-400">Nothing excluded.</td></tr>`}</tbody></table>`;
                 return;
             }
-            const rows = valData.on_sale;
+            const rows = filt(valData.on_sale);
             body.innerHTML = `<table class="w-full text-sm"><thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
                 <th class="text-left py-1.5 px-2">Brand</th><th class="text-left py-1.5 px-2">Style</th><th class="text-right py-1.5 px-2">Disc</th>
                 ${stores.map(s => `<th class="text-center py-1.5 px-2">${shortLoc(s)}</th>`).join('')}

@@ -461,6 +461,7 @@ class RawShopifyProduct(Base):
     total_inventory = Column(Integer, nullable=True)
     price = Column(Float, nullable=True)
     unit_cost = Column(Float, nullable=True)
+    image_url = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -520,6 +521,7 @@ class ProductMaster(Base):
     price = Column(Float, nullable=True)
     status = Column(String, nullable=True)
     country_of_origin = Column(String, nullable=True)
+    image_url = Column(String, nullable=True)
 
     # Coverage / provenance
     in_shopify = Column(Boolean, default=False)

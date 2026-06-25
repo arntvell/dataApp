@@ -237,10 +237,11 @@ def _aggregate_styles(db):
                 season_tokens.setdefault(parent, set()).add(t.upper().replace(" ", ""))
 
     styles = {}
-    for parent, brand, gender, category, name, price in db.query(
+    for parent, brand, gender, category, name, price, image in db.query(
         ProductMaster.parent_sku, func.min(ProductMaster.sold_as_vendor),
         func.min(ProductMaster.designed_for), func.min(ProductMaster.category_group),
-        func.min(ProductMaster.product_name), func.max(ProductMaster.price)
+        func.min(ProductMaster.product_name), func.max(ProductMaster.price),
+        func.max(ProductMaster.image_url)
     ).filter(ProductMaster.parent_sku.isnot(None)).group_by(ProductMaster.parent_sku):
         if _is_noise(parent, brand):
             continue
@@ -250,6 +251,7 @@ def _aggregate_styles(db):
             "parent_sku": parent, "brand": brand or "—", "gender": gender or "unisex",
             "category": category or "Uncategorized", "name": name or parent,
             "price": float(price) if price else None,
+            "image_url": image,
             "on_hand": float(stock.get(parent, 0) or 0),
             "sold": int(sold.get(parent, 0) or 0),
             "sold_30d": int(sold30.get(parent, 0) or 0),
@@ -695,6 +697,7 @@ def _sale_export_rows(db, season):
         resolved = [_resolve_pct(rounds, style_pcts, None, i) for i in range(len(rounds))]
         rows.append({
             "parent_sku": parent, "brand": st["brand"], "name": st["name"], "price": st["price"],
+            "image_url": st.get("image_url"),
             "store_stock": store_stock, "warehouse": round(loc_stock.get(wh, 0)),
             "target": target, "resolved": resolved,
         })
@@ -785,7 +788,7 @@ async def export_store_list(season_id: int = Query(...), store: str = Query(...)
         pct = r["resolved"][ri]
         nxt = r["resolved"][ri + 1] if ri + 1 < len(rounds) else None
         items.append({
-            "brand": r["brand"], "name": r["name"], "sku": r["parent_sku"],
+            "brand": r["brand"], "name": r["name"], "sku": r["parent_sku"], "image": r.get("image_url"),
             "have": have, "incoming": incoming, "pct": pct,
             "sale": _sale_price(r["price"], pct), "regular": round(r["price"]) if r["price"] else None,
             "new": have <= 0 and incoming > 0,
@@ -802,8 +805,9 @@ async def export_store_list(season_id: int = Query(...), store: str = Query(...)
         chg = f'<span class="chg">→ {it["next"]:.0f}% next round</span>' if it["next"] is not None else ""
         pill = f'<span class="pill" style="background:{_disc_color(it["pct"])}">{it["pct"]:.0f}%</span>' if it["pct"] is not None else "—"
         recv = f'+{it["incoming"]} incoming' if it["incoming"] else ""
+        img = f'<img src="{it["image"]}" style="width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;vertical-align:middle;margin-right:8px">' if it["image"] else ""
         body.append(
-            f'<tr><td>{it["name"]}{badge}{chg}<div style="font-size:10px;color:#9ca3af;font-family:monospace">{it["sku"]}</div></td>'
+            f'<tr><td>{img}{it["name"]}{badge}{chg}<div style="font-size:10px;color:#9ca3af;font-family:monospace">{it["sku"]}</div></td>'
             f'<td class="r">{it["have"]}</td><td class="r" style="color:#16a34a">{recv}</td>'
             f'<td class="r">{pill}</td><td class="r" style="text-decoration:line-through;color:#9ca3af">{it["regular"] or ""}</td>'
             f'<td class="r"><b>{it["sale"] if it["sale"] is not None else ""}</b></td></tr>'

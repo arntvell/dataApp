@@ -43,6 +43,8 @@ def _run_migrations():
             "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
             "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
             "ALTER TABLE sale_plan_items ADD COLUMN IF NOT EXISTS is_carryover BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE raw.shopify_products ADD COLUMN IF NOT EXISTS image_url VARCHAR",
+            "ALTER TABLE product_master ADD COLUMN IF NOT EXISTS image_url VARCHAR",
         ]:
             conn.execute(text(sql))
 

@@ -146,6 +146,7 @@ class ShopifyConnector(BaseConnector):
                 pageInfo {{ hasNextPage endCursor }}
                 edges {{ node {{
                   id title productType vendor tags status totalInventory
+                  featuredImage {{ url }}
                   variants(first: 100) {{ edges {{ node {{
                     sku price inventoryItem {{ unitCost {{ amount }} }}
                   }} }} }}
@@ -163,6 +164,7 @@ class ShopifyConnector(BaseConnector):
                 node = edge['node']
                 pid = str(node.get('id')).split('/')[-1]
                 tags = node.get('tags') or []
+                image_url = (node.get('featuredImage') or {}).get('url')
                 for v_edge in node.get('variants', {}).get('edges', []):
                     v = v_edge['node']
                     inv = v.get('inventoryItem') or {}
@@ -178,6 +180,7 @@ class ShopifyConnector(BaseConnector):
                         'total_inventory': node.get('totalInventory'),
                         'price': _f(v.get('price')),
                         'unit_cost': _f(unit.get('amount')),
+                        'image_url': image_url,
                     })
 
             page = data.get('pageInfo', {})

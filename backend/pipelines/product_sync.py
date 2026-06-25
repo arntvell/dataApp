@@ -234,6 +234,7 @@ class ProductSyncPipeline:
                     "price": (si and si.price) or (sp and sp.price),
                     "status": (sp and sp.status) or (ci and ci.status),
                     "country_of_origin": ci and ci.country_of_origin,
+                    "image_url": sp.image_url if sp else None,
                     "in_shopify": sp is not None,
                     "in_sitoo": si is not None,
                     "in_cin7": ci is not None,

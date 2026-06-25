@@ -47,6 +47,23 @@ AGE_CUTOFF_YEARS = 6        # first sold this many years ago or older => "old"
 CARRYOVER_YEARS = 4         # sold across this many distinct years => likely carry-over
 VELOCITY_DAYS = 365         # window for the "sold" velocity column
 
+# Noise: stored items that aren't sellable products — excluded from candidates & exports.
+NOISE_BRANDS = {"EXT", "LAGER", "STORAGE", "WRAPIN", "--", "—", "", "NONE"}
+NOISE_SKU_PREFIXES = ("B2B", "OLD")
+NOISE_SKU_CONTAINS = (
+    "LIV-IMP", "LIV-SKRD", "LIV-MSCSMPL", "2526-1208", "LIV-PCKUP",
+    "LIV-REPS", "LIV-RSDIST", "LIV-SVD", "LIV-SLGSV", "LIV-SMPLS",
+)
+
+
+def _is_noise(parent_sku, brand):
+    if (brand or "").strip().upper() in NOISE_BRANDS:
+        return True
+    p = (parent_sku or "").upper()
+    if p.startswith(NOISE_SKU_PREFIXES):
+        return True
+    return any(tok in p for tok in NOISE_SKU_CONTAINS)
+
 
 # ---------- helpers ----------
 
@@ -201,6 +218,8 @@ def _aggregate_styles(db):
         func.min(ProductMaster.designed_for), func.min(ProductMaster.category_group),
         func.min(ProductMaster.product_name), func.max(ProductMaster.price)
     ).filter(ProductMaster.parent_sku.isnot(None)).group_by(ProductMaster.parent_sku):
+        if _is_noise(parent, brand):
+            continue
         first_yr, yrs_active = age.get(parent, (None, 0))
         cur_year = date.today().year
         styles[parent] = {
@@ -221,6 +240,7 @@ def _aggregate_styles(db):
 async def candidates(
     season_id: int = Query(...),
     brand: str = Query(None), gender: str = Query(None), category: str = Query(None),
+    collection: str = Query(None),  # product collection-season filter, e.g. SS25
     q: str = Query(None), in_stock: int = Query(1),
     carryover: str = Query("all"),  # all | yes | no  (user-assigned flag)
     db: Session = Depends(get_db),
@@ -230,11 +250,16 @@ async def candidates(
     styles = _aggregate_styles(db)
     plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season_id)}
 
+    available_seasons = set()
     out = []
     for st in styles.values():
         if in_stock and st["on_hand"] <= 0:
             continue
+        if st["season"]:
+            available_seasons.add(st["season"])
         if brand and brand not in ("All", "") and st["brand"] != brand:
+            continue
+        if collection and collection not in ("All", "") and st["season"] != collection:
             continue
         if gender and gender not in ("All", "") and st["gender"] != gender:
             continue
@@ -264,7 +289,11 @@ async def candidates(
         })
 
     out.sort(key=lambda r: (r["brand"], r["gender"], r["name"]))
-    return {"season": _season_dict(season), "count": len(out), "styles": out}
+    seasons_sorted = sorted(available_seasons,
+                            key=lambda s: (int(re.search(r"\d{2}$", s).group()) if re.search(r"\d{2}$", s) else 99, s),
+                            reverse=True)
+    return {"season": _season_dict(season), "count": len(out),
+            "available_seasons": seasons_sorted, "styles": out}
 
 
 @router.get("/candidates/variants")

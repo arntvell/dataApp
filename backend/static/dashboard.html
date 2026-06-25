@@ -769,6 +769,9 @@
                     <select id="saleCategory" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"></select>
                     <input id="saleSearch" oninput="onSaleSearchInput()" placeholder="Search name / SKU…" class="px-2 py-1.5 border rounded-lg text-sm flex-1 min-w-40">
                     <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="saleInStock" checked onchange="loadSaleCandidates()"> In stock</label>
+                    <select id="saleCollection" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white">
+                        <option value="">All seasons</option>
+                    </select>
                     <select id="saleCarryover" onchange="loadSaleCandidates()" class="px-2 py-1.5 border rounded-lg text-sm bg-white">
                         <option value="all">Carry-over: all</option>
                         <option value="no">Hide carry-overs</option>
@@ -3167,6 +3170,7 @@
             const b = document.getElementById('saleBrand').value; if (b) p.set('brand', b);
             const g = document.getElementById('saleGender').value; if (g) p.set('gender', g);
             const c = document.getElementById('saleCategory').value; if (c) p.set('category', c);
+            const col = document.getElementById('saleCollection').value; if (col) p.set('collection', col);
             const q = document.getElementById('saleSearch').value.trim(); if (q) p.set('q', q);
             p.set('in_stock', document.getElementById('saleInStock').checked ? 1 : 0);
             p.set('carryover', document.getElementById('saleCarryover').value);
@@ -3186,6 +3190,12 @@
                 <span class="mx-2"></span>`).join('');
             try {
                 const d = await (await fetch(`${API_BASE}/sale/candidates?${saleFilterQuery()}`)).json();
+                // populate season (collection) filter, preserving selection
+                const colSel = document.getElementById('saleCollection');
+                if (colSel && d.available_seasons) {
+                    const cur = colSel.value;
+                    colSel.innerHTML = '<option value="">All seasons</option>' + d.available_seasons.map(s => `<option ${s === cur ? 'selected' : ''}>${s}</option>`).join('');
+                }
                 saleStylesData = d.styles; saleStyleMap = {}; d.styles.forEach(s => saleStyleMap[s.parent_sku] = s);
                 const incl = d.styles.filter(s => s.included).length;
                 document.getElementById('saleSummary').textContent = `${d.count} styles shown · ${incl} included in sale`;

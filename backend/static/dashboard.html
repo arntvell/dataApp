@@ -3268,7 +3268,7 @@
                     <th class="py-1.5 px-2 text-center" title="Mark as carry-over">CO</th>
                     <th class="py-1.5 px-2 text-left">Style</th>
                     <th class="py-1.5 px-2 text-left">Gender</th><th class="py-1.5 px-2 text-left">Season</th><th class="py-1.5 px-2 text-right">Stock</th>
-                    <th class="py-1.5 px-2 text-right">Sold</th><th class="py-1.5 px-2 text-right">Price</th>
+                    <th class="py-1.5 px-2 text-right">Sold 30d</th><th class="py-1.5 px-2 text-right" title="Units sold (last 365d) ÷ (sold + current stock)">Sell-thru</th><th class="py-1.5 px-2 text-right">Price</th>
                     ${rounds.map((r, i) => `<th class="py-1.5 px-2 text-right">${r.label || ('R' + (i + 1))} %</th>`).join('')}
                 </tr></thead><tbody>${arr.map(s => saleStyleRow(s, rounds)).join('')}</tbody></table></div>`;
             body.classList.remove('hidden');
@@ -3286,6 +3286,10 @@
                     <div class="text-[10px] text-gray-400 salePxCell">${sp != null ? formatCurrency(sp) : ''}</div></td>`;
             }).join('');
             const tint = !s.included ? 'bg-amber-100' : (s.is_carryover ? 'bg-amber-50' : '');
+            const denom = (s.sold || 0) + (s.on_hand || 0);
+            const stPct = denom > 0 ? Math.round((s.sold || 0) / denom * 100) : 0;
+            const stClass = stPct < 30 ? 'text-red-600' : (stPct >= 70 ? 'text-green-600' : 'text-gray-600');
+            const stTitle = denom > 0 ? `full ${Math.round((s.sold_full || 0) / denom * 100)}% / discounted ${Math.round((s.sold_disc || 0) / denom * 100)}% · ${s.sold} sold in 365d` : 'no sales in 365d';
             return `<tr class="border-b hover:bg-gray-50 ${tint}">
                 <td class="py-1 px-2"><input type="checkbox" ${s.included ? 'checked' : ''} onchange="onStyleInclude('${escAttr(s.parent_sku)}',this)"></td>
                 <td class="py-1 px-2 text-center"><input type="checkbox" ${s.is_carryover ? 'checked' : ''} title="Carry-over (auto-excludes from sale)" onchange="onStyleCarryover('${escAttr(s.parent_sku)}',this)"></td>
@@ -3293,7 +3297,8 @@
                 <td class="py-1 px-2 text-gray-500">${s.gender}</td>
                 <td class="py-1 px-2 text-gray-500 text-xs">${s.season || '—'}</td>
                 <td class="py-1 px-2 text-right">${formatCurrency(s.on_hand)}</td>
-                <td class="py-1 px-2 text-right text-gray-500">${s.sold}</td>
+                <td class="py-1 px-2 text-right text-gray-500">${s.sold_30d}</td>
+                <td class="py-1 px-2 text-right ${stClass}" title="${stTitle}">${stPct}%</td>
                 <td class="py-1 px-2 text-right">${s.price != null ? formatCurrency(s.price) : '—'}</td>
                 ${pcts}</tr>`;
         }
@@ -3343,7 +3348,7 @@
             if (next && next.dataset.varfor === parent) { next.remove(); return; }
             const d = await (await fetch(`${API_BASE}/sale/candidates/variants?season_id=${saleSeason.id}&parent_sku=${encodeURIComponent(parent)}`)).json();
             const rounds = saleSeason.rounds || [];
-            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${8 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
+            const html = `<tr data-varfor="${escAttr(parent)}"><td colspan="${9 + rounds.length}" class="bg-blue-50/30 px-4 py-2">
                 <table class="w-full text-xs"><thead><tr class="text-gray-400"><th class="text-left py-1">Size</th><th class="text-right">Stock</th><th class="text-right">Sold</th>${rounds.map((r, i) => `<th class="text-right">${r.label || ('R' + (i + 1))}</th>`).join('')}</tr></thead>
                 <tbody>${d.variants.map(v => `<tr><td class="py-0.5">${v.size}</td><td class="text-right">${formatCurrency(v.on_hand)}</td><td class="text-right text-gray-400">${v.sold}</td>${v.sale_prices.map(sp => `<td class="text-right">${sp != null ? formatCurrency(sp) : '—'}</td>`).join('')}</tr>`).join('')}</tbody></table></td></tr>`;
             row.insertAdjacentHTML('afterend', html);

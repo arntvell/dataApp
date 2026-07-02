@@ -836,6 +836,42 @@ async def export_store_list(season_id: int = Query(...), store: str = Query(...)
     return HTMLResponse(html)
 
 
+@router.get("/export/price-schedule", response_class=HTMLResponse)
+async def export_price_schedule(season_id: int = Query(...), db: Session = Depends(get_db)):
+    """Simple master sale list: every on-sale style A→Z, with each round's discount % and
+    price, colour-coded by discount depth."""
+    season = _season_or_404(db, season_id)
+    rows, rounds, wh = _sale_export_rows(db, season)
+    rows = sorted(rows, key=lambda r: (r["name"] or "").lower())
+
+    round_heads = "".join(f'<th class="r">{(rd.get("label") or f"R{i+1}")}</th>' for i, rd in enumerate(rounds))
+    body = []
+    for r in rows:
+        reg = round(r["price"]) if r["price"] else None
+        cells = ""
+        for i in range(len(rounds)):
+            pct = r["resolved"][i]
+            if pct is None:
+                cells += '<td class="r">—</td>'
+                continue
+            sale = _sale_price(r["price"], pct)
+            cells += (f'<td class="r" style="background:{_disc_color(pct)}">'
+                      f'<b>{sale if sale is not None else ""}</b>'
+                      f'<div style="font-size:10px;color:#374151">{pct:.0f}% off</div></td>')
+        body.append(
+            f'<tr><td>{r["name"]}<div class="sku">{r["parent_sku"]}</div></td>'
+            f'<td style="color:#6b7280">{r["brand"]}</td>'
+            f'<td class="r was">{reg or ""}</td>{cells}</tr>'
+        )
+    html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Sale list — {season.name}</title>{_PRINT_CSS}</head>
+    <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
+    <h1>Sale list — {season.name}</h1>
+    <div class="sub">{len(rows)} styles on sale · A–Z · colour = discount depth</div>
+    <table><thead><tr><th>Style</th><th>Brand</th><th class="r">Was</th>{round_heads}</tr></thead>
+    <tbody>{''.join(body)}</tbody></table></body></html>"""
+    return HTMLResponse(html)
+
+
 @router.get("/export/transfers", response_class=HTMLResponse)
 async def export_transfers_html(season_id: int = Query(...), db: Session = Depends(get_db)):
     season = _season_or_404(db, season_id)

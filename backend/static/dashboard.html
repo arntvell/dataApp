@@ -821,6 +821,11 @@
                 <div class="text-xs font-medium text-gray-500 mb-1">Price lists — per round, included items (sale price + compare-at), for Shopify / Sitoo import</div>
                 <div id="saleExportButtons" class="flex flex-wrap gap-2 items-center mb-4"></div>
 
+                <div class="text-xs font-medium text-gray-500 mb-1">Full sale list — every on-sale style A–Z, all rounds, discount-coloured</div>
+                <div class="flex flex-wrap gap-2 items-center mb-4">
+                    <button onclick="window.open(`${API_BASE}/sale/export/price-schedule?season_id=${saleSeason.id}`, '_blank')" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Open sale list (HTML / PDF)</button>
+                </div>
+
                 <div class="text-xs font-medium text-gray-500 mb-1">Store sale sheet — per-store list (have + incoming), discount-coloured, print to PDF</div>
                 <div class="flex flex-wrap gap-2 items-center mb-4">
                     <select id="storeListStore" class="px-2 py-1 border rounded text-sm bg-white"></select>

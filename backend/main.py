@@ -183,6 +183,14 @@ async def serve_dashboard():
         return FileResponse(dashboard_path)
     return {"error": "Dashboard not found"}
 
+@app.get("/store")
+async def serve_store():
+    """Standalone store-manager view: sale list + stock module (same auth)."""
+    store_path = os.path.join(os.path.dirname(__file__), "static", "store.html")
+    if os.path.exists(store_path):
+        return FileResponse(store_path)
+    return {"error": "Store page not found"}
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}

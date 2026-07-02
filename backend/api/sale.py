@@ -842,11 +842,16 @@ async def export_price_schedule(season_id: int = Query(...), db: Session = Depen
     price, colour-coded by discount depth."""
     season = _season_or_404(db, season_id)
     rows, rounds, wh = _sale_export_rows(db, season)
-    rows = sorted(rows, key=lambda r: (r["name"] or "").lower())
+    rows = sorted(rows, key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
 
     round_heads = "".join(f'<th class="r">{(rd.get("label") or f"R{i+1}")}</th>' for i, rd in enumerate(rounds))
+    ncols = 2 + len(rounds)
     body = []
+    last_brand = None
     for r in rows:
+        if r["brand"] != last_brand:
+            body.append(f'<tr class="brand"><td colspan="{ncols}">{r["brand"]}</td></tr>')
+            last_brand = r["brand"]
         reg = round(r["price"]) if r["price"] else None
         cells = ""
         for i in range(len(rounds)):
@@ -860,14 +865,13 @@ async def export_price_schedule(season_id: int = Query(...), db: Session = Depen
                       f'<div style="font-size:10px;color:#374151">{pct:.0f}% off</div></td>')
         body.append(
             f'<tr><td>{r["name"]}<div class="sku">{r["parent_sku"]}</div></td>'
-            f'<td style="color:#6b7280">{r["brand"]}</td>'
             f'<td class="r was">{reg or ""}</td>{cells}</tr>'
         )
     html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Sale list — {season.name}</title>{_PRINT_CSS}</head>
     <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
     <h1>Sale list — {season.name}</h1>
-    <div class="sub">{len(rows)} styles on sale · A–Z · colour = discount depth</div>
-    <table><thead><tr><th>Style</th><th>Brand</th><th class="r">Was</th>{round_heads}</tr></thead>
+    <div class="sub">{len(rows)} styles on sale · by brand · colour = discount depth</div>
+    <table><thead><tr><th>Style</th><th class="r">Was</th>{round_heads}</tr></thead>
     <tbody>{''.join(body)}</tbody></table></body></html>"""
     return HTMLResponse(html)
 

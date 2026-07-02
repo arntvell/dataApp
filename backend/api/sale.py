@@ -761,8 +761,10 @@ _PRINT_CSS = """
   table{border-collapse:collapse;width:100%;font-size:13px} th,td{padding:6px 10px;text-align:left;border-bottom:1px solid #e5e7eb}
   th{background:#f9fafb;font-size:11px;text-transform:uppercase;color:#6b7280}
   td.r,th.r{text-align:right} .brand{background:#eef2ff;font-weight:600}
-  .badge{font-size:10px;padding:1px 5px;border-radius:4px;background:#dbeafe;color:#1d4ed8;margin-left:6px}
-  .chg{color:#b45309;font-size:11px;margin-left:6px}
+  .new{font-size:9px;font-weight:700;padding:1px 6px;border-radius:4px;background:#dcfce7;color:#15803d;margin-left:6px}
+  .thumb{width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;vertical-align:middle;margin-right:8px}
+  .sku{font-size:10px;color:#9ca3af;font-family:monospace}
+  .was{text-decoration:line-through;color:#9ca3af}
   .pill{padding:1px 8px;border-radius:9999px;font-weight:600}
   .noprint{margin-bottom:16px} @media print{.noprint{display:none}}
   button{padding:6px 12px;border:1px solid #d1d5db;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
@@ -801,24 +803,35 @@ async def export_store_list(season_id: int = Query(...), store: str = Query(...)
         if it["brand"] != last_brand:
             body.append(f'<tr class="brand"><td colspan="6">{it["brand"]}</td></tr>')
             last_brand = it["brand"]
-        badge = '<span class="badge">NEW – being sent</span>' if it["new"] else ""
-        chg = f'<span class="chg">→ {it["next"]:.0f}% next round</span>' if it["next"] is not None else ""
+        badge = '<span class="new">NEW</span>' if it["new"] else ""
         pill = f'<span class="pill" style="background:{_disc_color(it["pct"])}">{it["pct"]:.0f}%</span>' if it["pct"] is not None else "—"
-        recv = f'+{it["incoming"]} incoming' if it["incoming"] else ""
-        img = f'<img src="{it["image"]}" style="width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid #e5e7eb;vertical-align:middle;margin-right:8px">' if it["image"] else ""
+        recv = f'+{it["incoming"]}' if it["incoming"] else ""
+        img = f'<img src="{it["image"]}" class="thumb">' if it["image"] else ""
         body.append(
-            f'<tr><td>{img}{it["name"]}{badge}{chg}<div style="font-size:10px;color:#9ca3af;font-family:monospace">{it["sku"]}</div></td>'
-            f'<td class="r">{it["have"]}</td><td class="r" style="color:#16a34a">{recv}</td>'
-            f'<td class="r">{pill}</td><td class="r" style="text-decoration:line-through;color:#9ca3af">{it["regular"] or ""}</td>'
+            f'<tr><td>{img}{it["name"]}{badge}<div class="sku">{it["sku"]}</div></td>'
+            f'<td class="r">{it["have"] or ""}</td><td class="r" style="color:#16a34a">{recv}</td>'
+            f'<td class="r">{pill}</td><td class="r was">{it["regular"] or ""}</td>'
             f'<td class="r"><b>{it["sale"] if it["sale"] is not None else ""}</b></td></tr>'
         )
+
     rlabel = (rounds[ri].get("label") or f"Round {round_no}")
+    cur_def = rounds[ri].get("pct")
+    new_count = sum(1 for it in items if it["new"])
+    sched = ""
+    if ri + 1 < len(rounds):
+        nd = rounds[ri + 1].get("pct")
+        nl = rounds[ri + 1].get("label") or f"Round {round_no + 1}"
+        if nd is not None:
+            sched = f' &nbsp;·&nbsp; then <b>{nd:.0f}% off</b> at {nl}'
+    head_line = f'<b>{rlabel}: {cur_def:.0f}% off</b>' if cur_def is not None else f'<b>{rlabel}</b>'
+    counts = f'{len(items)} styles' + (f' &nbsp;·&nbsp; {new_count} new to this store' if new_count else '')
     html = f"""<!doctype html><html><head><meta charset="utf-8"><title>{store} — {season.name}</title>{_PRINT_CSS}</head>
     <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
     <h1>{store} — {season.name}</h1>
-    <div class="sub">{rlabel} · {len(items)} styles on sale · colour = discount depth · NEW = being sent to this store</div>
-    <table><thead><tr><th>Style</th><th class="r">In store</th><th class="r">Incoming</th>
-    <th class="r">Disc</th><th class="r">Was</th><th class="r">Now</th></tr></thead>
+    <div class="sub">{head_line}{sched}</div>
+    <div class="sub">{counts}</div>
+    <table><thead><tr><th>Style</th><th class="r">Have</th><th class="r">Incoming</th>
+    <th class="r">Off</th><th class="r">Was</th><th class="r">Now</th></tr></thead>
     <tbody>{''.join(body)}</tbody></table></body></html>"""
     return HTMLResponse(html)
 

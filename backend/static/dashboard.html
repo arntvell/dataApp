@@ -165,6 +165,10 @@
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Sale Planner
             </button>
+            <button onclick="showTab('allocate')" id="tab-btn-allocate"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Allocate
+            </button>
         </div>
 
         <!-- TAB: Sales -->
@@ -841,6 +845,41 @@
             </div>
 
         </div> <!-- end tab-sale-planner -->
+
+        <!-- TAB: Allocate (central warehouse → stores) -->
+        <div id="tab-allocate" class="hidden">
+
+            <div class="card mb-4">
+                <div class="flex flex-wrap items-center gap-3 mb-2">
+                    <h2 class="text-xl font-semibold">Allocate from Central Warehouse</h2>
+                    <span class="text-sm text-gray-400" id="allocMeta">Sentrallager</span>
+                </div>
+                <p class="text-xs text-gray-400 mb-3">Everything in stock at Sentrallager, by size. Grey numbers = each store's units sold in the window (their demand). Type how many of each size to send to each store, then export the CSV for Cin7.</p>
+                <div class="flex flex-wrap items-center gap-3">
+                    <select id="allocSeason" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Limit to styles on sale in a Sale Planner season"><option value="">All stock</option></select>
+                    <select id="allocBrand" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"><option value="">All brands</option></select>
+                    <input id="allocSearch" oninput="onAllocSearchInput()" placeholder="Search name / SKU…" class="px-2 py-1.5 border rounded-lg text-sm flex-1 min-w-40">
+                    <select id="allocDays" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white">
+                        <option value="90">Sold: last 90 days</option>
+                        <option value="180">Sold: last 180 days</option>
+                        <option value="365" selected>Sold: last 12 months</option>
+                        <option value="1095">Sold: last 3 years</option>
+                    </select>
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="allocOnlyPlanned" onchange="renderAllocation()"> Only allocated</label>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t">
+                    <span class="text-xs text-gray-500" id="allocSummary"></span>
+                    <span class="flex-1"></span>
+                    <button onclick="clearAllocPlan()" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">Clear plan</button>
+                    <button onclick="exportAllocationCsv()" class="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">Export CSV</button>
+                </div>
+            </div>
+
+            <div class="card mb-8">
+                <div id="allocStyles"><div class="py-4 text-center text-gray-400">Loading…</div></div>
+            </div>
+
+        </div> <!-- end tab-allocate -->
 
         <!-- Sync Status -->
         <div class="mt-8 text-center text-sm text-gray-400" id="syncStatus">
@@ -2807,7 +2846,7 @@
 
         let currentTab = 'sales';
 
-        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner'];
+        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner', 'allocate'];
 
         function showTab(tab) {
             currentTab = tab;
@@ -2845,6 +2884,12 @@
             if (tab === 'sale-planner' && !salePlannerLoaded) {
                 salePlannerLoaded = true;
                 initSalePlanner();
+            }
+
+            // Lazy-load allocate tab on first visit
+            if (tab === 'allocate' && !allocLoaded) {
+                allocLoaded = true;
+                loadAllocation();
             }
 
             // Redraw charts when switching to sales (canvas visibility issue)
@@ -2946,6 +2991,274 @@
         function fmtCell(v) { return v ? formatCurrency(v) : '<span class="text-gray-300">·</span>'; }
         function escAttr(s) { return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
         function shortLoc(l) { return l.replace('Livid ', '').replace('Sentrallager', 'Lager'); }
+
+        // ============== Allocate (central warehouse → stores) ==============
+        let allocLoaded = false, allocData = null, allocGroups = null, _allocSearchTimer = null;
+        let allocPlan = {}, allocSkuInfo = {}, allocSizeBySku = {};
+        const ALLOC_PLAN_KEY = 'livid_alloc_plan_v1', ALLOC_INFO_KEY = 'livid_alloc_info_v1';
+
+        function loadAllocState() {
+            try { allocPlan = JSON.parse(localStorage.getItem(ALLOC_PLAN_KEY)) || {}; } catch (e) { allocPlan = {}; }
+            try { allocSkuInfo = JSON.parse(localStorage.getItem(ALLOC_INFO_KEY)) || {}; } catch (e) { allocSkuInfo = {}; }
+        }
+        loadAllocState();
+        function saveAllocPlan() { try { localStorage.setItem(ALLOC_PLAN_KEY, JSON.stringify(allocPlan)); } catch (e) {} }
+        function saveAllocInfo() { try { localStorage.setItem(ALLOC_INFO_KEY, JSON.stringify(allocSkuInfo)); } catch (e) {} }
+        function cssId(sku) { return ('a' + sku).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+        function onAllocSearchInput() { clearTimeout(_allocSearchTimer); _allocSearchTimer = setTimeout(loadAllocation, 350); }
+
+        async function ensureAllocSeasons() {
+            const sel = document.getElementById('allocSeason');
+            if (sel.dataset.filled === '1') return;
+            try {
+                const seasons = await (await fetch(`${API_BASE}/sale/seasons`)).json();
+                sel.innerHTML = '<option value="">All stock</option>' +
+                    (seasons || []).map(s => `<option value="${s.id}">On sale: ${s.name}</option>`).join('');
+                sel.dataset.filled = '1';
+            } catch (e) { /* leave "All stock" only */ }
+        }
+
+        async function loadAllocation() {
+            await ensureAllocSeasons();
+            const host = document.getElementById('allocStyles');
+            host.innerHTML = '<div class="py-4 text-center text-gray-400">Loading…</div>';
+            const brand = document.getElementById('allocBrand').value;
+            const season = document.getElementById('allocSeason').value;
+            const q = document.getElementById('allocSearch').value.trim();
+            const days = document.getElementById('allocDays').value;
+            const params = new URLSearchParams();
+            if (brand) params.set('brand', brand);
+            if (season) params.set('season_id', season);
+            if (q) params.set('q', q);
+            params.set('days', days);
+            try {
+                const r = await fetch(`${API_BASE}/stock/central-allocation?` + params.toString());
+                allocData = await r.json();
+            } catch (e) {
+                host.innerHTML = '<div class="py-4 text-center text-red-400">Failed to load.</div>';
+                return;
+            }
+            const bsel = document.getElementById('allocBrand');
+            if (bsel.dataset.filled !== '1' && allocData.brands) {
+                bsel.innerHTML = '<option value="">All brands</option>' +
+                    allocData.brands.map(b => `<option value="${b}">${b}</option>`).join('');
+                bsel.value = brand;
+                bsel.dataset.filled = '1';
+            }
+            document.getElementById('allocMeta').textContent =
+                `${allocData.warehouse} · ${Math.round(allocData.total_units)} units`;
+            (allocData.styles || []).forEach(st => st.sizes.forEach(z => {
+                allocSizeBySku[z.sku] = z;
+                allocSkuInfo[z.sku] = { name: st.name, size: z.size };
+            }));
+            saveAllocInfo();
+            renderAllocation();
+        }
+
+        function styleHasPlan(st) {
+            return st.sizes.some(z => allocPlan[z.sku] && Object.keys(allocPlan[z.sku]).length);
+        }
+
+        function renderAllocation() {
+            const host = document.getElementById('allocStyles');
+            if (!allocData || !allocData.styles.length) {
+                allocGroups = [];
+                host.innerHTML = '<div class="py-4 text-center text-gray-400">Nothing in stock at the warehouse for this filter.</div>';
+                updateAllocSummary();
+                return;
+            }
+            const onlyPlanned = document.getElementById('allocOnlyPlanned').checked;
+            const groups = [], idxByBrand = {};
+            allocData.styles.forEach(st => {
+                if (onlyPlanned && !styleHasPlan(st)) return;
+                let g = idxByBrand[st.brand];
+                if (g === undefined) { g = groups.length; idxByBrand[st.brand] = g; groups.push({ brand: st.brand, styles: [] }); }
+                groups[g].styles.push(st);
+            });
+            allocGroups = groups;
+            if (!groups.length) {
+                host.innerHTML = '<div class="py-4 text-center text-gray-400">No allocated styles yet — untick "Only allocated" to browse.</div>';
+                updateAllocSummary();
+                return;
+            }
+            host.innerHTML = groups.map((g, gi) => {
+                const units = g.styles.reduce((a, s) => a + s.wh_total, 0);
+                return `<div class="border rounded-lg mb-2">
+                    <button onclick="toggleAllocBrand(${gi})" class="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded-t-lg text-left">
+                        <span id="allocCaret-${gi}" class="text-gray-400">▸</span>
+                        <span class="font-semibold">${g.brand}</span>
+                        <span class="text-xs text-gray-400">${g.styles.length} styles · ${units} units</span>
+                    </button>
+                    <div id="allocBrandBody-${gi}" class="hidden"></div>
+                </div>`;
+            }).join('');
+            updateAllocSummary();
+        }
+
+        function toggleAllocBrand(gi) {
+            const body = document.getElementById('allocBrandBody-' + gi);
+            const caret = document.getElementById('allocCaret-' + gi);
+            const open = body.classList.toggle('hidden') === false;
+            caret.textContent = open ? '▾' : '▸';
+            if (open && !body.dataset.rendered) { body.dataset.rendered = '1'; renderAllocBrandStyles(gi, body); }
+        }
+
+        function renderAllocBrandStyles(gi, body) {
+            const g = allocGroups[gi], stores = allocData.stores;
+            body.innerHTML = g.styles.map((st, si) => {
+                const soldTotal = st.sizes.reduce((a, z) => a + (z.sold_total || 0), 0);
+                return `<div class="border-t">
+                    <button onclick="toggleAllocStyle(${gi},${si})" class="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-blue-50 text-left text-sm">
+                        <span id="allocSC-${gi}-${si}" class="text-gray-400 text-xs">▸</span>
+                        ${st.image_url ? `<img src="${st.image_url}" class="w-7 h-7 rounded object-cover border" onerror="this.style.display='none'">` : ''}
+                        <span class="font-medium flex-1 truncate">${st.name}</span>
+                        <span class="text-xs text-gray-400">${st.wh_total} in lager</span>
+                        <span class="text-xs text-gray-400 hidden sm:inline">· sold ${soldTotal}</span>
+                        <span id="allocPlanBadge-${gi}-${si}" class="text-xs"></span>
+                    </button>
+                    <div id="allocStyleBody-${gi}-${si}" class="hidden"></div>
+                </div>`;
+            }).join('');
+            g.styles.forEach((st, si) => updateStyleBadge(gi, si));
+        }
+
+        function toggleAllocStyle(gi, si) {
+            const body = document.getElementById(`allocStyleBody-${gi}-${si}`);
+            const caret = document.getElementById(`allocSC-${gi}-${si}`);
+            const open = body.classList.toggle('hidden') === false;
+            caret.textContent = open ? '▾' : '▸';
+            if (open && !body.dataset.rendered) { body.dataset.rendered = '1'; renderAllocSizes(gi, si, body); }
+        }
+
+        function renderAllocSizes(gi, si, body) {
+            const st = allocGroups[gi].styles[si], stores = allocData.stores;
+            const head = `<tr class="text-xs text-gray-500">
+                <th class="text-left py-1 px-2">Size</th>
+                <th class="text-right py-1 px-2">Lager</th>
+                ${stores.map(s => `<th class="text-right py-1 px-1" title="Sold at ${s}">${shortLoc(s)}</th>`).join('')}
+                <th class="px-1"></th>
+                ${stores.map(s => `<th class="text-center py-1 px-1 text-blue-600" title="Send to ${s}">→${shortLoc(s)}</th>`).join('')}
+                <th class="text-right py-1 px-2">Left</th></tr>`;
+            const rows = st.sizes.map(z => {
+                const plan = allocPlan[z.sku] || {};
+                return `<tr class="border-t text-sm">
+                    <td class="py-1 px-2 font-medium">${z.size}</td>
+                    <td class="text-right py-1 px-2">${z.wh_avail}</td>
+                    ${stores.map(s => `<td class="text-right py-1 px-1 text-gray-400 text-xs">${z.sold[s] || ''}</td>`).join('')}
+                    <td class="px-1 text-center"><button onclick="autoSplit(${gi},${si},'${escAttr(z.sku)}')" title="Split lager across stores by past sales" class="text-blue-500 hover:text-blue-700">⇄</button></td>
+                    ${stores.map((s, i) => `<td class="px-0.5"><input type="number" min="0" id="allocInp-${cssId(z.sku)}-${i}" data-sku="${escAttr(z.sku)}" data-store="${escAttr(s)}" data-gi="${gi}" data-si="${si}" value="${plan[s] || ''}" oninput="onAllocInput(this)" class="w-12 text-right text-sm border rounded px-1 py-0.5"></td>`).join('')}
+                    <td class="text-right py-1 px-2" id="allocLeft-${cssId(z.sku)}"></td></tr>`;
+            }).join('');
+            body.innerHTML = `<div class="overflow-x-auto px-2 pb-2"><table class="w-full"><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+            st.sizes.forEach(z => updateLeft(z.sku));
+        }
+
+        function onAllocInput(el) {
+            const sku = el.dataset.sku, store = el.dataset.store;
+            let v = parseInt(el.value, 10);
+            if (isNaN(v) || v < 0) v = 0;
+            if (!allocPlan[sku]) allocPlan[sku] = {};
+            if (v > 0) allocPlan[sku][store] = v; else delete allocPlan[sku][store];
+            if (!Object.keys(allocPlan[sku]).length) delete allocPlan[sku];
+            saveAllocPlan();
+            updateLeft(sku);
+            updateStyleBadge(+el.dataset.gi, +el.dataset.si);
+            updateAllocSummary();
+        }
+
+        function updateLeft(sku) {
+            const z = allocSizeBySku[sku];
+            if (!z) return;
+            const allocated = Object.values(allocPlan[sku] || {}).reduce((a, b) => a + b, 0);
+            const left = z.wh_avail - allocated;
+            const cell = document.getElementById('allocLeft-' + cssId(sku));
+            if (cell) {
+                cell.textContent = left;
+                cell.className = 'text-right py-1 px-2 ' +
+                    (left < 0 ? 'text-red-600 font-semibold' : (allocated > 0 ? 'text-green-600' : 'text-gray-400'));
+            }
+        }
+
+        function updateStyleBadge(gi, si) {
+            if (!allocGroups || !allocGroups[gi] || !allocGroups[gi].styles[si]) return;
+            const st = allocGroups[gi].styles[si];
+            const total = st.sizes.reduce((a, z) => a + Object.values(allocPlan[z.sku] || {}).reduce((x, y) => x + y, 0), 0);
+            const b = document.getElementById(`allocPlanBadge-${gi}-${si}`);
+            if (b) b.innerHTML = total > 0 ? `<span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded">→ ${total}</span>` : '';
+        }
+
+        function autoSplit(gi, si, sku) {
+            const z = allocSizeBySku[sku];
+            if (!z) return;
+            const stores = allocData.stores;
+            const sold = stores.map(s => z.sold[s] || 0);
+            const total = sold.reduce((a, b) => a + b, 0);
+            const cap = z.wh_avail;
+            const alloc = {};
+            if (total > 0 && cap > 0) {
+                const raw = sold.map(v => cap * v / total);
+                const base = raw.map(x => Math.floor(x));
+                let rem = cap - base.reduce((a, b) => a + b, 0);
+                const order = stores.map((s, i) => i).sort((a, b) => (raw[b] - base[b]) - (raw[a] - base[a]));
+                for (let k = 0; k < rem; k++) base[order[k % order.length]]++;
+                stores.forEach((s, i) => { if (base[i] > 0) alloc[s] = base[i]; });
+            }
+            if (Object.keys(alloc).length) allocPlan[sku] = alloc; else delete allocPlan[sku];
+            saveAllocPlan();
+            stores.forEach((s, i) => {
+                const inp = document.getElementById(`allocInp-${cssId(sku)}-${i}`);
+                if (inp) inp.value = alloc[s] || '';
+            });
+            updateLeft(sku);
+            updateStyleBadge(gi, si);
+            updateAllocSummary();
+        }
+
+        function updateAllocSummary() {
+            let lines = 0, units = 0, skus = 0;
+            for (const sku in allocPlan) {
+                const n = Object.keys(allocPlan[sku]).length;
+                if (n > 0) skus++;
+                lines += n;
+                units += Object.values(allocPlan[sku]).reduce((a, b) => a + b, 0);
+            }
+            const shown = allocGroups ? allocGroups.reduce((a, g) => a + g.styles.length, 0) : 0;
+            document.getElementById('allocSummary').textContent =
+                `${shown} styles shown · plan: ${units} units across ${skus} SKUs → ${lines} store lines`;
+        }
+
+        function clearAllocPlan() {
+            if (!confirm('Clear the entire allocation plan?')) return;
+            allocPlan = {};
+            saveAllocPlan();
+            renderAllocation();
+        }
+
+        function csvCell(v) { v = String(v == null ? '' : v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+        function downloadBlob(content, filename, type) {
+            const blob = new Blob([content], { type });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+        }
+        function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
+
+        function exportAllocationCsv() {
+            const rows = [['Variant SKU', 'Style', 'Quantity', 'Location']];
+            Object.keys(allocPlan).sort().forEach(sku => {
+                const info = allocSkuInfo[sku] || {};
+                const qs = allocPlan[sku];
+                Object.keys(qs).forEach(store => {
+                    if (qs[store] > 0) rows.push([sku, info.name || '', qs[store], store]);
+                });
+            });
+            if (rows.length === 1) { alert('Nothing allocated yet — enter quantities first.'); return; }
+            const csv = rows.map(r => r.map(csvCell).join(',')).join('\r\n');
+            downloadBlob(csv, 'allocation_' + todayStr() + '.csv', 'text/csv;charset=utf-8');
+        }
 
         async function renderStockLocCards() {
             const el = document.getElementById('stockLocCards');

@@ -486,3 +486,121 @@ async def stock_search(q: str = Query(..., min_length=2), limit: int = Query(20)
     ).group_by(parent).order_by(func.sum(Cin7Stock.on_hand).desc()).limit(limit).all()
 
     return [{"parent_sku": r[0], "name": r[1] or r[0], "on_hand": float(r[2] or 0)} for r in rows]
+
+
+@router.get("/central-allocation")
+async def central_allocation(
+    q: Optional[str] = Query(None, description="Search by SKU or product name"),
+    brand: Optional[str] = Query(None, description="Filter by brand"),
+    days: int = Query(365, description="Historical sales window per store"),
+    season_id: Optional[int] = Query(None, description="Restrict to a Sale Planner season's on-sale styles"),
+    db: Session = Depends(get_db),
+):
+    """
+    Sellable stock at the central warehouse (Sentrallager), variant/size level,
+    with how much each retail store has sold historically — the basis for allocating
+    central stock out to stores. Grouped by style, sorted by brand then name.
+
+    General tool by default (all sellable warehouse stock, sample/B2B/consignment
+    noise filtered out). Pass season_id to narrow to the styles currently on sale in
+    that Sale Planner season (i.e. candidates not explicitly excluded from the sale).
+    """
+    from api.sale import _is_noise  # lazy import — sale.py imports from this module
+    from database.models import SalePlanItem
+
+    wh = WAREHOUSE[0]
+    since = _since(days)
+
+    # When scoped to a sale, drop styles the user explicitly excluded from that season.
+    excluded_parents = set()
+    if season_id is not None:
+        excluded_parents = {
+            p for (p,) in db.query(SalePlanItem.parent_sku).filter(
+                SalePlanItem.season_id == season_id, SalePlanItem.included == False  # noqa: E712
+            )
+        }
+
+    # Warehouse variant stock (available > 0), keyed on the raw Cin7 SKU (the
+    # value we export for import back into the systems).
+    wh_avail = {}
+    for sku, av in db.query(
+        Cin7Stock.sku, func.sum(Cin7Stock.available)
+    ).filter(Cin7Stock.location == wh).group_by(Cin7Stock.sku).having(
+        func.sum(Cin7Stock.available) > 0
+    ):
+        wh_avail[sku] = float(av or 0)
+
+    if not wh_avail:
+        return {"stores": RETAIL_STORES, "warehouse": wh, "days": days,
+                "brands": [], "styles": [], "total_units": 0}
+
+    ups = list({s.upper().strip() for s in wh_avail})
+
+    # Product info (only known products — drops components/services not in the SSOT)
+    pm = {}
+    for sku, parent, brnd, name, img in db.query(
+        ProductMaster.sku, ProductMaster.parent_sku, ProductMaster.sold_as_vendor,
+        ProductMaster.product_name, ProductMaster.image_url
+    ).filter(ProductMaster.sku.in_(ups)):
+        pm[sku] = (parent or sku, brnd, name, img)
+
+    # Size per variant
+    size_of = {}
+    for s, size in db.query(ParentSkuMapping.sku, ParentSkuMapping.size_code).filter(
+        _pm_sku(ParentSkuMapping.sku).in_(ups)
+    ):
+        size_of[s.upper().strip()] = size
+
+    # Per-store historical units sold (retail stores only)
+    sold = {}
+    for u, loc, qty in db.query(
+        _pm_sku(SalesOrderItem.sku), SalesOrder.location, func.sum(SalesOrderItem.quantity)
+    ).join(SalesOrder, SalesOrderItem.order_id == SalesOrder.id).filter(
+        _pm_sku(SalesOrderItem.sku).in_(ups),
+        SalesOrder.location.in_(RETAIL_STORES),
+        SalesOrder.order_date >= since,
+    ).group_by(_pm_sku(SalesOrderItem.sku), SalesOrder.location):
+        sold.setdefault(u, {})[loc] = int(qty or 0)
+
+    ql = q.lower().strip() if q else None
+    styles = {}
+    brands = set()
+    total_units = 0.0
+    for sku, avail in wh_avail.items():
+        u = sku.upper().strip()
+        info = pm.get(u)
+        if not info:
+            continue  # not a known sellable product
+        parent, brnd, name, img = info
+        brnd = brnd or "—"
+        if _is_noise(parent, brnd):
+            continue  # samples / B2B / consignment / storage — not sellable retail stock
+        if season_id is not None and parent in excluded_parents:
+            continue  # user pulled this style out of the sale
+        brands.add(brnd)
+        if brand and brnd != brand:
+            continue
+        if ql and ql not in (name or "").lower() and ql not in sku.lower():
+            continue
+        st = styles.get(parent)
+        if st is None:
+            st = {"parent_sku": parent, "brand": brnd, "name": name or parent,
+                  "image_url": img, "wh_total": 0.0, "sizes": []}
+            styles[parent] = st
+        s_by_store = {s: sold.get(u, {}).get(s, 0) for s in RETAIL_STORES}
+        st["sizes"].append({
+            "sku": sku, "size": size_of.get(u) or "—", "wh_avail": avail,
+            "sold": s_by_store, "sold_total": sum(s_by_store.values()),
+        })
+        st["wh_total"] += avail
+        total_units += avail
+
+    out = sorted(styles.values(), key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
+    for st in out:
+        st["sizes"].sort(key=lambda z: str(z["size"]))
+
+    return {
+        "stores": RETAIL_STORES, "warehouse": wh, "days": days,
+        "brands": sorted(brands, key=lambda b: b.lower()),
+        "styles": out, "total_units": total_units,
+    }

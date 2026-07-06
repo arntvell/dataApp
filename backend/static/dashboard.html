@@ -854,7 +854,7 @@
                     <h2 class="text-xl font-semibold">Allocate from Central Warehouse</h2>
                     <span class="text-sm text-gray-400" id="allocMeta">Sentrallager</span>
                 </div>
-                <p class="text-xs text-gray-400 mb-3">Everything in stock at Sentrallager, by size. Grey numbers = each store's units sold in the window (their demand). Type how many of each size to send to each store, then export the CSV for Cin7.</p>
+                <p class="text-xs text-gray-400 mb-3">Sellable stock at Sentrallager, by size. Under each store: <span class="text-gray-500">units sold</span> <span class="text-gray-300">/</span> <span class="text-indigo-500">currently in that store</span>. Type how many to send, or hit <span class="text-blue-600">⇄ Auto-split</span> to fill by unmet demand. Then export the CSV for Cin7.</p>
                 <div class="flex flex-wrap items-center gap-3">
                     <select id="allocSeason" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Limit to styles on sale in a Sale Planner season"><option value="">All stock</option></select>
                     <select id="allocBrand" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"><option value="">All brands</option></select>
@@ -870,6 +870,7 @@
                 <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t">
                     <span class="text-xs text-gray-500" id="allocSummary"></span>
                     <span class="flex-1"></span>
+                    <button onclick="autoSplitAllShown()" class="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100" title="Auto-split every style currently shown across stores by unmet demand">⇄ Auto-split all shown</button>
                     <button onclick="clearAllocPlan()" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">Clear plan</button>
                     <button onclick="exportAllocationCsv()" class="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">Export CSV</button>
                 </div>
@@ -3085,11 +3086,15 @@
             host.innerHTML = groups.map((g, gi) => {
                 const units = g.styles.reduce((a, s) => a + s.wh_total, 0);
                 return `<div class="border rounded-lg mb-2">
-                    <button onclick="toggleAllocBrand(${gi})" class="w-full flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded-t-lg text-left">
-                        <span id="allocCaret-${gi}" class="text-gray-400">▸</span>
-                        <span class="font-semibold">${g.brand}</span>
-                        <span class="text-xs text-gray-400">${g.styles.length} styles · ${units} units</span>
-                    </button>
+                    <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 rounded-t-lg">
+                        <button onclick="toggleAllocBrand(${gi})" class="flex items-center gap-2 text-left flex-1 hover:opacity-70">
+                            <span id="allocCaret-${gi}" class="text-gray-400">▸</span>
+                            <span class="font-semibold">${g.brand}</span>
+                            <span class="text-xs text-gray-400">${g.styles.length} styles · ${units} units</span>
+                        </button>
+                        <button onclick="autoSplitBrand(${gi})" class="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100" title="Auto-split every ${g.brand} style across stores">⇄ all</button>
+                        <button onclick="resetBrand(${gi})" class="text-xs px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200" title="Clear ${g.brand} allocations">Reset</button>
+                    </div>
                     <div id="allocBrandBody-${gi}" class="hidden"></div>
                 </div>`;
             }).join('');
@@ -3133,24 +3138,31 @@
 
         function renderAllocSizes(gi, si, body) {
             const st = allocGroups[gi].styles[si], stores = allocData.stores;
+            const toolbar = `<div class="flex flex-wrap items-center gap-2 px-2 pt-2 text-xs">
+                <button onclick="autoSplitStyle(${gi},${si})" class="px-2 py-0.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100">⇄ Auto-split all sizes</button>
+                <button onclick="resetStyle(${gi},${si})" class="px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200">Reset</button>
+                <span class="text-gray-400">Sends lager to the stores with the most unmet demand (sold − in store).</span>
+            </div>`;
             const head = `<tr class="text-xs text-gray-500">
                 <th class="text-left py-1 px-2">Size</th>
                 <th class="text-right py-1 px-2">Lager</th>
-                ${stores.map(s => `<th class="text-right py-1 px-1" title="Sold at ${s}">${shortLoc(s)}</th>`).join('')}
-                <th class="px-1"></th>
-                ${stores.map(s => `<th class="text-center py-1 px-1 text-blue-600" title="Send to ${s}">→${shortLoc(s)}</th>`).join('')}
+                ${stores.map(s => `<th class="py-1 px-1 text-center" title="${s} — sold / currently in store">${shortLoc(s)}<div class="font-normal text-gray-300">sold/have</div></th>`).join('')}
                 <th class="text-right py-1 px-2">Left</th></tr>`;
             const rows = st.sizes.map(z => {
                 const plan = allocPlan[z.sku] || {};
                 return `<tr class="border-t text-sm">
-                    <td class="py-1 px-2 font-medium">${z.size}</td>
-                    <td class="text-right py-1 px-2">${z.wh_avail}</td>
-                    ${stores.map(s => `<td class="text-right py-1 px-1 text-gray-400 text-xs">${z.sold[s] || ''}</td>`).join('')}
-                    <td class="px-1 text-center"><button onclick="autoSplit(${gi},${si},'${escAttr(z.sku)}')" title="Split lager across stores by past sales" class="text-blue-500 hover:text-blue-700">⇄</button></td>
-                    ${stores.map((s, i) => `<td class="px-0.5"><input type="number" min="0" id="allocInp-${cssId(z.sku)}-${i}" data-sku="${escAttr(z.sku)}" data-store="${escAttr(s)}" data-gi="${gi}" data-si="${si}" value="${plan[s] || ''}" oninput="onAllocInput(this)" class="w-12 text-right text-sm border rounded px-1 py-0.5"></td>`).join('')}
+                    <td class="py-1 px-2 font-medium whitespace-nowrap">${z.size}</td>
+                    <td class="text-right py-1 px-2 font-semibold">${z.wh_avail}</td>
+                    ${stores.map((s, i) => {
+                        const sold = z.sold[s] || 0, have = (z.stock && z.stock[s]) || 0;
+                        return `<td class="px-1 py-1 align-bottom text-center">
+                            <div class="text-[10px] leading-none mb-0.5" title="${s}: sold ${sold} · in store ${have}"><span class="text-gray-400">${sold || '·'}</span><span class="text-gray-300">/</span><span class="${have > 0 ? 'text-indigo-500' : 'text-gray-300'}">${have || '·'}</span></div>
+                            <input type="number" min="0" id="allocInp-${cssId(z.sku)}-${i}" data-sku="${escAttr(z.sku)}" data-store="${escAttr(s)}" data-gi="${gi}" data-si="${si}" value="${plan[s] || ''}" oninput="onAllocInput(this)" class="w-12 text-right text-sm border rounded px-1 py-0.5">
+                        </td>`;
+                    }).join('')}
                     <td class="text-right py-1 px-2" id="allocLeft-${cssId(z.sku)}"></td></tr>`;
             }).join('');
-            body.innerHTML = `<div class="overflow-x-auto px-2 pb-2"><table class="w-full"><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+            body.innerHTML = toolbar + `<div class="overflow-x-auto px-2 pb-2"><table class="w-full"><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
             st.sizes.forEach(z => updateLeft(z.sku));
         }
 
@@ -3188,31 +3200,78 @@
             if (b) b.innerHTML = total > 0 ? `<span class="px-1.5 py-0.5 bg-green-100 text-green-700 rounded">→ ${total}</span>` : '';
         }
 
-        function autoSplit(gi, si, sku) {
-            const z = allocSizeBySku[sku];
-            if (!z) return;
-            const stores = allocData.stores;
-            const sold = stores.map(s => z.sold[s] || 0);
-            const total = sold.reduce((a, b) => a + b, 0);
-            const cap = z.wh_avail;
+        // Distribute a size's warehouse units across stores weighted by UNMET demand
+        // (sold − currently in store). Falls back to raw sales if no unmet gap exists.
+        function _computeAutoSplit(z) {
+            const stores = allocData.stores, cap = z.wh_avail;
+            let w = stores.map(s => Math.max(0, (z.sold[s] || 0) - ((z.stock && z.stock[s]) || 0)));
+            let total = w.reduce((a, b) => a + b, 0);
+            if (total === 0) { w = stores.map(s => z.sold[s] || 0); total = w.reduce((a, b) => a + b, 0); }
             const alloc = {};
             if (total > 0 && cap > 0) {
-                const raw = sold.map(v => cap * v / total);
+                const raw = w.map(v => cap * v / total);
                 const base = raw.map(x => Math.floor(x));
                 let rem = cap - base.reduce((a, b) => a + b, 0);
                 const order = stores.map((s, i) => i).sort((a, b) => (raw[b] - base[b]) - (raw[a] - base[a]));
                 for (let k = 0; k < rem; k++) base[order[k % order.length]]++;
                 stores.forEach((s, i) => { if (base[i] > 0) alloc[s] = base[i]; });
             }
-            if (Object.keys(alloc).length) allocPlan[sku] = alloc; else delete allocPlan[sku];
-            saveAllocPlan();
-            stores.forEach((s, i) => {
-                const inp = document.getElementById(`allocInp-${cssId(sku)}-${i}`);
+            if (Object.keys(alloc).length) allocPlan[z.sku] = alloc; else delete allocPlan[z.sku];
+            return alloc;
+        }
+        function _syncSizeInputs(z) {
+            const alloc = allocPlan[z.sku] || {};
+            allocData.stores.forEach((s, i) => {
+                const inp = document.getElementById(`allocInp-${cssId(z.sku)}-${i}`);
                 if (inp) inp.value = alloc[s] || '';
             });
-            updateLeft(sku);
+            updateLeft(z.sku);
+        }
+        function autoSplit(gi, si, sku) {
+            const z = allocSizeBySku[sku];
+            if (!z) return;
+            _computeAutoSplit(z);
+            saveAllocPlan();
+            _syncSizeInputs(z);
             updateStyleBadge(gi, si);
             updateAllocSummary();
+        }
+        function autoSplitStyle(gi, si) {
+            const st = allocGroups[gi].styles[si];
+            st.sizes.forEach(z => _computeAutoSplit(z));
+            saveAllocPlan();
+            st.sizes.forEach(z => _syncSizeInputs(z));
+            updateStyleBadge(gi, si);
+            updateAllocSummary();
+        }
+        function resetStyle(gi, si) {
+            const st = allocGroups[gi].styles[si];
+            st.sizes.forEach(z => { delete allocPlan[z.sku]; _syncSizeInputs(z); });
+            saveAllocPlan();
+            updateStyleBadge(gi, si);
+            updateAllocSummary();
+        }
+        function autoSplitBrand(gi) {
+            const g = allocGroups[gi];
+            if (!confirm(`Auto-split all ${g.styles.length} ${g.brand} styles across stores by unmet demand? Overwrites current inputs for this brand.`)) return;
+            g.styles.forEach((st, si) => { st.sizes.forEach(z => _computeAutoSplit(z)); updateStyleBadge(gi, si); st.sizes.forEach(z => _syncSizeInputs(z)); });
+            saveAllocPlan();
+            updateAllocSummary();
+        }
+        function resetBrand(gi) {
+            const g = allocGroups[gi];
+            if (!confirm(`Clear allocations for all ${g.brand} styles?`)) return;
+            g.styles.forEach((st, si) => { st.sizes.forEach(z => { delete allocPlan[z.sku]; _syncSizeInputs(z); }); updateStyleBadge(gi, si); });
+            saveAllocPlan();
+            updateAllocSummary();
+        }
+        function autoSplitAllShown() {
+            if (!allocGroups || !allocGroups.length) return;
+            const n = allocGroups.reduce((a, g) => a + g.styles.length, 0);
+            if (!confirm(`Auto-split all ${n} shown styles across stores by unmet demand? Overwrites current inputs for those styles.`)) return;
+            allocGroups.forEach(g => g.styles.forEach(st => st.sizes.forEach(z => _computeAutoSplit(z))));
+            saveAllocPlan();
+            renderAllocation();
         }
 
         function updateAllocSummary() {

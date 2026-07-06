@@ -562,6 +562,15 @@ async def central_allocation(
     ).group_by(_pm_sku(SalesOrderItem.sku), SalesOrder.location):
         sold.setdefault(u, {})[loc] = int(qty or 0)
 
+    # Per-store current stock on hand (retail stores) — what each store already has
+    store_stock = {}
+    for u, loc, oh in db.query(
+        _pm_sku(Cin7Stock.sku), Cin7Stock.location, func.sum(Cin7Stock.on_hand)
+    ).filter(
+        _pm_sku(Cin7Stock.sku).in_(ups), Cin7Stock.location.in_(RETAIL_STORES)
+    ).group_by(_pm_sku(Cin7Stock.sku), Cin7Stock.location):
+        store_stock.setdefault(u, {})[loc] = int(oh or 0)
+
     ql = q.lower().strip() if q else None
     styles = {}
     brands = set()
@@ -588,9 +597,11 @@ async def central_allocation(
                   "image_url": img, "wh_total": 0.0, "sizes": []}
             styles[parent] = st
         s_by_store = {s: sold.get(u, {}).get(s, 0) for s in RETAIL_STORES}
+        stk_by_store = {s: store_stock.get(u, {}).get(s, 0) for s in RETAIL_STORES}
         st["sizes"].append({
             "sku": sku, "size": size_of.get(u) or "—", "wh_avail": avail,
             "sold": s_by_store, "sold_total": sum(s_by_store.values()),
+            "stock": stk_by_store,
         })
         st["wh_total"] += avail
         total_units += avail

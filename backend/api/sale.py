@@ -25,6 +25,10 @@ from database.models import (
     SaleSeason, SalePlanItem, SaleVariantOverride, SaleAllocation,
 )
 from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since
+from config import settings
+from connectors.shopify_connector import ShopifyConnector
+import threading
+import uuid
 
 # Shopify collection-season tags look like ss20 / FW24 / AW23 (not the SALE_* tags)
 _SEASON_RE = re.compile(r"^(SS|FW|AW|HO|PRE|RESORT)\s?\d{2}$", re.IGNORECASE)
@@ -896,3 +900,128 @@ async def export_transfers_html(season_id: int = Query(...), db: Session = Depen
     <table><thead><tr><th>Brand</th><th>Style</th><th>From</th><th class="r">Qty</th></tr></thead>
     <tbody>{''.join(body)}</tbody></table></body></html>"""
     return HTMLResponse(html)
+
+
+# ============== Shopify tag push (newsletter pre-sale) ==============
+# Adds/removes a product tag on every Shopify product that has a discount in a
+# given sale round — e.g. to gate a "pre-sale" collection to newsletter subscribers.
+# Runs as a background job (hundreds of products) with a polled status endpoint.
+
+_TAG_JOBS = {}  # job_id -> {status, action, tag, total, done, ok, failed, failures, error}
+
+
+def _round_shopify_products(db, season, round_index, tag=None):
+    """Distinct Shopify products discounted in this round, + counts of unmapped/already-tagged."""
+    rows = _included_variant_rows(db, season, round_index)
+    skus_up = list({r["sku"].upper().strip() for r in rows})
+    if not skus_up:
+        return [], 0, 0
+
+    prod = {}
+    for pid, title in db.query(
+        ProductMaster.shopify_product_id, func.min(ProductMaster.product_name)
+    ).filter(
+        _pm_sku(ProductMaster.sku).in_(skus_up), ProductMaster.shopify_product_id.isnot(None)
+    ).group_by(ProductMaster.shopify_product_id):
+        prod[pid] = title
+
+    missing = db.query(func.count(func.distinct(_pm_sku(ProductMaster.sku)))).filter(
+        _pm_sku(ProductMaster.sku).in_(skus_up), ProductMaster.shopify_product_id.is_(None)
+    ).scalar() or 0
+
+    already = 0
+    if tag and prod:
+        ids = list(prod.keys())
+        tagged = {p for (p,) in db.query(func.distinct(RawShopifyProduct.product_id)).filter(
+            RawShopifyProduct.product_id.in_(ids), RawShopifyProduct.tags.ilike(f"%{tag}%")
+        )}
+        already = len(tagged & set(ids))
+
+    products = [{"product_id": pid, "title": title or pid} for pid, title in prod.items()]
+    products.sort(key=lambda p: (p["title"] or "").lower())
+    return products, int(missing), already
+
+
+def _shopify_conn():
+    cfg = settings.get_connector_configs().get("shopify", {})
+    if not cfg.get("base_url") or not cfg.get("api_key"):
+        return None
+    return ShopifyConnector(cfg)
+
+
+@router.get("/shopify-tag/preview")
+async def shopify_tag_preview(season_id: int = Query(...), round: int = Query(1),
+                              tag: str = Query(...), db: Session = Depends(get_db)):
+    """Read-only: which Shopify products would be tagged for this round (no writes)."""
+    season = _season_or_404(db, season_id)
+    products, missing, already = _round_shopify_products(db, season, round - 1, tag=tag.strip())
+    conn = _shopify_conn()
+    return {
+        "season": season.name, "round": round, "tag": tag.strip(),
+        "total_products": len(products),
+        "missing_shopify": missing,
+        "already_tagged": already,
+        "shopify_configured": conn is not None,
+        "sample": [p["title"] for p in products[:25]],
+    }
+
+
+def _run_tag_job(job_id, product_ids, tag, remove):
+    job = _TAG_JOBS[job_id]
+    try:
+        conn = _shopify_conn()
+        if conn is None:
+            job.update(status="error", error="Shopify is not configured on this server.")
+            return
+
+        def progress(done, ok, failed):
+            job.update(done=done, ok=ok, failed=failed)
+
+        res = conn.bulk_modify_product_tags(product_ids, [tag], remove=remove, on_progress=progress)
+        if res.get("access_denied"):
+            job.update(status="error",
+                       error="Shopify rejected the write — the API token is missing the 'write_products' scope.",
+                       done=res.get("done", 0), ok=res.get("ok", 0), failed=res.get("failed", 0))
+            return
+        job.update(status="done", done=res["done"], ok=res["ok"], failed=res["failed"],
+                   failures=res["failures"][:50])
+    except Exception as e:
+        logger.exception("Tag job failed")
+        job.update(status="error", error=str(e))
+
+
+@router.post("/shopify-tag")
+async def shopify_tag_start(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Start a background job that adds/removes a tag on this round's Shopify products."""
+    season_id = payload.get("season_id")
+    round_no = int(payload.get("round", 1))
+    tag = (payload.get("tag") or "").strip()
+    remove = bool(payload.get("remove", False))
+    if not season_id or not tag:
+        raise HTTPException(400, "season_id and tag are required")
+
+    season = _season_or_404(db, season_id)
+    products, _, _ = _round_shopify_products(db, season, round_no - 1, tag=tag)
+    product_ids = [p["product_id"] for p in products]
+    if not product_ids:
+        raise HTTPException(400, "No Shopify products found for this round")
+
+    conn = _shopify_conn()
+    if conn is None:
+        raise HTTPException(400, "Shopify is not configured on this server")
+
+    job_id = uuid.uuid4().hex
+    _TAG_JOBS[job_id] = {
+        "status": "running", "action": "remove" if remove else "add", "tag": tag,
+        "total": len(product_ids), "done": 0, "ok": 0, "failed": 0, "failures": [], "error": None,
+    }
+    threading.Thread(target=_run_tag_job, args=(job_id, product_ids, tag, remove), daemon=True).start()
+    return {"job_id": job_id, "total": len(product_ids), "action": _TAG_JOBS[job_id]["action"], "tag": tag}
+
+
+@router.get("/shopify-tag/status")
+async def shopify_tag_status(job_id: str = Query(...)):
+    job = _TAG_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    return {"job_id": job_id, **job}

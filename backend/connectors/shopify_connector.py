@@ -1,6 +1,7 @@
 import requests
 import json
-from typing import Dict, List, Any, Optional
+import time
+from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
 from .base_connector import BaseConnector
 import logging
@@ -764,5 +765,90 @@ class ShopifyConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Error transforming order: {e}")
                 continue
-        
+
         return transformed
+
+    # ---- Write operations (require the write_products access scope) ----
+
+    @staticmethod
+    def product_gid(product_id) -> str:
+        """Build a GraphQL product GID from a numeric id (or pass through a gid)."""
+        s = str(product_id)
+        return s if s.startswith("gid://") else f"gid://shopify/Product/{s}"
+
+    def get_access_scopes(self) -> List[str]:
+        """Return the access scopes granted to this token (for a write-permission check)."""
+        query = "{ currentAppInstallation { accessScopes { handle } } }"
+        res = self._make_graphql_request(query)
+        try:
+            scopes = res["data"]["currentAppInstallation"]["accessScopes"]
+            return [s["handle"] for s in scopes]
+        except (KeyError, TypeError):
+            return []
+
+    def modify_product_tags(self, product_id, tags: List[str], remove: bool = False) -> Dict[str, Any]:
+        """Add or remove tags on a single product. Returns {ok, errors, throttled}."""
+        op = "tagsRemove" if remove else "tagsAdd"
+        mutation = f"""
+        mutation modTags($id: ID!, $tags: [String!]!) {{
+          {op}(id: $id, tags: $tags) {{
+            node {{ id }}
+            userErrors {{ field message }}
+          }}
+        }}
+        """
+        variables = {"id": self.product_gid(product_id), "tags": tags}
+        res = self._make_graphql_request(mutation, variables)
+
+        # Top-level errors: throttling or access denied
+        top = res.get("errors") or []
+        for e in top:
+            code = ((e.get("extensions") or {}).get("code") or "").upper()
+            msg = (e.get("message") or "")
+            if code == "THROTTLED" or "throttl" in msg.lower():
+                return {"ok": False, "errors": [msg or "THROTTLED"], "throttled": True}
+            if "access denied" in msg.lower() or code in ("ACCESS_DENIED", "UNAUTHORIZED"):
+                return {"ok": False, "errors": [msg or "ACCESS_DENIED"], "access_denied": True}
+        if top:
+            return {"ok": False, "errors": [e.get("message", "error") for e in top]}
+
+        payload = ((res.get("data") or {}).get(op)) or {}
+        user_errors = payload.get("userErrors") or []
+        if user_errors:
+            return {"ok": False, "errors": [f"{u.get('field')}: {u.get('message')}" for u in user_errors]}
+        return {"ok": True, "errors": []}
+
+    def bulk_modify_product_tags(self, product_ids: List[Any], tags: List[str], remove: bool = False,
+                                 on_progress: Optional[Callable[[int, int, int], None]] = None) -> Dict[str, Any]:
+        """Add/remove tags across many products with basic throttle back-off.
+
+        on_progress(done, ok, failed) is called after each product. Returns a summary
+        with per-product failures and an access_denied flag if the token lacks write_products.
+        """
+        total = len(product_ids)
+        done = ok = failed = 0
+        failures = []
+        for pid in product_ids:
+            attempt = 0
+            while True:
+                r = self.modify_product_tags(pid, tags, remove=remove)
+                if r.get("access_denied"):
+                    return {"total": total, "done": done, "ok": ok, "failed": failed,
+                            "failures": failures, "access_denied": True}
+                if r.get("throttled") and attempt < 5:
+                    attempt += 1
+                    time.sleep(1.5 * attempt)
+                    continue
+                break
+            done += 1
+            if r.get("ok"):
+                ok += 1
+            else:
+                failed += 1
+                failures.append({"product_id": str(pid), "errors": r.get("errors", [])})
+            if on_progress:
+                on_progress(done, ok, failed)
+            # gentle pacing to stay under the GraphQL cost bucket
+            time.sleep(0.06)
+        return {"total": total, "done": done, "ok": ok, "failed": failed,
+                "failures": failures, "access_denied": False}

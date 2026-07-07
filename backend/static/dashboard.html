@@ -838,10 +838,22 @@
                 </div>
 
                 <div class="text-xs font-medium text-gray-500 mb-1">Store transfer plan — recommended moves to stock the sale</div>
-                <div class="flex flex-wrap gap-2 items-center">
+                <div class="flex flex-wrap gap-2 items-center mb-4">
                     <button onclick="exportTransfers('html')" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Transfer sheet (print / PDF)</button>
                     <button onclick="exportTransfers('csv')" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Transfer CSV</button>
                 </div>
+
+                <div class="text-xs font-medium text-gray-500 mb-1 pt-3 border-t">Newsletter pre-sale — push a tag to Shopify for every product discounted in a round</div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <label class="text-xs text-gray-500">Round</label>
+                    <select id="tagRound" class="px-2 py-1 border rounded text-sm bg-white"></select>
+                    <label class="text-xs text-gray-500">Tag</label>
+                    <input id="tagValue" value="presale-ss26" class="px-2 py-1 border rounded text-sm w-40">
+                    <button onclick="previewShopifyTag()" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Preview</button>
+                    <button onclick="pushShopifyTag(false)" id="tagAddBtn" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">Push tag to Shopify</button>
+                    <button onclick="pushShopifyTag(true)" class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50" title="Remove this tag from the round's products">Remove tag</button>
+                </div>
+                <div id="tagResult" class="text-xs text-gray-500 mt-2"></div>
             </div>
 
         </div> <!-- end tab-sale-planner -->
@@ -3602,6 +3614,8 @@
                 <span class="mx-2"></span>`).join('');
             document.getElementById('storeListRound').innerHTML = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
             document.getElementById('storeListStore').innerHTML = saleStores.map(s => `<option>${s}</option>`).join('');
+            const tagRoundSel = document.getElementById('tagRound');
+            if (tagRoundSel) tagRoundSel.innerHTML = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
             try {
                 const d = await (await fetch(`${API_BASE}/sale/candidates?${saleFilterQuery()}`)).json();
                 // populate season (collection) filter, preserving selection
@@ -3784,6 +3798,63 @@
                 ? `${API_BASE}/sale/export/transfers.csv?season_id=${saleSeason.id}`
                 : `${API_BASE}/sale/export/transfers?season_id=${saleSeason.id}`;
             window.open(url, '_blank');
+        }
+
+        // ---- Shopify pre-sale tag ----
+        let _tagPolling = false;
+        async function previewShopifyTag() {
+            const round = document.getElementById('tagRound').value || 1;
+            const tag = document.getElementById('tagValue').value.trim();
+            const box = document.getElementById('tagResult');
+            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
+            box.textContent = 'Checking…';
+            try {
+                const d = await (await fetch(`${API_BASE}/sale/shopify-tag/preview?season_id=${saleSeason.id}&round=${round}&tag=${encodeURIComponent(tag)}`)).json();
+                const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
+                box.innerHTML = `<div><b>${d.total_products}</b> Shopify products would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code> (round ${d.round}).`
+                    + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
+                    + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
+        }
+
+        async function pushShopifyTag(remove) {
+            if (_tagPolling) return;
+            const round = document.getElementById('tagRound').value || 1;
+            const tag = document.getElementById('tagValue').value.trim();
+            const box = document.getElementById('tagResult');
+            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
+            const verb = remove ? 'REMOVE' : 'ADD';
+            if (!confirm(`${verb} tag "${tag}" ${remove ? 'from' : 'to'} every Shopify product discounted in round ${round} of "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`)) return;
+            box.textContent = 'Starting…';
+            let start;
+            try {
+                start = await (await fetch(`${API_BASE}/sale/shopify-tag`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ season_id: saleSeason.id, round: parseInt(round), tag, remove })
+                })).json();
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Could not start.</span>'; return; }
+            if (!start.job_id) { box.innerHTML = `<span class="text-red-500">${start.detail || 'Failed to start.'}</span>`; return; }
+            _tagPolling = true;
+            const jobId = start.job_id;
+            const poll = async () => {
+                let s;
+                try { s = await (await fetch(`${API_BASE}/sale/shopify-tag/status?job_id=${jobId}`)).json(); }
+                catch (e) { box.innerHTML = '<span class="text-red-500">Lost connection to job.</span>'; _tagPolling = false; return; }
+                const pct = s.total ? Math.round(100 * s.done / s.total) : 0;
+                if (s.status === 'running') {
+                    box.innerHTML = `<div>${s.action === 'remove' ? 'Removing' : 'Adding'} <code class="bg-gray-100 px-1 rounded">${s.tag}</code>… ${s.done}/${s.total} (${pct}%) · ${s.failed} failed</div>`
+                        + `<div class="h-1.5 bg-gray-200 rounded mt-1 w-64"><div class="h-1.5 bg-green-600 rounded" style="width:${pct}%"></div></div>`;
+                    setTimeout(poll, 1500);
+                } else if (s.status === 'done') {
+                    _tagPolling = false;
+                    box.innerHTML = `<div class="text-green-700">✓ Done — ${s.ok}/${s.total} products ${s.action === 'remove' ? 'untagged' : 'tagged'} with <code class="bg-gray-100 px-1 rounded">${s.tag}</code>.${s.failed ? ` <span class="text-red-600">${s.failed} failed.</span>` : ''}</div>`
+                        + (s.failures && s.failures.length ? `<div class="text-gray-400 mt-1 truncate">first errors: ${s.failures.slice(0, 3).map(f => f.errors && f.errors[0]).join(' · ')}</div>` : '');
+                } else {
+                    _tagPolling = false;
+                    box.innerHTML = `<span class="text-red-500">${s.error || 'Job failed.'}</span>` + (s.done ? ` <span class="text-gray-400">(${s.ok}/${s.total} done before stop)</span>` : '');
+                }
+            };
+            poll();
         }
 
         // ----- Validation & store allocation -----

@@ -786,6 +786,27 @@ class ShopifyConnector(BaseConnector):
         except (KeyError, TypeError):
             return []
 
+    def get_product_ids_by_tag(self, tag: str, batch_size: int = 100) -> List[str]:
+        """All product ids currently carrying a tag (for a complete tag removal)."""
+        ids, cursor, has_next = [], None, True
+        safe = tag.replace("'", "")
+        while has_next:
+            after = f', after: "{cursor}"' if cursor else ''
+            query = f'{{ products(first: {batch_size}{after}, query: "tag:\'{safe}\'") {{ pageInfo {{ hasNextPage endCursor }} edges {{ node {{ id }} }} }} }}'
+            res = self._make_graphql_request(query)
+            if 'errors' in res or 'data' not in res:
+                self.logger.error(f"tag lookup error: {res.get('errors')}")
+                break
+            data = res['data']['products']
+            for e in data.get('edges', []):
+                ids.append(str(e['node']['id']).split('/')[-1])
+            page = data.get('pageInfo', {})
+            has_next = page.get('hasNextPage', False)
+            cursor = page.get('endCursor')
+            if not cursor:
+                break
+        return ids
+
     def modify_product_tags(self, product_id, tags: List[str], remove: bool = False) -> Dict[str, Any]:
         """Add or remove tags on a single product. Returns {ok, errors, throttled}."""
         op = "tagsRemove" if remove else "tagsAdd"

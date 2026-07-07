@@ -620,6 +620,8 @@ def _included_variant_rows(db, season, round_index):
             continue
         vpcts = (o.round_pcts if o else None) or []
         pct = _resolve_pct(rounds, style_pcts.get(parent, []), vpcts, round_index)
+        if not pct or pct <= 0:
+            continue  # 0% or unset for this round => the variant is NOT part of this round
         sale = _sale_price(price, pct)
         if sale is None:
             continue
@@ -1001,14 +1003,21 @@ async def shopify_tag_start(payload: dict = Body(...), db: Session = Depends(get
         raise HTTPException(400, "season_id and tag are required")
 
     season = _season_or_404(db, season_id)
-    products, _, _ = _round_shopify_products(db, season, round_no - 1, tag=tag)
-    product_ids = [p["product_id"] for p in products]
-    if not product_ids:
-        raise HTTPException(400, "No Shopify products found for this round")
-
     conn = _shopify_conn()
     if conn is None:
         raise HTTPException(400, "Shopify is not configured on this server")
+
+    if remove:
+        # Remove from every product that actually carries the tag (complete cleanup,
+        # independent of the round computation).
+        product_ids = conn.get_product_ids_by_tag(tag)
+        if not product_ids:
+            raise HTTPException(400, f"No Shopify products currently carry the tag '{tag}'")
+    else:
+        products, _, _ = _round_shopify_products(db, season, round_no - 1, tag=tag)
+        product_ids = [p["product_id"] for p in products]
+        if not product_ids:
+            raise HTTPException(400, "No Shopify products found for this round")
 
     job_id = uuid.uuid4().hex
     _TAG_JOBS[job_id] = {

@@ -825,9 +825,9 @@
                 <div class="text-xs font-medium text-gray-500 mb-1">Price lists — per round, included items (sale price + compare-at), for Shopify / Sitoo import</div>
                 <div id="saleExportButtons" class="flex flex-wrap gap-2 items-center mb-4"></div>
 
-                <div class="text-xs font-medium text-gray-500 mb-1">Full sale list — every on-sale style A–Z, all rounds, discount-coloured</div>
-                <div class="flex flex-wrap gap-2 items-center mb-4">
-                    <button onclick="window.open(`${API_BASE}/sale/export/price-schedule?season_id=${saleSeason.id}`, '_blank')" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Open sale list (HTML / PDF)</button>
+                <div class="text-xs font-medium text-gray-500 mb-1">Sale list — full overview (all rounds) or a single-round pick list (what to gather that round)</div>
+                <div id="saleListButtons" class="flex flex-wrap gap-2 items-center mb-4">
+                    <button onclick="openSaleList(0)" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Full (all rounds)</button>
                 </div>
 
                 <div class="text-xs font-medium text-gray-500 mb-1">Store sale sheet — per-store list (have + incoming), discount-coloured, print to PDF</div>
@@ -3616,6 +3616,9 @@
             document.getElementById('storeListStore').innerHTML = saleStores.map(s => `<option>${s}</option>`).join('');
             const tagRoundSel = document.getElementById('tagRound');
             if (tagRoundSel) tagRoundSel.innerHTML = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
+            const slb = document.getElementById('saleListButtons');
+            if (slb) slb.innerHTML = '<button onclick="openSaleList(0)" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Full (all rounds)</button>'
+                + rounds.map((r, i) => `<button onclick="openSaleList(${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">${r.label || ('Round ' + (i + 1))}</button>`).join('');
             try {
                 const d = await (await fetch(`${API_BASE}/sale/candidates?${saleFilterQuery()}`)).json();
                 // populate season (collection) filter, preserving selection
@@ -3787,6 +3790,9 @@
         }
         function exportSale(target, round) {
             window.open(`${API_BASE}/sale/export/${target}?season_id=${saleSeason.id}&round=${round}`, '_blank');
+        }
+        function openSaleList(round) {
+            window.open(`${API_BASE}/sale/export/price-schedule?season_id=${saleSeason.id}&round=${round || 0}`, '_blank');
         }
         function openStoreList() {
             const store = document.getElementById('storeListStore').value;

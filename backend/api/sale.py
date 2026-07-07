@@ -46,6 +46,8 @@ def _pick_season(tokens):
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dashboard/sale", tags=["Sale Planner"])
 
+round_ = round  # builtin alias — some handlers take a `round` query param that shadows it
+
 MAX_ROUNDS = 6
 AGE_CUTOFF_YEARS = 6        # first sold this many years ago or older => "old"
 CARRYOVER_YEARS = 4         # sold across this many distinct years => likely carry-over
@@ -774,6 +776,9 @@ _PRINT_CSS = """
   .pill{padding:1px 8px;border-radius:9999px;font-weight:600}
   .noprint{margin-bottom:16px} @media print{.noprint{display:none}}
   button{padding:6px 12px;border:1px solid #d1d5db;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+  .rnav{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 16px}
+  .rnav a{font-size:12px;padding:4px 10px;border:1px solid #d1d5db;border-radius:9999px;color:#374151;text-decoration:none}
+  .rnav a.on{background:#2563eb;color:#fff;border-color:#2563eb}
 </style>
 """
 
@@ -842,14 +847,62 @@ async def export_store_list(season_id: int = Query(...), store: str = Query(...)
     return HTMLResponse(html)
 
 
+def _round_nav(season_id, rounds, active):
+    """Print-hidden links to switch between the full list and each single round."""
+    def link(r, label):
+        cls = "on" if r == active else ""
+        return f'<a class="{cls}" href="?season_id={season_id}&round={r}">{label}</a>'
+    parts = [link(0, "Full (all rounds)")]
+    for i, rd in enumerate(rounds):
+        parts.append(link(i + 1, rd.get("label") or f"Round {i+1}"))
+    return '<div class="noprint rnav">' + " ".join(parts) + "</div>"
+
+
 @router.get("/export/price-schedule", response_class=HTMLResponse)
-async def export_price_schedule(season_id: int = Query(...), db: Session = Depends(get_db)):
-    """Simple master sale list: every on-sale style A→Z, with each round's discount % and
-    price, colour-coded by discount depth."""
+async def export_price_schedule(season_id: int = Query(...), round: int = Query(0),
+                                embed: int = Query(0), db: Session = Depends(get_db)):
+    """Sale list. round=0 → master list with every round's discount/price (colour-coded).
+    round=N → a single-round pick list (only that round's items, WAS/NOW/% off + stock).
+    embed=1 hides the round-switcher nav (the host page provides its own)."""
     season = _season_or_404(db, season_id)
     rows, rounds, wh = _sale_export_rows(db, season)
     rows = sorted(rows, key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
+    nav = "" if embed else _round_nav(season_id, rounds, round if 1 <= round <= len(rounds) else 0)
 
+    # ---- Single-round pick list ----
+    if 1 <= round <= len(rounds):
+        i = round - 1
+        rd = rounds[i]
+        rlabel = rd.get("label") or f"Round {round}"
+        picks = [r for r in rows if r["resolved"][i] is not None and r["resolved"][i] > 0]
+        body, last_brand, total_units = [], None, 0
+        for r in picks:
+            if r["brand"] != last_brand:
+                body.append(f'<tr class="brand"><td colspan="6">{r["brand"]}</td></tr>')
+                last_brand = r["brand"]
+            pct = r["resolved"][i]
+            reg = round_(r["price"]) if r["price"] else None
+            sale = _sale_price(r["price"], pct)
+            wh_qty = r["warehouse"]
+            store_qty = sum(r["store_stock"].values())
+            total_units += wh_qty + store_qty
+            body.append(
+                f'<tr><td>{r["name"]}<div class="sku">{r["parent_sku"]}</div></td>'
+                f'<td class="r was">{reg or ""}</td>'
+                f'<td class="r" style="background:{_disc_color(pct)}"><b>{sale if sale is not None else ""}</b></td>'
+                f'<td class="r"><b>{pct:.0f}%</b></td>'
+                f'<td class="r">{store_qty}</td>'
+                f'<td class="r">{wh_qty}</td></tr>'
+            )
+        html = f"""<!doctype html><html><head><meta charset="utf-8"><title>{rlabel} — {season.name}</title>{_PRINT_CSS}</head>
+    <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>{nav}
+    <h1>{rlabel} sale list — {season.name}</h1>
+    <div class="sub">{len(picks)} styles on sale this round at <b>{(rd.get('pct') or 0):.0f}% off</b> · by brand · Stores/Lager = units to gather</div>
+    <table><thead><tr><th>Style</th><th class="r">Was</th><th class="r">Now</th><th class="r">Off</th><th class="r">Stores</th><th class="r">Lager</th></tr></thead>
+    <tbody>{''.join(body)}</tbody></table></body></html>"""
+        return HTMLResponse(html)
+
+    # ---- Full master list (all rounds) ----
     round_heads = "".join(f'<th class="r">{(rd.get("label") or f"R{i+1}")}</th>' for i, rd in enumerate(rounds))
     ncols = 2 + len(rounds)
     body = []
@@ -858,11 +911,11 @@ async def export_price_schedule(season_id: int = Query(...), db: Session = Depen
         if r["brand"] != last_brand:
             body.append(f'<tr class="brand"><td colspan="{ncols}">{r["brand"]}</td></tr>')
             last_brand = r["brand"]
-        reg = round(r["price"]) if r["price"] else None
+        reg = round_(r["price"]) if r["price"] else None
         cells = ""
         for i in range(len(rounds)):
             pct = r["resolved"][i]
-            if pct is None:
+            if pct is None or pct <= 0:
                 cells += '<td class="r">—</td>'
                 continue
             sale = _sale_price(r["price"], pct)
@@ -874,7 +927,7 @@ async def export_price_schedule(season_id: int = Query(...), db: Session = Depen
             f'<td class="r was">{reg or ""}</td>{cells}</tr>'
         )
     html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Sale list — {season.name}</title>{_PRINT_CSS}</head>
-    <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>
+    <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>{nav}
     <h1>Sale list — {season.name}</h1>
     <div class="sub">{len(rows)} styles on sale · by brand · colour = discount depth</div>
     <table><thead><tr><th>Style</th><th class="r">Was</th>{round_heads}</tr></thead>

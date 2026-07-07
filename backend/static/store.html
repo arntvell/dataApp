@@ -31,10 +31,11 @@
 
         <!-- Sale list module (server-rendered price schedule for the active season) -->
         <div id="tab-sale">
-            <div id="saleFrameWrap" class="card !p-0 overflow-hidden" style="height:82vh">
+            <div id="saleRoundBar" class="flex flex-wrap gap-2 items-center mb-3"></div>
+            <div id="saleFrameWrap" class="card !p-0 overflow-hidden" style="height:78vh">
                 <iframe id="saleFrame" style="width:100%;height:100%;border:0" title="Sale list"></iframe>
             </div>
-            <p class="text-xs text-gray-400 mt-2">Full sale list — every style on sale with each round's discount. Switch to <b>Stock</b> above for live stock &amp; transfers.</p>
+            <p class="text-xs text-gray-400 mt-2">Pick <b>Full</b> for the whole sale, or a <b>round</b> to see exactly what goes on sale that round and what to gather. Switch to <b>Stock</b> above for live stock &amp; transfers.</p>
         </div>
 
         <div id="tab-stock" class="hidden">
@@ -333,13 +334,28 @@
             document.getElementById('tb-stock').className = 'px-4 py-1.5 text-sm rounded-lg ' + (t === 'stock' ? 'bg-blue-600 text-white font-medium' : 'text-gray-600 hover:bg-gray-100');
             if (t === 'stock' && !storeStockLoaded) { storeStockLoaded = true; loadStockTab(); }
         }
+        let storeSeasonId = null;
+        function showSaleRound(round) {
+            if (storeSeasonId == null) return;
+            document.getElementById('saleFrame').src = `${API_BASE}/sale/export/price-schedule?season_id=${storeSeasonId}&round=${round || 0}&embed=1`;
+            document.querySelectorAll('#saleRoundBar button').forEach(b => {
+                const on = String(b.dataset.round) === String(round || 0);
+                b.className = 'px-3 py-1.5 text-sm rounded-lg ' + (on ? 'bg-blue-600 text-white' : 'border bg-white text-gray-600 hover:bg-gray-50');
+            });
+        }
         async function initStore() {
             try {
                 const seasons = await (await fetch(`${API_BASE}/sale/seasons`)).json();
                 if (seasons && seasons.length) {
-                    document.getElementById('saleFrame').src = `${API_BASE}/sale/export/price-schedule?season_id=${seasons[0].id}`;
+                    storeSeasonId = seasons[0].id;
+                    const rounds = seasons[0].rounds || [];
+                    const bar = document.getElementById('saleRoundBar');
+                    bar.innerHTML = `<button data-round="0" onclick="showSaleRound(0)">Full (all rounds)</button>`
+                        + rounds.map((r, i) => `<button data-round="${i + 1}" onclick="showSaleRound(${i + 1})">${r.label || ('Round ' + (i + 1))}</button>`).join('');
+                    showSaleRound(0);
                 } else {
                     document.getElementById('saleFrameWrap').innerHTML = '<div class="p-6 text-gray-400 text-sm">No sale season set up yet.</div>';
+                    document.getElementById('saleRoundBar').innerHTML = '';
                 }
             } catch (e) {
                 document.getElementById('saleFrameWrap').innerHTML = '<div class="p-6 text-gray-400 text-sm">Failed to load sale list.</div>';

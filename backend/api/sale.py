@@ -860,13 +860,19 @@ def _round_nav(season_id, rounds, active):
 
 @router.get("/export/price-schedule", response_class=HTMLResponse)
 async def export_price_schedule(season_id: int = Query(...), round: int = Query(0),
-                                embed: int = Query(0), db: Session = Depends(get_db)):
+                                embed: int = Query(0), q: str = Query(None),
+                                db: Session = Depends(get_db)):
     """Sale list. round=0 → master list with every round's discount/price (colour-coded).
     round=N → a single-round pick list (only that round's items, WAS/NOW/% off + stock).
-    embed=1 hides the round-switcher nav (the host page provides its own)."""
+    embed=1 hides the round-switcher nav (the host page provides its own).
+    q filters by product name, SKU or brand."""
     season = _season_or_404(db, season_id)
     rows, rounds, wh = _sale_export_rows(db, season)
     rows = sorted(rows, key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
+    ql = (q or "").strip().lower()
+    if ql:
+        rows = [r for r in rows if ql in (r["name"] or "").lower()
+                or ql in (r["parent_sku"] or "").lower() or ql in (r["brand"] or "").lower()]
     nav = "" if embed else _round_nav(season_id, rounds, round if 1 <= round <= len(rounds) else 0)
 
     # ---- Single-round pick list ----
@@ -894,6 +900,8 @@ async def export_price_schedule(season_id: int = Query(...), round: int = Query(
                 f'<td class="r">{store_qty}</td>'
                 f'<td class="r">{wh_qty}</td></tr>'
             )
+        if not body:
+            body.append(f'<tr><td colspan="6" style="color:#9ca3af;padding:16px">No matches{f" for “{q}”" if ql else ""}.</td></tr>')
         html = f"""<!doctype html><html><head><meta charset="utf-8"><title>{rlabel} — {season.name}</title>{_PRINT_CSS}</head>
     <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>{nav}
     <h1>{rlabel} sale list — {season.name}</h1>
@@ -926,6 +934,8 @@ async def export_price_schedule(season_id: int = Query(...), round: int = Query(
             f'<tr><td>{r["name"]}<div class="sku">{r["parent_sku"]}</div></td>'
             f'<td class="r was">{reg or ""}</td>{cells}</tr>'
         )
+    if not body:
+        body.append(f'<tr><td colspan="{ncols}" style="color:#9ca3af;padding:16px">No matches{f" for “{q}”" if ql else ""}.</td></tr>')
     html = f"""<!doctype html><html><head><meta charset="utf-8"><title>Sale list — {season.name}</title>{_PRINT_CSS}</head>
     <body><div class="noprint"><button onclick="window.print()">Print / Save as PDF</button></div>{nav}
     <h1>Sale list — {season.name}</h1>

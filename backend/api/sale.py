@@ -28,6 +28,7 @@ from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _si
 from config import settings
 from connectors.shopify_connector import ShopifyConnector
 import threading
+import time
 import uuid
 
 # Shopify collection-season tags look like ss20 / FW24 / AW23 (not the SALE_* tags)
@@ -654,12 +655,30 @@ async def export_shopify(season_id: int = Query(...), round: int = Query(1), db:
                        f"shopify_sale_round{round}.csv")
 
 
+SITOO_PRICELIST_ID = 3  # the Sitoo price list we update for the sale
+
+
 @router.get("/export/sitoo")
 async def export_sitoo(season_id: int = Query(...), round: int = Query(1), db: Session = Depends(get_db)):
+    """Sitoo pricelist import for one round: pricelistid, productid (Sitoo's id), sku,
+    moneyprice (whole-number sale price). Comma-separated. Only variants that exist in Sitoo."""
     season = _season_or_404(db, season_id)
     rows = _included_variant_rows(db, season, round - 1)
-    out = [[r["sku"], r["sale"], r["regular"]] for r in rows]
-    return _csv_stream(["sku", "price", "price_org"], out, ";", f"sitoo_sale_round{round}.csv")
+    skus_up = list({r["sku"].upper().strip() for r in rows})
+    sid = {}
+    if skus_up:
+        for sku_up, spid in db.query(
+            _pm_sku(ProductMaster.sku), ProductMaster.sitoo_product_id
+        ).filter(_pm_sku(ProductMaster.sku).in_(skus_up), ProductMaster.sitoo_product_id.isnot(None)):
+            sid[sku_up] = spid
+    out = []
+    for r in rows:
+        spid = sid.get(r["sku"].upper().strip())
+        if not spid or r["sale"] is None:
+            continue
+        out.append([SITOO_PRICELIST_ID, spid, r["sku"], int(round_(r["sale"]))])
+    return _csv_stream(["pricelistid", "productid", "sku", "moneyprice"], out, ",",
+                       f"sitoo_pricelist{SITOO_PRICELIST_ID}_round{round}.csv")
 
 
 # ---------- store-manager list (#4) & transfer plan (#5) ----------
@@ -1111,3 +1130,118 @@ async def shopify_tag_status(job_id: str = Query(...)):
     if not job:
         raise HTTPException(404, "Job not found")
     return {"job_id": job_id, **job}
+
+
+# ============== Shopify price push (sale prices via API) ==============
+# Sets variant price = round sale price and compareAtPrice = regular (or reverts).
+# Round-specific. Runs as a background job with the same status endpoint.
+
+def _run_price_job(job_id, product_ids, sku_prices, revert):
+    job = _TAG_JOBS[job_id]
+    try:
+        conn = _shopify_conn()
+        if conn is None:
+            job.update(status="error", error="Shopify is not configured on this server.")
+            return
+        done = ok = failed = 0
+        failures = []
+        for pid in product_ids:
+            variants = conn.get_product_variants(pid)
+            updates = []
+            for v in variants:
+                pr = sku_prices.get((v.get("sku") or "").upper().strip())
+                if not pr:
+                    continue
+                if revert:
+                    updates.append({"id": v["id"], "price": str(pr["regular"]), "compareAtPrice": None})
+                else:
+                    updates.append({"id": v["id"], "price": str(pr["sale"]),
+                                    "compareAtPrice": str(pr["regular"])})
+            done += 1
+            if not updates:
+                job.update(done=done, ok=ok, failed=failed)
+                continue
+            attempt = 0
+            while True:
+                r = conn.set_variant_prices(pid, updates)
+                if r.get("access_denied"):
+                    job.update(status="error",
+                               error="Shopify rejected the write — token missing 'write_products' scope.",
+                               done=done, ok=ok, failed=failed)
+                    return
+                if r.get("throttled") and attempt < 5:
+                    attempt += 1
+                    time.sleep(1.5 * attempt)
+                    continue
+                break
+            if r.get("ok"):
+                ok += 1
+            else:
+                failed += 1
+                failures.append({"product_id": str(pid), "errors": r.get("errors", [])})
+            job.update(done=done, ok=ok, failed=failed)
+            time.sleep(0.08)
+        job.update(status="done", done=done, ok=ok, failed=failed, failures=failures[:50])
+    except Exception as e:
+        logger.exception("Price job failed")
+        job.update(status="error", error=str(e))
+
+
+def _round_sku_prices(db, season, round_index):
+    """sku (upper) -> {sale, regular} for the round's on-sale variants (whole numbers)."""
+    out = {}
+    for r in _included_variant_rows(db, season, round_index):
+        if r["sale"] is None or r["regular"] is None:
+            continue
+        out[r["sku"].upper().strip()] = {"sale": int(round_(r["sale"])), "regular": int(round_(r["regular"]))}
+    return out
+
+
+@router.get("/shopify-price/preview")
+async def shopify_price_preview(season_id: int = Query(...), round: int = Query(1),
+                                db: Session = Depends(get_db)):
+    """Read-only: which products/variants would be repriced for this round (no writes)."""
+    season = _season_or_404(db, season_id)
+    rows = _included_variant_rows(db, season, round - 1)
+    products, missing, _ = _round_shopify_products(db, season, round - 1)
+    base = (settings.get_connector_configs().get("shopify", {}).get("base_url") or "").rstrip("/")
+    admin_base = f"{base}/admin/products/" if base else None
+    sample = [{"sku": r["sku"], "name": r["name"], "was": r["regular"], "now": r["sale"], "pct": r["pct"]}
+              for r in rows[:25]]
+    return {
+        "season": season.name, "round": round,
+        "products_count": len(products), "variants_count": len(rows),
+        "missing_shopify": missing, "shopify_configured": bool(base), "admin_base": admin_base,
+        "products": [{"title": p["title"], "product_id": p["product_id"]} for p in products],
+        "sample_prices": sample,
+    }
+
+
+@router.post("/shopify-price")
+async def shopify_price_start(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Start a background job that sets (or reverts) sale prices on Shopify for a round."""
+    season_id = payload.get("season_id")
+    round_no = int(payload.get("round", 1))
+    revert = bool(payload.get("revert", False))
+    if not season_id:
+        raise HTTPException(400, "season_id is required")
+
+    season = _season_or_404(db, season_id)
+    conn = _shopify_conn()
+    if conn is None:
+        raise HTTPException(400, "Shopify is not configured on this server")
+
+    sku_prices = _round_sku_prices(db, season, round_no - 1)
+    products, _, _ = _round_shopify_products(db, season, round_no - 1)
+    product_ids = [p["product_id"] for p in products]
+    if not product_ids:
+        raise HTTPException(400, f"No Shopify products found for round {round_no}")
+
+    job_id = uuid.uuid4().hex
+    _TAG_JOBS[job_id] = {
+        "status": "running", "action": "revert" if revert else "price", "tag": f"round {round_no}",
+        "total": len(product_ids), "done": 0, "ok": 0, "failed": 0, "failures": [], "error": None,
+    }
+    threading.Thread(target=_run_price_job, args=(job_id, product_ids, sku_prices, revert),
+                     daemon=True).start()
+    return {"job_id": job_id, "total": len(product_ids), "action": _TAG_JOBS[job_id]["action"]}

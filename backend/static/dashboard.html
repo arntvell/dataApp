@@ -868,6 +868,17 @@
                     <button onclick="pushCategoryTag(true)" class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50" title="Remove this tag from every product carrying it">Remove tag</button>
                 </div>
                 <div id="catTagResult" class="text-xs text-gray-500 mt-2"></div>
+
+                <div class="text-xs font-medium text-gray-500 mb-1 pt-3 border-t">Sync prices to Shopify (direct API) — sets variant price = round sale price, compare-at = original. Round-specific.</div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <label class="text-xs text-gray-500">Round</label>
+                    <select id="priceRound" class="px-2 py-1 border rounded text-sm bg-white"></select>
+                    <button onclick="previewPriceSync()" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Preview</button>
+                    <button onclick="pushPriceSync(false)" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">Push prices to Shopify</button>
+                    <button onclick="pushPriceSync(true)" class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50" title="Revert prices to original and clear compare-at">Revert prices</button>
+                    <span class="text-xs text-gray-400">Sitoo: use the per-round <b>Sitoo CSV</b> above (pricelist 3 import).</span>
+                </div>
+                <div id="priceResult" class="text-xs text-gray-500 mt-2"></div>
             </div>
 
         </div> <!-- end tab-sale-planner -->
@@ -3636,6 +3647,8 @@
             if (tagRoundSel) tagRoundSel.innerHTML = roundOpts;
             const catTagRoundSel = document.getElementById('catTagRound');
             if (catTagRoundSel) catTagRoundSel.innerHTML = roundOpts;
+            const priceRoundSel = document.getElementById('priceRound');
+            if (priceRoundSel) priceRoundSel.innerHTML = roundOpts;
             const slb = document.getElementById('saleListButtons');
             if (slb) slb.innerHTML = '<button onclick="openSaleList(0)" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Full (all rounds)</button>'
                 + rounds.map((r, i) => `<button onclick="openSaleList(${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">${r.label || ('Round ' + (i + 1))}</button>`).join('');
@@ -3834,13 +3847,15 @@
                 try { s = await (await fetch(`${API_BASE}/sale/shopify-tag/status?job_id=${jobId}`)).json(); }
                 catch (e) { box.innerHTML = '<span class="text-red-500">Lost connection to job.</span>'; _tagPolling = false; return; }
                 const pct = s.total ? Math.round(100 * s.done / s.total) : 0;
+                const VERB = { add: 'Adding', remove: 'Removing', price: 'Repricing', revert: 'Reverting prices' };
+                const PAST = { add: 'tagged', remove: 'untagged', price: 'repriced', revert: 'reverted' };
                 if (s.status === 'running') {
-                    box.innerHTML = `<div>${s.action === 'remove' ? 'Removing' : 'Adding'} <code class="bg-gray-100 px-1 rounded">${s.tag}</code>… ${s.done}/${s.total} (${pct}%) · ${s.failed} failed</div>`
+                    box.innerHTML = `<div>${VERB[s.action] || 'Working'} <code class="bg-gray-100 px-1 rounded">${s.tag}</code>… ${s.done}/${s.total} (${pct}%) · ${s.failed} failed</div>`
                         + `<div class="h-1.5 bg-gray-200 rounded mt-1 w-64"><div class="h-1.5 bg-green-600 rounded" style="width:${pct}%"></div></div>`;
                     setTimeout(poll, 1500);
                 } else if (s.status === 'done') {
                     _tagPolling = false;
-                    box.innerHTML = `<div class="text-green-700">✓ Done — ${s.ok}/${s.total} products ${s.action === 'remove' ? 'untagged' : 'tagged'} with <code class="bg-gray-100 px-1 rounded">${s.tag}</code>.${s.failed ? ` <span class="text-red-600">${s.failed} failed.</span>` : ''}</div>`
+                    box.innerHTML = `<div class="text-green-700">✓ Done — ${s.ok}/${s.total} products ${PAST[s.action] || 'updated'} (<code class="bg-gray-100 px-1 rounded">${s.tag}</code>).${s.failed ? ` <span class="text-red-600">${s.failed} failed.</span>` : ''}</div>`
                         + (s.failures && s.failures.length ? `<div class="text-gray-400 mt-1 truncate">first errors: ${s.failures.slice(0, 3).map(f => f.errors && f.errors[0]).join(' · ')}</div>` : '');
                 } else {
                     _tagPolling = false;
@@ -3850,13 +3865,13 @@
             poll();
         }
 
-        async function _startTagJob(body, box, confirmMsg) {
+        async function _startJob(url, body, box, confirmMsg) {
             if (_tagPolling) return;
             if (!confirm(confirmMsg)) return;
             box.textContent = 'Starting…';
             let start;
             try {
-                start = await (await fetch(`${API_BASE}/sale/shopify-tag`, {
+                start = await (await fetch(url, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
                 })).json();
             } catch (e) { box.innerHTML = '<span class="text-red-500">Could not start.</span>'; return; }
@@ -3900,7 +3915,7 @@
             const box = document.getElementById('tagResult');
             if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
             const msg = `${remove ? 'REMOVE' : 'ADD'} tag "${tag}" ${remove ? 'from' : 'to'} every Shopify product discounted in round ${round} of "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`;
-            _startTagJob({ season_id: saleSeason.id, round: parseInt(round), tag, remove }, box, msg);
+            _startJob(`${API_BASE}/sale/shopify-tag`, { season_id: saleSeason.id, round: parseInt(round), tag, remove }, box, msg);
         }
 
         // ---- Category tag (whole sale, by category group) ----
@@ -3930,7 +3945,31 @@
             const msg = remove
                 ? `REMOVE tag "${tag}" from every Shopify product that carries it?\n\nThis writes to your live Shopify store.`
                 : `ADD tag "${tag}" to every ${category} product on sale in round ${round} of "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`;
-            _startTagJob({ season_id: saleSeason.id, round: parseInt(round), category, tag, remove }, box, msg);
+            _startJob(`${API_BASE}/sale/shopify-tag`, { season_id: saleSeason.id, round: parseInt(round), category, tag, remove }, box, msg);
+        }
+
+        // ---- Shopify price sync (direct API) ----
+        async function previewPriceSync() {
+            const round = document.getElementById('priceRound').value || 1;
+            const box = document.getElementById('priceResult');
+            box.textContent = 'Checking…';
+            try {
+                const d = await (await fetch(`${API_BASE}/sale/shopify-price/preview?season_id=${saleSeason.id}&round=${round}`)).json();
+                const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
+                const changes = (d.sample_prices || []).slice(0, 10).map(p => `${_tagEscape(p.name || p.sku)}: ${p.was}→<b>${p.now}</b> (${Math.round(p.pct)}%)`).join('<br>');
+                box.innerHTML = `<div><b>${d.products_count}</b> products / <b>${d.variants_count}</b> variants would be repriced in round ${round} (compare-at = original).`
+                    + ` Not in Shopify (skipped): ${d.missing_shopify}.</div>`
+                    + `<details class="mt-1"><summary class="cursor-pointer text-blue-600 select-none">Show sample price changes ▾</summary><div class="mt-1 text-gray-600">${changes || '—'}</div></details>`
+                    + _tagListHtml(d) + warn;
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
+        }
+        function pushPriceSync(revert) {
+            const round = document.getElementById('priceRound').value || 1;
+            const box = document.getElementById('priceResult');
+            const msg = revert
+                ? `REVERT Shopify prices for round ${round} of "${saleSeason.name}" back to original (clears compare-at)?\n\nThis writes live prices to your store.`
+                : `PUSH round ${round} sale prices to Shopify for "${saleSeason.name}" (price = sale, compare-at = original)?\n\nThis writes live prices to your store.`;
+            _startJob(`${API_BASE}/sale/shopify-price`, { season_id: saleSeason.id, round: parseInt(round), revert }, box, msg);
         }
 
         // ----- Validation & store allocation -----

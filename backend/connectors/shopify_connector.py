@@ -807,6 +807,43 @@ class ShopifyConnector(BaseConnector):
                 break
         return ids
 
+    def get_product_variants(self, product_id) -> List[Dict[str, Any]]:
+        """Variant id + sku for a product (needed to set per-variant prices)."""
+        query = ('{ product(id: "%s") { variants(first: 100) { edges { node { id sku } } } } }'
+                 % self.product_gid(product_id))
+        res = self._make_graphql_request(query)
+        prod = ((res.get("data") or {}).get("product")) or {}
+        edges = (prod.get("variants") or {}).get("edges", [])
+        return [{"id": e["node"]["id"], "sku": e["node"].get("sku")} for e in edges]
+
+    def set_variant_prices(self, product_id, variant_updates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Bulk-set price / compareAtPrice for variants of one product.
+        variant_updates: [{id, price, compareAtPrice}] (compareAtPrice=None clears it)."""
+        mutation = """
+        mutation bulkPrice($pid: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $pid, variants: $variants) {
+            userErrors { field message }
+          }
+        }
+        """
+        variables = {"pid": self.product_gid(product_id), "variants": variant_updates}
+        res = self._make_graphql_request(mutation, variables)
+        top = res.get("errors") or []
+        for e in top:
+            code = ((e.get("extensions") or {}).get("code") or "").upper()
+            msg = (e.get("message") or "")
+            if code == "THROTTLED" or "throttl" in msg.lower():
+                return {"ok": False, "errors": [msg or "THROTTLED"], "throttled": True}
+            if "access denied" in msg.lower() or code in ("ACCESS_DENIED", "UNAUTHORIZED"):
+                return {"ok": False, "errors": [msg or "ACCESS_DENIED"], "access_denied": True}
+        if top:
+            return {"ok": False, "errors": [e.get("message", "error") for e in top]}
+        payload = ((res.get("data") or {}).get("productVariantsBulkUpdate")) or {}
+        ue = payload.get("userErrors") or []
+        if ue:
+            return {"ok": False, "errors": [f"{u.get('field')}: {u.get('message')}" for u in ue]}
+        return {"ok": True, "errors": []}
+
     def modify_product_tags(self, product_id, tags: List[str], remove: bool = False) -> Dict[str, Any]:
         """Add or remove tags on a single product. Returns {ok, errors, throttled}."""
         op = "tagsRemove" if remove else "tagsAdd"

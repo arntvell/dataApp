@@ -854,6 +854,18 @@
                     <button onclick="pushShopifyTag(true)" class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50" title="Remove this tag from the round's products">Remove tag</button>
                 </div>
                 <div id="tagResult" class="text-xs text-gray-500 mt-2"></div>
+
+                <div class="text-xs font-medium text-gray-500 mb-1 pt-3 border-t">Category sale tags — tag all on-sale products in a category (e.g. Accessories → <code>SALE_AC</code>, Footwear → <code>SALE_FOOTWEAR</code>)</div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <label class="text-xs text-gray-500">Category</label>
+                    <select id="catTagCategory" class="px-2 py-1 border rounded text-sm bg-white"></select>
+                    <label class="text-xs text-gray-500">Tag</label>
+                    <input id="catTagValue" placeholder="SALE_AC" class="px-2 py-1 border rounded text-sm w-40">
+                    <button onclick="previewCategoryTag()" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Preview</button>
+                    <button onclick="pushCategoryTag(false)" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">Push tag to Shopify</button>
+                    <button onclick="pushCategoryTag(true)" class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50" title="Remove this tag from every product carrying it">Remove tag</button>
+                </div>
+                <div id="catTagResult" class="text-xs text-gray-500 mt-2"></div>
             </div>
 
         </div> <!-- end tab-sale-planner -->
@@ -3532,6 +3544,9 @@
                     (brands || []).filter(b => b && b !== 'All').map(b => `<option>${b}</option>`).join('');
                 document.getElementById('saleCategory').innerHTML = '<option value="">All categories</option>' +
                     (cats || []).map(c => `<option>${c}</option>`).join('');
+                const catTagSel = document.getElementById('catTagCategory');
+                if (catTagSel) catTagSel.innerHTML = '<option value="">Pick category…</option>' +
+                    (cats || []).map(c => `<option>${c}</option>`).join('');
                 saleStores = ((await fetch(`${API_BASE}/sale/stores`).then(r => r.json()).catch(() => ({}))).stores) || [];
             } catch (e) { /* non-fatal */ }
             await refreshSeasons();
@@ -3808,40 +3823,7 @@
 
         // ---- Shopify pre-sale tag ----
         let _tagPolling = false;
-        async function previewShopifyTag() {
-            const round = document.getElementById('tagRound').value || 1;
-            const tag = document.getElementById('tagValue').value.trim();
-            const box = document.getElementById('tagResult');
-            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
-            box.textContent = 'Checking…';
-            try {
-                const d = await (await fetch(`${API_BASE}/sale/shopify-tag/preview?season_id=${saleSeason.id}&round=${round}&tag=${encodeURIComponent(tag)}`)).json();
-                const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
-                box.innerHTML = `<div><b>${d.total_products}</b> Shopify products would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code> (round ${d.round}).`
-                    + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
-                    + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
-            } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
-        }
-
-        async function pushShopifyTag(remove) {
-            if (_tagPolling) return;
-            const round = document.getElementById('tagRound').value || 1;
-            const tag = document.getElementById('tagValue').value.trim();
-            const box = document.getElementById('tagResult');
-            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
-            const verb = remove ? 'REMOVE' : 'ADD';
-            if (!confirm(`${verb} tag "${tag}" ${remove ? 'from' : 'to'} every Shopify product discounted in round ${round} of "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`)) return;
-            box.textContent = 'Starting…';
-            let start;
-            try {
-                start = await (await fetch(`${API_BASE}/sale/shopify-tag`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ season_id: saleSeason.id, round: parseInt(round), tag, remove })
-                })).json();
-            } catch (e) { box.innerHTML = '<span class="text-red-500">Could not start.</span>'; return; }
-            if (!start.job_id) { box.innerHTML = `<span class="text-red-500">${start.detail || 'Failed to start.'}</span>`; return; }
-            _tagPolling = true;
-            const jobId = start.job_id;
+        function _pollTagJob(jobId, box) {
             const poll = async () => {
                 let s;
                 try { s = await (await fetch(`${API_BASE}/sale/shopify-tag/status?job_id=${jobId}`)).json(); }
@@ -3861,6 +3843,73 @@
                 }
             };
             poll();
+        }
+
+        async function _startTagJob(body, box, confirmMsg) {
+            if (_tagPolling) return;
+            if (!confirm(confirmMsg)) return;
+            box.textContent = 'Starting…';
+            let start;
+            try {
+                start = await (await fetch(`${API_BASE}/sale/shopify-tag`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+                })).json();
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Could not start.</span>'; return; }
+            if (!start.job_id) { box.innerHTML = `<span class="text-red-500">${start.detail || 'Failed to start.'}</span>`; return; }
+            _tagPolling = true;
+            _pollTagJob(start.job_id, box);
+        }
+
+        // ---- Round (pre-sale) tag ----
+        async function previewShopifyTag() {
+            const round = document.getElementById('tagRound').value || 1;
+            const tag = document.getElementById('tagValue').value.trim();
+            const box = document.getElementById('tagResult');
+            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
+            box.textContent = 'Checking…';
+            try {
+                const d = await (await fetch(`${API_BASE}/sale/shopify-tag/preview?season_id=${saleSeason.id}&round=${round}&tag=${encodeURIComponent(tag)}`)).json();
+                const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
+                box.innerHTML = `<div><b>${d.total_products}</b> Shopify products would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code> (round ${d.round}).`
+                    + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
+                    + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
+        }
+        function pushShopifyTag(remove) {
+            const round = document.getElementById('tagRound').value || 1;
+            const tag = document.getElementById('tagValue').value.trim();
+            const box = document.getElementById('tagResult');
+            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
+            const msg = `${remove ? 'REMOVE' : 'ADD'} tag "${tag}" ${remove ? 'from' : 'to'} every Shopify product discounted in round ${round} of "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`;
+            _startTagJob({ season_id: saleSeason.id, round: parseInt(round), tag, remove }, box, msg);
+        }
+
+        // ---- Category tag (whole sale, by category group) ----
+        async function previewCategoryTag() {
+            const category = document.getElementById('catTagCategory').value;
+            const tag = document.getElementById('catTagValue').value.trim();
+            const box = document.getElementById('catTagResult');
+            if (!category) { box.innerHTML = '<span class="text-red-500">Pick a category.</span>'; return; }
+            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
+            box.textContent = 'Checking…';
+            try {
+                const d = await (await fetch(`${API_BASE}/sale/shopify-tag/preview?season_id=${saleSeason.id}&category=${encodeURIComponent(category)}&tag=${encodeURIComponent(tag)}`)).json();
+                const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
+                box.innerHTML = `<div><b>${d.total_products}</b> on-sale <b>${category}</b> products would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code>.`
+                    + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
+                    + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
+        }
+        function pushCategoryTag(remove) {
+            const category = document.getElementById('catTagCategory').value;
+            const tag = document.getElementById('catTagValue').value.trim();
+            const box = document.getElementById('catTagResult');
+            if (!category) { box.innerHTML = '<span class="text-red-500">Pick a category.</span>'; return; }
+            if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
+            const msg = remove
+                ? `REMOVE tag "${tag}" from every Shopify product that carries it?\n\nThis writes to your live Shopify store.`
+                : `ADD tag "${tag}" to every on-sale ${category} product in "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`;
+            _startTagJob({ season_id: saleSeason.id, category, tag, remove }, box, msg);
         }
 
         // ----- Validation & store allocation -----

@@ -975,65 +975,27 @@ async def export_transfers_html(season_id: int = Query(...), db: Session = Depen
 _TAG_JOBS = {}  # job_id -> {status, action, tag, total, done, ok, failed, failures, error}
 
 
-def _round_shopify_products(db, season, round_index, tag=None):
-    """Distinct Shopify products discounted in this round, + counts of unmapped/already-tagged."""
+def _round_shopify_products(db, season, round_index, tag=None, category_group=None):
+    """Distinct Shopify products discounted in THIS round (resolved pct > 0), optionally
+    narrowed to a category group. Everything is round-specific — a later round's additions
+    never appear until that round. Returns (products, unmapped_count, already_tagged_count)."""
     rows = _included_variant_rows(db, season, round_index)
     skus_up = list({r["sku"].upper().strip() for r in rows})
     if not skus_up:
         return [], 0, 0
 
+    base = [_pm_sku(ProductMaster.sku).in_(skus_up)]
+    if category_group:
+        base.append(ProductMaster.category_group == category_group)
+
     prod = {}
     for pid, title in db.query(
         ProductMaster.shopify_product_id, func.min(ProductMaster.product_name)
-    ).filter(
-        _pm_sku(ProductMaster.sku).in_(skus_up), ProductMaster.shopify_product_id.isnot(None)
-    ).group_by(ProductMaster.shopify_product_id):
+    ).filter(*base, ProductMaster.shopify_product_id.isnot(None)).group_by(ProductMaster.shopify_product_id):
         prod[pid] = title
 
     missing = db.query(func.count(func.distinct(_pm_sku(ProductMaster.sku)))).filter(
-        _pm_sku(ProductMaster.sku).in_(skus_up), ProductMaster.shopify_product_id.is_(None)
-    ).scalar() or 0
-
-    already = 0
-    if tag and prod:
-        ids = list(prod.keys())
-        tagged = {p for (p,) in db.query(func.distinct(RawShopifyProduct.product_id)).filter(
-            RawShopifyProduct.product_id.in_(ids), RawShopifyProduct.tags.ilike(f"%{tag}%")
-        )}
-        already = len(tagged & set(ids))
-
-    products = [{"product_id": pid, "title": title or pid} for pid, title in prod.items()]
-    products.sort(key=lambda p: (p["title"] or "").lower())
-    return products, int(missing), already
-
-
-def _category_shopify_products(db, season, category_group, tag=None):
-    """Distinct Shopify products of on-sale (included, in-stock) styles in a category
-    group — the whole sale for that category, regardless of round."""
-    styles = _aggregate_styles(db)  # already noise-filtered
-    plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season.id)}
-    parents = []
-    for parent, st in styles.items():
-        if st["on_hand"] <= 0:
-            continue
-        if not ((plan[parent].included if parent in plan else True)):
-            continue
-        if (st["category"] or "") != category_group:
-            continue
-        parents.append(parent)
-    if not parents:
-        return [], 0, 0
-
-    prod = {}
-    for pid, title in db.query(
-        ProductMaster.shopify_product_id, func.min(ProductMaster.product_name)
-    ).filter(
-        ProductMaster.parent_sku.in_(parents), ProductMaster.shopify_product_id.isnot(None)
-    ).group_by(ProductMaster.shopify_product_id):
-        prod[pid] = title
-
-    missing = db.query(func.count(func.distinct(ProductMaster.parent_sku))).filter(
-        ProductMaster.parent_sku.in_(parents), ProductMaster.shopify_product_id.is_(None)
+        *base, ProductMaster.shopify_product_id.is_(None)
     ).scalar() or 0
 
     already = 0
@@ -1060,16 +1022,13 @@ def _shopify_conn():
 async def shopify_tag_preview(season_id: int = Query(...), round: int = Query(1),
                               tag: str = Query(...), category: str = Query(None),
                               db: Session = Depends(get_db)):
-    """Read-only: which Shopify products would be tagged (no writes).
-    Pass category=<group> to target the whole sale in that category, else round=N."""
+    """Read-only: which Shopify products would be tagged for this round (no writes).
+    Everything is round-specific; pass category=<group> to also narrow to that category."""
     season = _season_or_404(db, season_id)
     cat = (category or "").strip()
-    if cat:
-        products, missing, already = _category_shopify_products(db, season, cat, tag=tag.strip())
-        scope = f"category '{cat}'"
-    else:
-        products, missing, already = _round_shopify_products(db, season, round - 1, tag=tag.strip())
-        scope = f"round {round}"
+    products, missing, already = _round_shopify_products(
+        db, season, round - 1, tag=tag.strip(), category_group=cat or None)
+    scope = f"round {round}" + (f", {cat}" if cat else "")
     conn = _shopify_conn()
     return {
         "season": season.name, "scope": scope, "round": round, "category": cat, "tag": tag.strip(),
@@ -1127,16 +1086,13 @@ async def shopify_tag_start(payload: dict = Body(...), db: Session = Depends(get
         product_ids = conn.get_product_ids_by_tag(tag)
         if not product_ids:
             raise HTTPException(400, f"No Shopify products currently carry the tag '{tag}'")
-    elif category:
-        products, _, _ = _category_shopify_products(db, season, category, tag=tag)
-        product_ids = [p["product_id"] for p in products]
-        if not product_ids:
-            raise HTTPException(400, f"No on-sale Shopify products found in category '{category}'")
     else:
-        products, _, _ = _round_shopify_products(db, season, round_no - 1, tag=tag)
+        products, _, _ = _round_shopify_products(
+            db, season, round_no - 1, tag=tag, category_group=category or None)
         product_ids = [p["product_id"] for p in products]
         if not product_ids:
-            raise HTTPException(400, "No Shopify products found for this round")
+            raise HTTPException(400, f"No Shopify products found for round {round_no}"
+                                + (f" in category '{category}'" if category else ""))
 
     job_id = uuid.uuid4().hex
     _TAG_JOBS[job_id] = {

@@ -855,8 +855,10 @@
                 </div>
                 <div id="tagResult" class="text-xs text-gray-500 mt-2"></div>
 
-                <div class="text-xs font-medium text-gray-500 mb-1 pt-3 border-t">Category sale tags — tag all on-sale products in a category (e.g. Accessories → <code>SALE_AC</code>, Footwear → <code>SALE_FOOTWEAR</code>)</div>
+                <div class="text-xs font-medium text-gray-500 mb-1 pt-3 border-t">Category sale tags — tag the products on sale <b>in a round</b> within a category (e.g. Accessories → <code>SALE_AC</code>, Footwear → <code>SALE_FOOTWEAR</code>). Round-specific, so later rounds aren't exposed early.</div>
                 <div class="flex flex-wrap gap-2 items-center">
+                    <label class="text-xs text-gray-500">Round</label>
+                    <select id="catTagRound" class="px-2 py-1 border rounded text-sm bg-white"></select>
                     <label class="text-xs text-gray-500">Category</label>
                     <select id="catTagCategory" class="px-2 py-1 border rounded text-sm bg-white"></select>
                     <label class="text-xs text-gray-500">Tag</label>
@@ -3629,8 +3631,11 @@
                 <span class="mx-2"></span>`).join('');
             document.getElementById('storeListRound').innerHTML = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
             document.getElementById('storeListStore').innerHTML = saleStores.map(s => `<option>${s}</option>`).join('');
+            const roundOpts = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
             const tagRoundSel = document.getElementById('tagRound');
-            if (tagRoundSel) tagRoundSel.innerHTML = rounds.map((r, i) => `<option value="${i + 1}">${r.label || ('R' + (i + 1))}</option>`).join('');
+            if (tagRoundSel) tagRoundSel.innerHTML = roundOpts;
+            const catTagRoundSel = document.getElementById('catTagRound');
+            if (catTagRoundSel) catTagRoundSel.innerHTML = roundOpts;
             const slb = document.getElementById('saleListButtons');
             if (slb) slb.innerHTML = '<button onclick="openSaleList(0)" class="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Full (all rounds)</button>'
                 + rounds.map((r, i) => `<button onclick="openSaleList(${i + 1})" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">${r.label || ('Round ' + (i + 1))}</button>`).join('');
@@ -3886,6 +3891,7 @@
 
         // ---- Category tag (whole sale, by category group) ----
         async function previewCategoryTag() {
+            const round = document.getElementById('catTagRound').value || 1;
             const category = document.getElementById('catTagCategory').value;
             const tag = document.getElementById('catTagValue').value.trim();
             const box = document.getElementById('catTagResult');
@@ -3893,14 +3899,15 @@
             if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
             box.textContent = 'Checking…';
             try {
-                const d = await (await fetch(`${API_BASE}/sale/shopify-tag/preview?season_id=${saleSeason.id}&category=${encodeURIComponent(category)}&tag=${encodeURIComponent(tag)}`)).json();
+                const d = await (await fetch(`${API_BASE}/sale/shopify-tag/preview?season_id=${saleSeason.id}&round=${round}&category=${encodeURIComponent(category)}&tag=${encodeURIComponent(tag)}`)).json();
                 const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
-                box.innerHTML = `<div><b>${d.total_products}</b> on-sale <b>${category}</b> products would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code>.`
+                box.innerHTML = `<div><b>${d.total_products}</b> <b>${category}</b> products on sale in round ${round} would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code>.`
                     + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
                     + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
             } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
         }
         function pushCategoryTag(remove) {
+            const round = document.getElementById('catTagRound').value || 1;
             const category = document.getElementById('catTagCategory').value;
             const tag = document.getElementById('catTagValue').value.trim();
             const box = document.getElementById('catTagResult');
@@ -3908,8 +3915,8 @@
             if (!tag) { box.innerHTML = '<span class="text-red-500">Enter a tag first.</span>'; return; }
             const msg = remove
                 ? `REMOVE tag "${tag}" from every Shopify product that carries it?\n\nThis writes to your live Shopify store.`
-                : `ADD tag "${tag}" to every on-sale ${category} product in "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`;
-            _startTagJob({ season_id: saleSeason.id, category, tag, remove }, box, msg);
+                : `ADD tag "${tag}" to every ${category} product on sale in round ${round} of "${saleSeason.name}"?\n\nThis writes to your live Shopify store.`;
+            _startTagJob({ season_id: saleSeason.id, round: parseInt(round), category, tag, remove }, box, msg);
         }
 
         // ----- Validation & store allocation -----

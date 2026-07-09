@@ -606,19 +606,25 @@ def _included_variant_rows(db, season, round_index):
     if not included_parents:
         return []
 
-    # variants of included styles
+    # Variants of included styles. Source from product_master (has EVERY variant +
+    # its price) and only borrow size_code from parent_sku_mappings — that mapping
+    # table doesn't cover all variants, so joining through it silently dropped SKUs.
     vrows = db.query(
-        ParentSkuMapping.sku, ParentSkuMapping.parent_sku, ParentSkuMapping.size_code,
-        ProductMaster.product_name, ProductMaster.price,
-    ).join(ProductMaster, ProductMaster.sku == _pm_sku(ParentSkuMapping.sku)).filter(
-        ParentSkuMapping.parent_sku.in_(included_parents)).all()
+        ProductMaster.sku, ProductMaster.parent_sku, ProductMaster.product_name,
+        ProductMaster.price, func.min(ParentSkuMapping.size_code),
+    ).outerjoin(
+        ParentSkuMapping, _pm_sku(ParentSkuMapping.sku) == ProductMaster.sku
+    ).filter(ProductMaster.parent_sku.in_(included_parents)).group_by(
+        ProductMaster.sku, ProductMaster.parent_sku, ProductMaster.product_name, ProductMaster.price
+    ).all()
 
     style_pcts = {parent: ((plan[parent].round_pcts if parent in plan else None) or []) for parent in included_parents}
-    ov = {o.sku: o for o in db.query(SaleVariantOverride).filter(SaleVariantOverride.season_id == season.id)}
+    ov = {(o.sku or "").upper().strip(): o
+          for o in db.query(SaleVariantOverride).filter(SaleVariantOverride.season_id == season.id)}
 
     rows = []
-    for sku, parent, size, name, price in vrows:
-        o = ov.get(sku)
+    for sku, parent, name, price, size in vrows:
+        o = ov.get((sku or "").upper().strip())
         if o and o.excluded:
             continue
         vpcts = (o.round_pcts if o else None) or []

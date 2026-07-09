@@ -655,7 +655,7 @@ async def export_shopify(season_id: int = Query(...), round: int = Query(1), db:
                        f"shopify_sale_round{round}.csv")
 
 
-SITOO_PRICELIST_ID = 3  # the Sitoo price list we update for the sale
+SITOO_PRICELIST_ID = 4  # the Sitoo price list we update for the sale
 
 
 @router.get("/export/sitoo")

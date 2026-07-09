@@ -3865,6 +3865,20 @@
             _pollTagJob(start.job_id, box);
         }
 
+        function _tagEscape(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        function _tagListHtml(d) {
+            const items = d.products || [];
+            if (!items.length) return '';
+            const rows = items.map(p => {
+                const label = _tagEscape(p.title || p.product_id);
+                return d.admin_base
+                    ? `<a href="${d.admin_base}${p.product_id}" target="_blank" class="block px-2 py-0.5 hover:bg-gray-100 truncate text-blue-600">${label}</a>`
+                    : `<div class="px-2 py-0.5 truncate">${label}</div>`;
+            }).join('');
+            return `<details class="mt-1"><summary class="cursor-pointer text-blue-600 select-none">Show all ${items.length} products ▾</summary>`
+                + `<div class="mt-1 max-h-64 overflow-auto border rounded bg-white">${rows}</div></details>`;
+        }
+
         // ---- Round (pre-sale) tag ----
         async function previewShopifyTag() {
             const round = document.getElementById('tagRound').value || 1;
@@ -3877,7 +3891,7 @@
                 const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
                 box.innerHTML = `<div><b>${d.total_products}</b> Shopify products would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code> (round ${d.round}).`
                     + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
-                    + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
+                    + _tagListHtml(d) + warn;
             } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
         }
         function pushShopifyTag(remove) {
@@ -3903,7 +3917,7 @@
                 const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">⚠ Shopify isn\'t configured on this server — preview only.</div>';
                 box.innerHTML = `<div><b>${d.total_products}</b> <b>${category}</b> products on sale in round ${round} would get <code class="bg-gray-100 px-1 rounded">${d.tag}</code>.`
                     + ` Already tagged: ${d.already_tagged}. Not in Shopify (skipped): ${d.missing_shopify}.</div>`
-                    + `<div class="text-gray-400 mt-1 truncate">e.g. ${(d.sample || []).slice(0, 8).join(' · ') || '—'}</div>` + warn;
+                    + _tagListHtml(d) + warn;
             } catch (e) { box.innerHTML = '<span class="text-red-500">Preview failed.</span>'; }
         }
         function pushCategoryTag(remove) {

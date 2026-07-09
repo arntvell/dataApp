@@ -1029,14 +1029,16 @@ async def shopify_tag_preview(season_id: int = Query(...), round: int = Query(1)
     products, missing, already = _round_shopify_products(
         db, season, round - 1, tag=tag.strip(), category_group=cat or None)
     scope = f"round {round}" + (f", {cat}" if cat else "")
-    conn = _shopify_conn()
+    base = (settings.get_connector_configs().get("shopify", {}).get("base_url") or "").rstrip("/")
+    admin_base = f"{base}/admin/products/" if base else None
     return {
         "season": season.name, "scope": scope, "round": round, "category": cat, "tag": tag.strip(),
         "total_products": len(products),
         "missing_shopify": missing,
         "already_tagged": already,
-        "shopify_configured": conn is not None,
-        "sample": [p["title"] for p in products[:25]],
+        "shopify_configured": bool(base),
+        "admin_base": admin_base,
+        "products": [{"title": p["title"], "product_id": p["product_id"]} for p in products],
     }
 
 

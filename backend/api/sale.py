@@ -1219,10 +1219,13 @@ async def shopify_price_preview(season_id: int = Query(...), round: int = Query(
 
 @router.post("/shopify-price")
 async def shopify_price_start(payload: dict = Body(...), db: Session = Depends(get_db)):
-    """Start a background job that sets (or reverts) sale prices on Shopify for a round."""
+    """Start a background job that sets (or reverts) sale prices on Shopify for a round.
+    Optional single-product test: pass sku=<sku> or test_one=true to only touch one product."""
     season_id = payload.get("season_id")
     round_no = int(payload.get("round", 1))
     revert = bool(payload.get("revert", False))
+    sku = (payload.get("sku") or "").strip()
+    test_one = bool(payload.get("test_one", False))
     if not season_id:
         raise HTTPException(400, "season_id is required")
 
@@ -1233,9 +1236,28 @@ async def shopify_price_start(payload: dict = Body(...), db: Session = Depends(g
 
     sku_prices = _round_sku_prices(db, season, round_no - 1)
     products, _, _ = _round_shopify_products(db, season, round_no - 1)
-    product_ids = [p["product_id"] for p in products]
-    if not product_ids:
+    title_by_id = {p["product_id"]: p["title"] for p in products}
+    all_ids = [p["product_id"] for p in products]
+    if not all_ids:
         raise HTTPException(400, f"No Shopify products found for round {round_no}")
+
+    if sku:
+        su = sku.upper().strip()
+        if su not in sku_prices:
+            raise HTTPException(400, f"SKU '{sku}' is not on sale in round {round_no}")
+        row = db.query(ProductMaster.shopify_product_id).filter(
+            _pm_sku(ProductMaster.sku) == su, ProductMaster.shopify_product_id.isnot(None)).first()
+        if not row:
+            raise HTTPException(400, f"SKU '{sku}' has no Shopify product")
+        product_ids = [row[0]]
+    elif test_one:
+        product_ids = all_ids[:1]
+    else:
+        product_ids = all_ids
+
+    base = (settings.get_connector_configs().get("shopify", {}).get("base_url") or "").rstrip("/")
+    single = len(product_ids) == 1
+    tested_admin_url = f"{base}/admin/products/{product_ids[0]}" if (single and base) else None
 
     job_id = uuid.uuid4().hex
     _TAG_JOBS[job_id] = {
@@ -1244,4 +1266,6 @@ async def shopify_price_start(payload: dict = Body(...), db: Session = Depends(g
     }
     threading.Thread(target=_run_price_job, args=(job_id, product_ids, sku_prices, revert),
                      daemon=True).start()
-    return {"job_id": job_id, "total": len(product_ids), "action": _TAG_JOBS[job_id]["action"]}
+    return {"job_id": job_id, "total": len(product_ids), "action": _TAG_JOBS[job_id]["action"],
+            "single": single, "tested_admin_url": tested_admin_url,
+            "tested_title": title_by_id.get(product_ids[0]) if single else None}

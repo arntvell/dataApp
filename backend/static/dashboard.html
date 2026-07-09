@@ -876,6 +876,11 @@
                     <button onclick="previewPriceSync()" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Preview</button>
                     <button onclick="pushPriceSync(false)" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700">Push prices to Shopify</button>
                     <button onclick="pushPriceSync(true)" class="px-2 py-1 text-xs border border-red-300 text-red-600 rounded hover:bg-red-50" title="Revert prices to original and clear compare-at">Revert prices</button>
+                </div>
+                <div class="flex flex-wrap gap-2 items-center mt-2">
+                    <span class="text-xs text-gray-400">Test first:</span>
+                    <input id="priceTestSku" placeholder="a SKU to test (blank = first product)" class="px-2 py-1 border rounded text-sm w-64">
+                    <button onclick="testPriceSync()" class="px-2 py-1 text-xs border border-amber-300 text-amber-700 bg-amber-50 rounded hover:bg-amber-100">Test on 1 product</button>
                     <span class="text-xs text-gray-400">Sitoo: use the per-round <b>Sitoo CSV</b> above (pricelist 3 import).</span>
                 </div>
                 <div id="priceResult" class="text-xs text-gray-500 mt-2"></div>
@@ -3841,7 +3846,8 @@
 
         // ---- Shopify pre-sale tag ----
         let _tagPolling = false;
-        function _pollTagJob(jobId, box) {
+        function _pollTagJob(jobId, box, extraHtml) {
+            const extra = extraHtml || '';
             const poll = async () => {
                 let s;
                 try { s = await (await fetch(`${API_BASE}/sale/shopify-tag/status?job_id=${jobId}`)).json(); }
@@ -3851,15 +3857,15 @@
                 const PAST = { add: 'tagged', remove: 'untagged', price: 'repriced', revert: 'reverted' };
                 if (s.status === 'running') {
                     box.innerHTML = `<div>${VERB[s.action] || 'Working'} <code class="bg-gray-100 px-1 rounded">${s.tag}</code>… ${s.done}/${s.total} (${pct}%) · ${s.failed} failed</div>`
-                        + `<div class="h-1.5 bg-gray-200 rounded mt-1 w-64"><div class="h-1.5 bg-green-600 rounded" style="width:${pct}%"></div></div>`;
+                        + `<div class="h-1.5 bg-gray-200 rounded mt-1 w-64"><div class="h-1.5 bg-green-600 rounded" style="width:${pct}%"></div></div>` + extra;
                     setTimeout(poll, 1500);
                 } else if (s.status === 'done') {
                     _tagPolling = false;
                     box.innerHTML = `<div class="text-green-700">✓ Done — ${s.ok}/${s.total} products ${PAST[s.action] || 'updated'} (<code class="bg-gray-100 px-1 rounded">${s.tag}</code>).${s.failed ? ` <span class="text-red-600">${s.failed} failed.</span>` : ''}</div>`
-                        + (s.failures && s.failures.length ? `<div class="text-gray-400 mt-1 truncate">first errors: ${s.failures.slice(0, 3).map(f => f.errors && f.errors[0]).join(' · ')}</div>` : '');
+                        + (s.failures && s.failures.length ? `<div class="text-gray-400 mt-1 truncate">first errors: ${s.failures.slice(0, 3).map(f => f.errors && f.errors[0]).join(' · ')}</div>` : '') + extra;
                 } else {
                     _tagPolling = false;
-                    box.innerHTML = `<span class="text-red-500">${s.error || 'Job failed.'}</span>` + (s.done ? ` <span class="text-gray-400">(${s.ok}/${s.total} done before stop)</span>` : '');
+                    box.innerHTML = `<span class="text-red-500">${s.error || 'Job failed.'}</span>` + (s.done ? ` <span class="text-gray-400">(${s.ok}/${s.total} done before stop)</span>` : '') + extra;
                 }
             };
             poll();
@@ -3970,6 +3976,27 @@
                 ? `REVERT Shopify prices for round ${round} of "${saleSeason.name}" back to original (clears compare-at)?\n\nThis writes live prices to your store.`
                 : `PUSH round ${round} sale prices to Shopify for "${saleSeason.name}" (price = sale, compare-at = original)?\n\nThis writes live prices to your store.`;
             _startJob(`${API_BASE}/sale/shopify-price`, { season_id: saleSeason.id, round: parseInt(round), revert }, box, msg);
+        }
+        async function testPriceSync() {
+            if (_tagPolling) return;
+            const round = document.getElementById('priceRound').value || 1;
+            const sku = document.getElementById('priceTestSku').value.trim();
+            const box = document.getElementById('priceResult');
+            const which = sku ? `SKU "${sku}"` : 'the first round-' + round + ' product';
+            if (!confirm(`TEST: push round ${round} sale price to Shopify for ${which} only?\n\nThis writes a live price to one product so you can verify it.`)) return;
+            box.textContent = 'Starting test…';
+            let start;
+            try {
+                start = await (await fetch(`${API_BASE}/sale/shopify-price`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ season_id: saleSeason.id, round: parseInt(round), sku: sku || undefined, test_one: !sku })
+                })).json();
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Could not start test.</span>'; return; }
+            if (!start.job_id) { box.innerHTML = `<span class="text-red-500">${start.detail || 'Test failed to start.'}</span>`; return; }
+            const link = start.tested_admin_url
+                ? `<div class="mt-1">Verify in Shopify: <a href="${start.tested_admin_url}" target="_blank" class="text-blue-600">${_tagEscape(start.tested_title || 'open product')}</a></div>` : '';
+            _tagPolling = true;
+            _pollTagJob(start.job_id, box, link);
         }
 
         // ----- Validation & store allocation -----

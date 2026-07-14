@@ -992,6 +992,242 @@ async def export_transfers_html(season_id: int = Query(...), db: Session = Depen
     return HTMLResponse(html)
 
 
+# ============== Sale performance (actuals per round + full list) ==============
+# Measures how the sale actually sold: for each round's date window, the units /
+# net revenue / realized markdown / sell-through of the variants that were on sale
+# in THAT round, plus a per-style full list across the whole sale.
+
+def _round_windows(season):
+    """Ordered (start_date, end_date) per round. A round's window runs from its own
+    date (round 1 falls back to season.starts_on) until the next dated round's date,
+    the last one until today. Undated rounds return (None, None)."""
+    rounds = season.rounds or []
+    today = date.today()
+    raw = []
+    for i, r in enumerate(rounds):
+        d = r.get("date")
+        try:
+            d = date.fromisoformat(d) if d else (season.starts_on if i == 0 else None)
+        except (TypeError, ValueError):
+            d = season.starts_on if i == 0 else None
+        raw.append(d)
+    windows = []
+    for i, s in enumerate(raw):
+        if not s:
+            windows.append((None, None))
+            continue
+        end = None
+        for j in range(i + 1, len(raw)):
+            if raw[j] and raw[j] > s:
+                end = raw[j]
+                break
+        windows.append((s, end or (today + timedelta(days=1))))
+    return windows
+
+
+def _variant_round_matrix(db, season, styles, plan):
+    """For every variant of every included, in-stock style: its parent, regular price,
+    and the resolved discount % for each round. Single pass (respects variant overrides
+    & exclusions). Returns (sku_meta, round_sku_sets) where sku_meta[sku_upper] =
+    {parent, regular, resolved:[pct...]} and round_sku_sets[i] = set(sku_upper on sale)."""
+    rounds = season.rounds or []
+    included_parents = [
+        p for p, st in styles.items()
+        if st["on_hand"] > 0 and (plan[p].included if p in plan else True)
+    ]
+    sku_meta = {}
+    round_sku_sets = [set() for _ in rounds]
+    if not included_parents:
+        return sku_meta, round_sku_sets
+
+    style_pcts = {p: ((plan[p].round_pcts if p in plan else None) or []) for p in included_parents}
+    ov = {(o.sku or "").upper().strip(): o
+          for o in db.query(SaleVariantOverride).filter(SaleVariantOverride.season_id == season.id)}
+
+    vrows = db.query(
+        ProductMaster.sku, ProductMaster.parent_sku, ProductMaster.price
+    ).filter(ProductMaster.parent_sku.in_(included_parents)).all()
+
+    for sku, parent, price in vrows:
+        up = (sku or "").upper().strip()
+        if not up:
+            continue
+        o = ov.get(up)
+        if o and o.excluded:
+            continue
+        vpcts = (o.round_pcts if o else None) or []
+        resolved = [_resolve_pct(rounds, style_pcts.get(parent, []), vpcts, i) for i in range(len(rounds))]
+        sku_meta[up] = {"parent": parent, "regular": float(price) if price else None, "resolved": resolved}
+        for i, pct in enumerate(resolved):
+            if pct and pct > 0:
+                round_sku_sets[i].add(up)
+    return sku_meta, round_sku_sets
+
+
+def _blank_agg():
+    return {"units": 0, "returns_units": 0, "net_revenue": 0.0,
+            "full_value": 0.0, "recorded_discount": 0.0}
+
+
+@router.get("/performance")
+async def performance(season_id: int = Query(...), db: Session = Depends(get_db)):
+    """Actual sales performance of a sale: per-round KPIs (over each round's date
+    window, for the variants on sale that round) and a per-style full list across
+    the whole sale. Revenue is net (VAT incl, returns netted via negative orders).
+    Realized markdown = regular value − net revenue."""
+    season = _season_or_404(db, season_id)
+    rounds = season.rounds or []
+    windows = _round_windows(season)
+    styles = _aggregate_styles(db)
+    plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season_id)}
+    sku_meta, round_sku_sets = _variant_round_matrix(db, season, styles, plan)
+
+    # Whole-sale window: earliest dated round start → today (inclusive).
+    dated_starts = [w[0] for w in windows if w[0]]
+    min_start = min(dated_starts) if dated_starts else None
+    global_end = date.today() + timedelta(days=1)
+
+    # Style-level resolved pct per round (season/style, ignoring variant overrides).
+    style_resolved = {}
+    for parent in {m["parent"] for m in sku_meta.values()}:
+        pcts = (plan[parent].round_pcts if parent in plan else None) or []
+        style_resolved[parent] = [_resolve_pct(rounds, pcts, None, i) for i in range(len(rounds))]
+
+    round_aggs = [_blank_agg() for _ in rounds]
+    round_style_ids = [set() for _ in rounds]
+
+    # Per-style totals (whole sale window) + per-round unit breakdown.
+    style_tot = {}
+    for up, m in sku_meta.items():
+        parent = m["parent"]
+        if parent not in style_tot:
+            st = styles.get(parent, {})
+            style_tot[parent] = {
+                "parent_sku": parent, "brand": st.get("brand", "—"), "name": st.get("name", parent),
+                "gender": st.get("gender", ""), "regular": st.get("price"),
+                "on_hand": float(st.get("on_hand", 0) or 0),
+                "resolved_pcts": style_resolved.get(parent, [None] * len(rounds)),
+                "round_units": [0] * len(rounds),
+                **_blank_agg(),
+            }
+
+    if min_start and sku_meta:
+        start_dt = datetime.combine(min_start, datetime.min.time())
+        union = list(sku_meta.keys())
+        rows = db.query(
+            _pm_sku(SalesOrderItem.sku), SalesOrder.order_date,
+            SalesOrderItem.quantity, SalesOrderItem.unit_price,
+            SalesOrderItem.discount_amount, SalesOrderItem.line_total,
+        ).select_from(SalesOrderItem).join(
+            SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+        ).filter(
+            _pm_sku(SalesOrderItem.sku).in_(union),
+            SalesOrder.order_date >= start_dt,
+        ).all()
+
+        for up, od, qty, unit_price, disc, line_total in rows:
+            if not od:
+                continue
+            od = od.date() if hasattr(od, "date") else od
+            if not (min_start <= od < global_end):
+                continue
+            m = sku_meta.get(up)
+            if not m:
+                continue
+            qty = int(qty or 0)
+            reg = m["regular"]
+            lt = float(line_total or 0)
+            dsc = float(disc or 0)
+
+            def apply(agg):
+                if qty >= 0:
+                    agg["units"] += qty
+                else:
+                    agg["returns_units"] += -qty
+                agg["net_revenue"] += lt
+                if reg is not None:
+                    agg["full_value"] += reg * qty
+                agg["recorded_discount"] += dsc * qty
+
+            stt = style_tot.get(m["parent"])
+            if stt:
+                apply(stt)
+
+            # attribute to the round whose window contains the sale AND where the sku was on sale
+            for i, (ws, we) in enumerate(windows):
+                if ws and ws <= od < we and up in round_sku_sets[i]:
+                    apply(round_aggs[i])
+                    round_style_ids[i].add(m["parent"])
+                    if qty >= 0:
+                        stt["round_units"][i] += qty if stt else 0
+                    break
+
+    def finalize(agg):
+        net_units = agg["units"] - agg["returns_units"]
+        full = agg["full_value"]
+        markdown = full - agg["net_revenue"]
+        return {
+            **agg,
+            "net_units": net_units,
+            "markdown": round(markdown),
+            "avg_disc_pct": round(markdown / full * 100, 1) if full > 0 else 0,
+            "net_revenue": round(agg["net_revenue"]),
+            "full_value": round(full),
+            "recorded_discount": round(agg["recorded_discount"]),
+        }
+
+    rounds_out = []
+    for i, rd in enumerate(rounds):
+        ws, we = windows[i]
+        agg = finalize(round_aggs[i])
+        rounds_out.append({
+            "index": i,
+            "label": rd.get("label") or f"Round {i + 1}",
+            "pct": rd.get("pct"),
+            "start": ws.isoformat() if ws else None,
+            # inclusive last day; None once we're at/after the last boundary (round still open)
+            "end": (we - timedelta(days=1)).isoformat() if (we and ws and we > ws) else None,
+            "dated": bool(ws),
+            "styles_on_sale": len({sku_meta[s]["parent"] for s in round_sku_sets[i]}),
+            "variants_on_sale": len(round_sku_sets[i]),
+            "styles_sold": len(round_style_ids[i]),
+            **agg,
+        })
+
+    styles_out = []
+    tot = _blank_agg()
+    tot_onhand = 0.0
+    for stt in style_tot.values():
+        f = finalize(stt)
+        f["on_hand"] = round(stt["on_hand"])
+        sold = f["net_units"]
+        denom = sold + stt["on_hand"]
+        f["sell_through"] = round(sold / denom * 100, 1) if denom > 0 else 0
+        f["regular"] = round(stt["regular"]) if stt["regular"] else None
+        f["round_units"] = stt["round_units"]
+        styles_out.append(f)
+        for k in tot:
+            tot[k] += stt[k]
+        tot_onhand += stt["on_hand"]
+    styles_out.sort(key=lambda r: r["net_revenue"], reverse=True)
+
+    totals = finalize(tot)
+    totals["on_hand"] = round(tot_onhand)
+    denom = totals["net_units"] + tot_onhand
+    totals["sell_through"] = round(totals["net_units"] / denom * 100, 1) if denom > 0 else 0
+    totals["styles"] = len(styles_out)
+
+    return {
+        "season": _season_dict(season),
+        "window": {"start": min_start.isoformat() if min_start else None,
+                   "end": (global_end - timedelta(days=1)).isoformat()},
+        "any_dated": bool(dated_starts),
+        "rounds": rounds_out,
+        "totals": totals,
+        "styles": styles_out,
+    }
+
+
 # ============== Shopify tag push (newsletter pre-sale) ==============
 # Adds/removes a product tag on every Shopify product that has a discount in a
 # given sale round — e.g. to gate a "pre-sale" collection to newsletter subscribers.

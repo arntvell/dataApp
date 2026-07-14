@@ -759,7 +759,7 @@
                     <button onclick="newSeasonPrompt()" class="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">+ New season</button>
                     <span class="text-sm text-gray-400" id="saleSeasonMeta"></span>
                 </div>
-                <div class="text-xs text-gray-400 mb-1">Discount rounds (max 6) — % off the regular price. Cascades to all variants; override per size if needed.</div>
+                <div class="text-xs text-gray-400 mb-1">Discount rounds (max 6) — % off the regular price. Set a <b>date</b> per round to drive Performance windows. Cascades to all variants; override per size if needed.</div>
                 <div class="flex flex-wrap items-end gap-2" id="saleRoundsEditor"></div>
             </div>
 
@@ -884,6 +884,21 @@
                     <span class="text-xs text-gray-400">Sitoo: use the per-round <b>Sitoo CSV</b> above (pricelist 4 import).</span>
                 </div>
                 <div id="priceResult" class="text-xs text-gray-500 mt-2"></div>
+            </div>
+
+            <!-- Performance (actuals) -->
+            <div class="card mb-8">
+                <div class="flex flex-wrap items-center gap-2 mb-2">
+                    <h2 class="text-base font-semibold">Sale performance</h2>
+                    <button onclick="loadSalePerformance()" id="salePerfBtn" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Load / refresh</button>
+                    <span class="text-xs text-gray-400" id="salePerfMeta"></span>
+                    <span class="flex-1"></span>
+                    <a href="#" id="salePerfCsv" onclick="exportPerformanceCsv();return false;" class="text-xs px-2 py-1 border rounded hover:bg-gray-50 hidden">Full list CSV</a>
+                </div>
+                <p class="text-xs text-gray-400 mb-3">Actual units, net revenue (VAT incl, returns netted), realized markdown vs regular, and sell-through — per round (using each round's date window) and per style across the whole sale.</p>
+                <div id="salePerfBody">
+                    <div class="py-6 text-center"><button onclick="loadSalePerformance()" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Load performance</button></div>
+                </div>
             </div>
 
         </div> <!-- end tab-sale-planner -->
@@ -3544,6 +3559,8 @@
         let saleStyleMap = {};       // parent_sku -> style obj
         let saleStores = [];         // physical store names (for exports)
         let _saleSearchTimer = null;
+        let salePerfLoaded = false;
+        let salePerfData = null;
 
         function updateAppHeaderOffset() {
             const h = document.getElementById('appHeader')?.offsetHeight || 56;
@@ -3586,7 +3603,15 @@
 
         function onSeasonChange() {
             saleSeason = saleSeasons.find(s => s.id === parseInt(document.getElementById('saleSeasonSelect').value)) || null;
-            renderRoundsEditor(); loadSaleCandidates();
+            renderRoundsEditor(); loadSaleCandidates(); resetSalePerformance();
+        }
+
+        function resetSalePerformance() {
+            salePerfLoaded = false; salePerfData = null;
+            document.getElementById('salePerfMeta').textContent = '';
+            document.getElementById('salePerfCsv').classList.add('hidden');
+            document.getElementById('salePerfBody').innerHTML =
+                '<div class="py-6 text-center"><button onclick="loadSalePerformance()" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Load performance</button></div>';
         }
 
         async function newSeasonPrompt() {
@@ -3609,6 +3634,7 @@
                     <span class="text-[10px] text-gray-400">${r.label || ('R' + (i + 1))}</span>
                     <input type="number" min="0" max="90" value="${r.pct ?? ''}" onchange="updateRoundPct(${i}, this.value)" class="border rounded px-1 py-0.5 text-sm w-14 text-right">
                     <span class="text-xs text-gray-400">%</span>
+                    <input type="date" value="${r.date || ''}" onchange="updateRoundDate(${i}, this.value)" title="Round start date (drives Performance windows)" class="border rounded px-1 py-0.5 text-xs text-gray-500 ml-1">
                     ${rounds.length > 1 ? `<button onclick="removeRound(${i})" class="text-red-400 hover:text-red-600 text-xs ml-1">✕</button>` : ''}
                 </div>`).join('') +
                 (rounds.length < 6 ? `<button onclick="addRound()" class="px-2 py-1.5 text-sm border rounded-lg hover:bg-gray-50">+ Round</button>` : '');
@@ -3617,8 +3643,126 @@
             await fetch(`${API_BASE}/sale/seasons/${saleSeason.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rounds: saleSeason.rounds }) });
         }
         function updateRoundPct(i, val) { saleSeason.rounds[i].pct = val === '' ? null : parseFloat(val); saveRounds().then(loadSaleCandidates); }
+        function updateRoundDate(i, val) { saleSeason.rounds[i].date = val || null; saveRounds().then(() => { if (salePerfLoaded) loadSalePerformance(); }); }
         function addRound() { saleSeason.rounds.push({ label: `Round ${saleSeason.rounds.length + 1}`, pct: null }); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
         function removeRound(i) { saleSeason.rounds.splice(i, 1); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
+
+        // ---------- Sale performance (actuals) ----------
+        function fmtNok(n) { return (n == null ? '—' : Math.round(n).toLocaleString('nb-NO')); }
+
+        async function loadSalePerformance() {
+            if (!saleSeason) return;
+            salePerfLoaded = true;
+            const body = document.getElementById('salePerfBody');
+            body.innerHTML = '<div class="py-6 text-center text-gray-400">Crunching sales…</div>';
+            try {
+                salePerfData = await (await fetch(`${API_BASE}/sale/performance?season_id=${saleSeason.id}`)).json();
+                renderSalePerformance(salePerfData);
+            } catch (e) {
+                body.innerHTML = '<div class="py-6 text-center text-red-400">Failed to load performance.</div>';
+            }
+        }
+
+        function renderSalePerformance(d) {
+            const body = document.getElementById('salePerfBody');
+            const t = d.totals || {};
+            document.getElementById('salePerfMeta').textContent =
+                d.window && d.window.start ? `${d.window.start} → ${d.window.end}` : 'no round dates set';
+            document.getElementById('salePerfCsv').classList.toggle('hidden', !(d.styles || []).length);
+
+            if (!d.any_dated) {
+                body.innerHTML = '<div class="py-6 text-center text-amber-600 text-sm">Set a <b>date</b> on at least round 1 (in the rounds editor above) so performance can be windowed by round.</div>';
+                return;
+            }
+
+            const kpi = (label, val, sub) => `
+                <div class="border rounded-xl p-3 bg-gray-50">
+                    <div class="text-[11px] uppercase tracking-wide text-gray-400">${label}</div>
+                    <div class="text-xl font-semibold">${val}</div>
+                    ${sub ? `<div class="text-xs text-gray-400">${sub}</div>` : ''}
+                </div>`;
+            const kpis = `<div class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4">
+                ${kpi('Net revenue', fmtNok(t.net_revenue) + ' kr', 'VAT incl · returns netted')}
+                ${kpi('Units sold', fmtNok(t.net_units), (t.returns_units || 0) + ' returned')}
+                ${kpi('Realized markdown', (t.avg_disc_pct ?? 0) + '%', fmtNok(t.markdown) + ' kr off regular')}
+                ${kpi('Sell-through', (t.sell_through ?? 0) + '%', fmtNok(t.on_hand) + ' still on hand')}
+                ${kpi('Full-price value', fmtNok(t.full_value) + ' kr', 'if sold at regular')}
+                ${kpi('Styles in sale', fmtNok(t.styles), '')}
+            </div>`;
+
+            // Per-round table
+            const rr = (d.rounds || []).map(r => {
+                const win = r.dated ? (r.end ? `${r.start} → ${r.end}` : `from ${r.start}`) : '<span class="text-amber-500">no date</span>';
+                return `<tr class="border-b hover:bg-gray-50">
+                    <td class="py-1.5 px-2 font-medium">${r.label}<div class="text-[10px] text-gray-400 font-normal">${win}</div></td>
+                    <td class="px-2 text-right">${r.pct != null ? r.pct + '%' : '—'}</td>
+                    <td class="px-2 text-right">${r.styles_on_sale}</td>
+                    <td class="px-2 text-right">${fmtNok(r.net_units)}</td>
+                    <td class="px-2 text-right">${r.returns_units || ''}</td>
+                    <td class="px-2 text-right font-semibold">${fmtNok(r.net_revenue)}</td>
+                    <td class="px-2 text-right">${r.avg_disc_pct ?? 0}%</td>
+                </tr>`;
+            }).join('');
+            const roundTable = `<div class="text-xs font-medium text-gray-500 mb-1">By round</div>
+                <div class="overflow-auto mb-4"><table class="w-full text-sm">
+                <thead><tr class="border-b bg-gray-50 text-xs text-gray-500">
+                    <th class="py-1.5 px-2 text-left">Round · window</th><th class="px-2 text-right">Disc</th>
+                    <th class="px-2 text-right">Styles</th><th class="px-2 text-right">Units</th>
+                    <th class="px-2 text-right">Ret</th><th class="px-2 text-right">Net revenue</th>
+                    <th class="px-2 text-right">Real. disc</th></tr></thead>
+                <tbody>${rr || '<tr><td colspan="7" class="py-3 text-center text-gray-400">No rounds.</td></tr>'}</tbody>
+                </table></div>`;
+
+            // Full list (per style), round-unit columns
+            const nr = (d.rounds || []).length;
+            const roundHeads = (d.rounds || []).map(r => `<th class="px-2 text-right" title="${r.label} units">${r.label.replace(/^Round\s*/i, 'R')}</th>`).join('');
+            const rows = (d.styles || []).map(s => {
+                const runits = (s.round_units || []).map(u => `<td class="px-2 text-right text-gray-500">${u || ''}</td>`).join('');
+                const stColor = s.sell_through >= 70 ? 'text-green-600' : s.sell_through >= 40 ? 'text-amber-600' : 'text-gray-500';
+                return `<tr class="border-b hover:bg-gray-50">
+                    <td class="py-1.5 px-2">${s.name}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
+                    <td class="px-2 text-gray-500">${s.brand}</td>
+                    <td class="px-2 text-right text-gray-400">${fmtNok(s.regular)}</td>
+                    ${runits}
+                    <td class="px-2 text-right font-medium">${fmtNok(s.net_units)}</td>
+                    <td class="px-2 text-right font-semibold">${fmtNok(s.net_revenue)}</td>
+                    <td class="px-2 text-right">${s.avg_disc_pct ?? 0}%</td>
+                    <td class="px-2 text-right">${fmtNok(s.on_hand)}</td>
+                    <td class="px-2 text-right font-medium ${stColor}">${s.sell_through ?? 0}%</td>
+                </tr>`;
+            }).join('');
+            const fullList = `<div class="text-xs font-medium text-gray-500 mb-1">Full list — every style in the sale, sorted by net revenue</div>
+                <div class="overflow-auto" style="max-height:70vh"><table class="w-full text-sm">
+                <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 sticky top-0">
+                    <th class="py-1.5 px-2 text-left">Style</th><th class="px-2 text-left">Brand</th>
+                    <th class="px-2 text-right">Reg</th>${roundHeads}
+                    <th class="px-2 text-right">Units</th><th class="px-2 text-right">Net revenue</th>
+                    <th class="px-2 text-right">Real. disc</th><th class="px-2 text-right">On hand</th>
+                    <th class="px-2 text-right">Sell-thru</th></tr></thead>
+                <tbody>${rows || `<tr><td colspan="${7 + nr}" class="py-3 text-center text-gray-400">No sales in the sale window yet.</td></tr>`}</tbody>
+                </table></div>`;
+
+            body.innerHTML = kpis + roundTable + fullList;
+        }
+
+        function exportPerformanceCsv() {
+            if (!salePerfData || !(salePerfData.styles || []).length) return;
+            const rounds = salePerfData.rounds || [];
+            const head = ['Brand', 'Style', 'SKU', 'Regular', ...rounds.map(r => r.label + ' units'),
+                'Units sold', 'Returns', 'Net revenue', 'Realized disc %', 'On hand', 'Sell-through %'];
+            const lines = [head.join(',')];
+            salePerfData.styles.forEach(s => {
+                const cells = [s.brand, s.name, s.parent_sku, s.regular ?? '',
+                    ...(s.round_units || []).map(u => u || 0),
+                    s.net_units, s.returns_units || 0, s.net_revenue, s.avg_disc_pct ?? 0, s.on_hand, s.sell_through ?? 0];
+                lines.push(cells.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','));
+            });
+            const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `sale_performance_${saleSeason.id}.csv`;
+            a.click();
+        }
 
         function onSaleSearchInput() { clearTimeout(_saleSearchTimer); _saleSearchTimer = setTimeout(loadSaleCandidates, 300); }
 

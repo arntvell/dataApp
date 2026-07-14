@@ -1069,22 +1069,52 @@ def _blank_agg():
             "full_value": 0.0, "recorded_discount": 0.0}
 
 
+def _sale_segments(season, windows, round_sku_sets):
+    """Timeline segments across the sale: an optional leading 'Presale' (from
+    season.starts_on until round 1 goes public, exposing round-1 prices early to
+    subscribers) followed by each round. Each segment carries its date window and the
+    set of SKUs discounted in it (presale reuses the round-1 set)."""
+    rounds = season.rounds or []
+    segs = []
+    r1_start = windows[0][0] if windows else None
+    if season.starts_on and r1_start and season.starts_on < r1_start:
+        segs.append({
+            "key": "presale", "label": "Presale", "short": "Pre", "is_round": False,
+            "pct": rounds[0].get("pct") if rounds else None,
+            "start": season.starts_on, "end": r1_start, "dated": True,
+            "on_sale": set(round_sku_sets[0]) if round_sku_sets else set(),
+        })
+    for i, rd in enumerate(rounds):
+        ws, we = windows[i]
+        label = rd.get("label") or f"Round {i + 1}"
+        segs.append({
+            "key": f"r{i}", "label": label, "short": label.replace("Round ", "R").replace("round ", "R"),
+            "is_round": True, "pct": rd.get("pct"), "start": ws, "end": we, "dated": bool(ws),
+            "on_sale": round_sku_sets[i] if i < len(round_sku_sets) else set(),
+        })
+    return segs
+
+
 @router.get("/performance")
 async def performance(season_id: int = Query(...), db: Session = Depends(get_db)):
-    """Actual sales performance of a sale: per-round KPIs (over each round's date
-    window, for the variants on sale that round) and a per-style full list across
-    the whole sale. Revenue is net (VAT incl, returns netted via negative orders).
-    Realized markdown = regular value − net revenue."""
+    """Actual sales performance of a sale, broken into timeline segments (presale +
+    each round). Per segment: discounted-sales KPIs for what was on sale then, plus
+    total units MOVED in that window (every sale-plan style, discounted or not — so
+    you can see inventory shifting before its own round). Per style: a full list with
+    per-segment units moved. Revenue is net (VAT incl, returns netted via negative
+    orders); realized markdown = regular value − net revenue."""
     season = _season_or_404(db, season_id)
     rounds = season.rounds or []
     windows = _round_windows(season)
     styles = _aggregate_styles(db)
     plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season_id)}
     sku_meta, round_sku_sets = _variant_round_matrix(db, season, styles, plan)
+    segments = _sale_segments(season, windows, round_sku_sets)
+    nseg = len(segments)
 
-    # Whole-sale window: earliest dated round start → today (inclusive).
-    dated_starts = [w[0] for w in windows if w[0]]
-    min_start = min(dated_starts) if dated_starts else None
+    # Whole-sale window: earliest segment start (presale if any) → today (inclusive).
+    seg_starts = [s["start"] for s in segments if s["start"]]
+    min_start = min(seg_starts) if seg_starts else None
     global_end = date.today() + timedelta(days=1)
 
     # Style-level resolved pct per round (season/style, ignoring variant overrides).
@@ -1093,10 +1123,12 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
         pcts = (plan[parent].round_pcts if parent in plan else None) or []
         style_resolved[parent] = [_resolve_pct(rounds, pcts, None, i) for i in range(len(rounds))]
 
-    round_aggs = [_blank_agg() for _ in rounds]
-    round_style_ids = [set() for _ in rounds]
+    seg_aggs = [_blank_agg() for _ in segments]     # discounted-sales KPIs (on-sale SKUs only)
+    seg_style_ids = [set() for _ in segments]
+    seg_moved_units = [0] * nseg                     # ALL units moved in window (any sale-plan style)
+    seg_moved_returns = [0] * nseg
 
-    # Per-style totals (whole sale window) + per-round unit breakdown.
+    # Per-style totals (whole sale window) + per-segment units-moved breakdown.
     style_tot = {}
     for up, m in sku_meta.items():
         parent = m["parent"]
@@ -1107,7 +1139,7 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
                 "gender": st.get("gender", ""), "regular": st.get("price"),
                 "on_hand": float(st.get("on_hand", 0) or 0),
                 "resolved_pcts": style_resolved.get(parent, [None] * len(rounds)),
-                "round_units": [0] * len(rounds),
+                "seg_units": [0] * nseg,
                 **_blank_agg(),
             }
 
@@ -1153,13 +1185,21 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
             if stt:
                 apply(stt)
 
-            # attribute to the round whose window contains the sale AND where the sku was on sale
-            for i, (ws, we) in enumerate(windows):
-                if ws and ws <= od < we and up in round_sku_sets[i]:
-                    apply(round_aggs[i])
-                    round_style_ids[i].add(m["parent"])
+            # Which segment window does this sale fall in? (segments are contiguous.)
+            for k, seg in enumerate(segments):
+                ws, we = seg["start"], seg["end"]
+                if ws and ws <= od < we:
+                    # units MOVED — every sale-plan style, discounted or not this segment
                     if qty >= 0:
-                        stt["round_units"][i] += qty if stt else 0
+                        seg_moved_units[k] += qty
+                        if stt:
+                            stt["seg_units"][k] += qty
+                    else:
+                        seg_moved_returns[k] += -qty
+                    # discounted-sales KPIs — only SKUs actually on sale in this segment
+                    if up in seg["on_sale"]:
+                        apply(seg_aggs[k])
+                        seg_style_ids[k].add(m["parent"])
                     break
 
     def finalize(agg):
@@ -1176,21 +1216,21 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
             "recorded_discount": round(agg["recorded_discount"]),
         }
 
-    rounds_out = []
-    for i, rd in enumerate(rounds):
-        ws, we = windows[i]
-        agg = finalize(round_aggs[i])
-        rounds_out.append({
-            "index": i,
-            "label": rd.get("label") or f"Round {i + 1}",
-            "pct": rd.get("pct"),
+    segments_out = []
+    for k, seg in enumerate(segments):
+        ws, we = seg["start"], seg["end"]
+        agg = finalize(seg_aggs[k])
+        segments_out.append({
+            "key": seg["key"], "label": seg["label"], "short": seg["short"],
+            "is_round": seg["is_round"], "pct": seg["pct"],
             "start": ws.isoformat() if ws else None,
-            # inclusive last day; None once we're at/after the last boundary (round still open)
+            # inclusive last day; None once we're at/after the last boundary (still open)
             "end": (we - timedelta(days=1)).isoformat() if (we and ws and we > ws) else None,
             "dated": bool(ws),
-            "styles_on_sale": len({sku_meta[s]["parent"] for s in round_sku_sets[i]}),
-            "variants_on_sale": len(round_sku_sets[i]),
-            "styles_sold": len(round_style_ids[i]),
+            "styles_on_sale": len({sku_meta[s]["parent"] for s in seg["on_sale"]}),
+            "variants_on_sale": len(seg["on_sale"]),
+            "moved_units": seg_moved_units[k],
+            "moved_returns": seg_moved_returns[k],
             **agg,
         })
 
@@ -1204,7 +1244,7 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
         denom = sold + stt["on_hand"]
         f["sell_through"] = round(sold / denom * 100, 1) if denom > 0 else 0
         f["regular"] = round(stt["regular"]) if stt["regular"] else None
-        f["round_units"] = stt["round_units"]
+        f["seg_units"] = stt["seg_units"]
         styles_out.append(f)
         for k in tot:
             tot[k] += stt[k]
@@ -1221,8 +1261,8 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
         "season": _season_dict(season),
         "window": {"start": min_start.isoformat() if min_start else None,
                    "end": (global_end - timedelta(days=1)).isoformat()},
-        "any_dated": bool(dated_starts),
-        "rounds": rounds_out,
+        "any_dated": bool(seg_starts),
+        "segments": segments_out,
         "totals": totals,
         "styles": styles_out,
     }

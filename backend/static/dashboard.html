@@ -3627,9 +3627,14 @@
             const el = document.getElementById('saleRoundsEditor');
             const meta = document.getElementById('saleSeasonMeta');
             if (!saleSeason) { el.innerHTML = ''; meta.textContent = ''; return; }
-            meta.textContent = saleSeason.starts_on ? `starts ${saleSeason.starts_on}` : '';
+            meta.textContent = saleSeason.starts_on ? 'presale runs from the start date until round 1' : '';
             const rounds = saleSeason.rounds || [];
-            el.innerHTML = rounds.map((r, i) => `
+            const startChip = `
+                <div class="flex items-center gap-1 border rounded-lg px-2 py-1.5 bg-indigo-50/60 mr-1">
+                    <span class="text-[10px] text-indigo-500 uppercase tracking-wide">Sale start</span>
+                    <input type="date" value="${saleSeason.starts_on || ''}" onchange="updateSeasonStart(this.value)" title="Sale / presale start — the window before round 1 is the newsletter presale" class="border rounded px-1 py-0.5 text-xs text-gray-600">
+                </div>`;
+            el.innerHTML = startChip + rounds.map((r, i) => `
                 <div class="flex items-center gap-1 border rounded-lg px-2 py-1.5 bg-gray-50">
                     <span class="text-[10px] text-gray-400">${r.label || ('R' + (i + 1))}</span>
                     <input type="number" min="0" max="90" value="${r.pct ?? ''}" onchange="updateRoundPct(${i}, this.value)" class="border rounded px-1 py-0.5 text-sm w-14 text-right">
@@ -3644,6 +3649,11 @@
         }
         function updateRoundPct(i, val) { saleSeason.rounds[i].pct = val === '' ? null : parseFloat(val); saveRounds().then(loadSaleCandidates); }
         function updateRoundDate(i, val) { saleSeason.rounds[i].date = val || null; saveRounds().then(() => { if (salePerfLoaded) loadSalePerformance(); }); }
+        function updateSeasonStart(val) {
+            saleSeason.starts_on = val || null;
+            fetch(`${API_BASE}/sale/seasons/${saleSeason.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ starts_on: saleSeason.starts_on }) })
+                .then(() => { renderRoundsEditor(); if (salePerfLoaded) loadSalePerformance(); });
+        }
         function addRound() { saleSeason.rounds.push({ label: `Round ${saleSeason.rounds.length + 1}`, pct: null }); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
         function removeRound(i) { saleSeason.rounds.splice(i, 1); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
 
@@ -3671,7 +3681,7 @@
             document.getElementById('salePerfCsv').classList.toggle('hidden', !(d.styles || []).length);
 
             if (!d.any_dated) {
-                body.innerHTML = '<div class="py-6 text-center text-amber-600 text-sm">Set a <b>date</b> on at least round 1 (in the rounds editor above) so performance can be windowed by round.</div>';
+                body.innerHTML = '<div class="py-6 text-center text-amber-600 text-sm">Set the <b>Sale start</b> and a <b>date</b> on at least round 1 (rounds editor at the top of this tab) so performance can be windowed. The gap between the sale start and round 1 is the newsletter presale.</div>';
                 return;
             }
 
@@ -3690,40 +3700,46 @@
                 ${kpi('Styles in sale', fmtNok(t.styles), '')}
             </div>`;
 
-            // Per-round table
-            const rr = (d.rounds || []).map(r => {
+            // By-segment table (presale + each round)
+            const segs = d.segments || [];
+            const rr = segs.map(r => {
                 const win = r.dated ? (r.end ? `${r.start} → ${r.end}` : `from ${r.start}`) : '<span class="text-amber-500">no date</span>';
-                return `<tr class="border-b hover:bg-gray-50">
-                    <td class="py-1.5 px-2 font-medium">${r.label}<div class="text-[10px] text-gray-400 font-normal">${win}</div></td>
+                const tag = r.is_round ? '' : ' <span class="text-[9px] uppercase tracking-wide text-indigo-500 font-semibold">newsletter</span>';
+                return `<tr class="border-b hover:bg-gray-50 ${r.is_round ? '' : 'bg-indigo-50/40'}">
+                    <td class="py-1.5 px-2 font-medium">${r.label}${tag}<div class="text-[10px] text-gray-400 font-normal">${win}</div></td>
                     <td class="px-2 text-right">${r.pct != null ? r.pct + '%' : '—'}</td>
                     <td class="px-2 text-right">${r.styles_on_sale}</td>
                     <td class="px-2 text-right">${fmtNok(r.net_units)}</td>
-                    <td class="px-2 text-right">${r.returns_units || ''}</td>
                     <td class="px-2 text-right font-semibold">${fmtNok(r.net_revenue)}</td>
                     <td class="px-2 text-right">${r.avg_disc_pct ?? 0}%</td>
+                    <td class="px-2 text-right text-gray-500">${fmtNok(r.moved_units)}</td>
                 </tr>`;
             }).join('');
-            const roundTable = `<div class="text-xs font-medium text-gray-500 mb-1">By round</div>
-                <div class="overflow-auto mb-4"><table class="w-full text-sm">
+            const roundTable = `<div class="text-xs font-medium text-gray-500 mb-1">By segment</div>
+                <div class="overflow-auto mb-1"><table class="w-full text-sm">
                 <thead><tr class="border-b bg-gray-50 text-xs text-gray-500">
-                    <th class="py-1.5 px-2 text-left">Round · window</th><th class="px-2 text-right">Disc</th>
-                    <th class="px-2 text-right">Styles</th><th class="px-2 text-right">Units</th>
-                    <th class="px-2 text-right">Ret</th><th class="px-2 text-right">Net revenue</th>
-                    <th class="px-2 text-right">Real. disc</th></tr></thead>
-                <tbody>${rr || '<tr><td colspan="7" class="py-3 text-center text-gray-400">No rounds.</td></tr>'}</tbody>
-                </table></div>`;
+                    <th class="py-1.5 px-2 text-left">Segment · window</th><th class="px-2 text-right">Disc</th>
+                    <th class="px-2 text-right">Styles</th><th class="px-2 text-right">On&nbsp;sale</th>
+                    <th class="px-2 text-right">Net revenue</th><th class="px-2 text-right">Real. disc</th>
+                    <th class="px-2 text-right">Moved</th></tr></thead>
+                <tbody>${rr || '<tr><td colspan="7" class="py-3 text-center text-gray-400">No segments.</td></tr>'}</tbody>
+                </table></div>
+                <div class="text-[11px] text-gray-400 mb-4"><b>On sale</b> = discounted units sold that segment · <b>Moved</b> = all sale-item units that shifted in the window, including styles not yet discounted.</div>`;
 
-            // Full list (per style), round-unit columns
-            const nr = (d.rounds || []).length;
-            const roundHeads = (d.rounds || []).map(r => `<th class="px-2 text-right" title="${r.label} units">${r.label.replace(/^Round\s*/i, 'R')}</th>`).join('');
+            // Full list (per style) — per-segment units MOVED
+            const nseg = segs.length;
+            const segHeads = segs.map(r => `<th class="px-2 text-right ${r.is_round ? '' : 'text-indigo-400'}" title="${r.label} — units moved">${r.short}</th>`).join('');
             const rows = (d.styles || []).map(s => {
-                const runits = (s.round_units || []).map(u => `<td class="px-2 text-right text-gray-500">${u || ''}</td>`).join('');
+                const sunits = (s.seg_units || []).map((u, idx) => {
+                    const pre = segs[idx] && !segs[idx].is_round;
+                    return `<td class="px-2 text-right ${pre ? 'text-indigo-400' : 'text-gray-500'}">${u || ''}</td>`;
+                }).join('');
                 const stColor = s.sell_through >= 70 ? 'text-green-600' : s.sell_through >= 40 ? 'text-amber-600' : 'text-gray-500';
                 return `<tr class="border-b hover:bg-gray-50">
                     <td class="py-1.5 px-2">${s.name}<div class="text-[10px] text-gray-400 font-mono">${s.parent_sku}</div></td>
                     <td class="px-2 text-gray-500">${s.brand}</td>
                     <td class="px-2 text-right text-gray-400">${fmtNok(s.regular)}</td>
-                    ${runits}
+                    ${sunits}
                     <td class="px-2 text-right font-medium">${fmtNok(s.net_units)}</td>
                     <td class="px-2 text-right font-semibold">${fmtNok(s.net_revenue)}</td>
                     <td class="px-2 text-right">${s.avg_disc_pct ?? 0}%</td>
@@ -3731,15 +3747,15 @@
                     <td class="px-2 text-right font-medium ${stColor}">${s.sell_through ?? 0}%</td>
                 </tr>`;
             }).join('');
-            const fullList = `<div class="text-xs font-medium text-gray-500 mb-1">Full list — every style in the sale, sorted by net revenue</div>
+            const fullList = `<div class="text-xs font-medium text-gray-500 mb-1">Full list — every style in the sale, sorted by net revenue. Segment columns = units moved that window (even before the style's own round).</div>
                 <div class="overflow-auto" style="max-height:70vh"><table class="w-full text-sm">
                 <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 sticky top-0">
                     <th class="py-1.5 px-2 text-left">Style</th><th class="px-2 text-left">Brand</th>
-                    <th class="px-2 text-right">Reg</th>${roundHeads}
+                    <th class="px-2 text-right">Reg</th>${segHeads}
                     <th class="px-2 text-right">Units</th><th class="px-2 text-right">Net revenue</th>
                     <th class="px-2 text-right">Real. disc</th><th class="px-2 text-right">On hand</th>
                     <th class="px-2 text-right">Sell-thru</th></tr></thead>
-                <tbody>${rows || `<tr><td colspan="${7 + nr}" class="py-3 text-center text-gray-400">No sales in the sale window yet.</td></tr>`}</tbody>
+                <tbody>${rows || `<tr><td colspan="${7 + nseg}" class="py-3 text-center text-gray-400">No sales in the sale window yet.</td></tr>`}</tbody>
                 </table></div>`;
 
             body.innerHTML = kpis + roundTable + fullList;
@@ -3747,13 +3763,13 @@
 
         function exportPerformanceCsv() {
             if (!salePerfData || !(salePerfData.styles || []).length) return;
-            const rounds = salePerfData.rounds || [];
-            const head = ['Brand', 'Style', 'SKU', 'Regular', ...rounds.map(r => r.label + ' units'),
+            const segs = salePerfData.segments || [];
+            const head = ['Brand', 'Style', 'SKU', 'Regular', ...segs.map(r => r.label + ' units moved'),
                 'Units sold', 'Returns', 'Net revenue', 'Realized disc %', 'On hand', 'Sell-through %'];
             const lines = [head.join(',')];
             salePerfData.styles.forEach(s => {
                 const cells = [s.brand, s.name, s.parent_sku, s.regular ?? '',
-                    ...(s.round_units || []).map(u => u || 0),
+                    ...(s.seg_units || []).map(u => u || 0),
                     s.net_units, s.returns_units || 0, s.net_revenue, s.avg_disc_pct ?? 0, s.on_hand, s.sell_through ?? 0];
                 lines.push(cells.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','));
             });

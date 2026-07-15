@@ -171,7 +171,54 @@ async def update_season(season_id: int, payload: dict = Body(...), db: Session =
         rounds = _clean_rounds(payload["rounds"])
         if not (1 <= len(rounds) <= MAX_ROUNDS):
             raise HTTPException(400, f"A sale must have 1–{MAX_ROUNDS} rounds")
+        # This path edits round attributes in place only (label/pct/date). Changing the
+        # NUMBER or ORDER of rounds would misalign every stored round_pcts array, so those
+        # structural changes must go through PUT /seasons/{id}/rounds (permutation-aware).
+        if len(rounds) != len(s.rounds or []):
+            raise HTTPException(400, "Use /seasons/{id}/rounds to add, remove, or reorder rounds")
         s.rounds = rounds
+    db.commit()
+    db.refresh(s)
+    return _season_dict(s)
+
+
+@router.put("/seasons/{season_id}/rounds")
+async def restructure_rounds(season_id: int, payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Add / remove / reorder a season's rounds, permuting every stored round_pcts in lockstep.
+
+    Per-round discounts (sale_plan_items.round_pcts and sale_variant_overrides.round_pcts) are
+    stored BY POSITION, index-aligned to season.rounds. Any structural change to the rounds array
+    must apply the identical permutation to every stored array, atomically, or discounts land on
+    the wrong round. The client sends the final rounds array plus `from`: for each new slot, the
+    OLD index it came from (or -1 for a brand-new round).
+
+        { "rounds": [ {label,pct,date}, ... ],   # final order
+          "from":   [ 0, 2, -1, 1 ] }            # len == len(rounds); each in [-1, old_len)
+    """
+    s = _season_or_404(db, season_id)
+    old_len = len(s.rounds or [])
+    rounds = _clean_rounds(payload.get("rounds"))
+    src = payload.get("from")
+    if not (1 <= len(rounds) <= MAX_ROUNDS):
+        raise HTTPException(400, f"A sale must have 1–{MAX_ROUNDS} rounds")
+    if not isinstance(src, list) or len(src) != len(rounds):
+        raise HTTPException(400, "`from` must be a list the same length as `rounds`")
+    try:
+        src = [int(x) for x in src]
+    except (TypeError, ValueError):
+        raise HTTPException(400, "`from` entries must be integers")
+    if any(x < -1 or x >= old_len for x in src):
+        raise HTTPException(400, f"`from` entries must be in [-1, {old_len})")
+
+    def _permute(arr):
+        arr = arr if isinstance(arr, list) else []
+        return [arr[i] if 0 <= i < len(arr) else None for i in src]
+
+    s.rounds = rounds
+    for pi in db.query(SalePlanItem).filter(SalePlanItem.season_id == s.id):
+        pi.round_pcts = _permute(pi.round_pcts)
+    for ov in db.query(SaleVariantOverride).filter(SaleVariantOverride.season_id == s.id):
+        ov.round_pcts = _permute(ov.round_pcts)
     db.commit()
     db.refresh(s)
     return _season_dict(s)

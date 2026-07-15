@@ -3640,7 +3640,9 @@
                     <input type="number" min="0" max="90" value="${r.pct ?? ''}" onchange="updateRoundPct(${i}, this.value)" class="border rounded px-1 py-0.5 text-sm w-14 text-right">
                     <span class="text-xs text-gray-400">%</span>
                     <input type="date" value="${r.date || ''}" onchange="updateRoundDate(${i}, this.value)" title="Round start date (drives Performance windows)" class="border rounded px-1 py-0.5 text-xs text-gray-500 ml-1">
-                    ${rounds.length > 1 ? `<button onclick="removeRound(${i})" class="text-red-400 hover:text-red-600 text-xs ml-1">✕</button>` : ''}
+                    ${i > 0 ? `<button onclick="moveRound(${i}, -1)" title="Move earlier" class="text-gray-400 hover:text-gray-700 text-xs ml-1">◀</button>` : ''}
+                    ${i < rounds.length - 1 ? `<button onclick="moveRound(${i}, 1)" title="Move later" class="text-gray-400 hover:text-gray-700 text-xs">▶</button>` : ''}
+                    ${rounds.length > 1 ? `<button onclick="removeRound(${i})" title="Remove round" class="text-red-400 hover:text-red-600 text-xs ml-1">✕</button>` : ''}
                 </div>`).join('') +
                 (rounds.length < 6 ? `<button onclick="addRound()" class="px-2 py-1.5 text-sm border rounded-lg hover:bg-gray-50">+ Round</button>` : '');
         }
@@ -3654,8 +3656,37 @@
             fetch(`${API_BASE}/sale/seasons/${saleSeason.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ starts_on: saleSeason.starts_on }) })
                 .then(() => { renderRoundsEditor(); if (salePerfLoaded) loadSalePerformance(); });
         }
-        function addRound() { saleSeason.rounds.push({ label: `Round ${saleSeason.rounds.length + 1}`, pct: null }); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
-        function removeRound(i) { saleSeason.rounds.splice(i, 1); saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
+        // Structural round changes (add / remove / reorder) go through the permutation-aware
+        // endpoint so every stored round_pcts array is permuted in lockstep with season.rounds.
+        // `from` = for each new slot, the OLD index it came from (-1 = brand-new round).
+        async function restructureRounds(rounds, from) {
+            const res = await fetch(`${API_BASE}/sale/seasons/${saleSeason.id}/rounds`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rounds, from }) });
+            if (!res.ok) { alert('Could not update rounds — ' + (await res.text())); return; }
+            saleSeason = await res.json();
+            renderRoundsEditor();
+            loadSaleCandidates();
+            if (salePerfLoaded) loadSalePerformance();
+        }
+        function addRound() {
+            const n = saleSeason.rounds.length;
+            if (n >= 6) return;
+            const rounds = saleSeason.rounds.concat([{ label: `Round ${n + 1}`, pct: null, date: null }]);
+            restructureRounds(rounds, rounds.map((_, i) => (i < n ? i : -1)));
+        }
+        function removeRound(i) {
+            if (saleSeason.rounds.length <= 1) return;
+            const from = saleSeason.rounds.map((_, k) => k).filter(k => k !== i);
+            restructureRounds(from.map(k => saleSeason.rounds[k]), from);
+        }
+        function moveRound(i, dir) {
+            const j = i + dir;
+            if (j < 0 || j >= saleSeason.rounds.length) return;
+            const order = saleSeason.rounds.map((_, k) => k);
+            [order[i], order[j]] = [order[j], order[i]];   // `order` is both the new ordering AND the `from` map
+            restructureRounds(order.map(k => saleSeason.rounds[k]), order);
+        }
 
         // ---------- Sale performance (actuals) ----------
         function fmtNok(n) { return (n == null ? '—' : Math.round(n).toLocaleString('nb-NO')); }

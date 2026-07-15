@@ -89,6 +89,18 @@ def _clean_rounds(rounds) -> list:
     return out
 
 
+_DEFAULT_LABEL_RE = re.compile(r"Round \d+")
+
+
+def _renumber_default_labels(rounds) -> list:
+    """Relabel rounds still using the default 'Round N' name to match their new position.
+    Custom names (anything not matching 'Round N') are left untouched and travel with the round."""
+    for i, r in enumerate(rounds):
+        if _DEFAULT_LABEL_RE.fullmatch(r.get("label") or ""):
+            r["label"] = f"Round {i + 1}"
+    return rounds
+
+
 def _resolve_pct(season_rounds, style_pcts, variant_pcts, i):
     """variant override -> style -> season default, for round index i."""
     def at(arr):
@@ -214,7 +226,7 @@ async def restructure_rounds(season_id: int, payload: dict = Body(...), db: Sess
         arr = arr if isinstance(arr, list) else []
         return [arr[i] if 0 <= i < len(arr) else None for i in src]
 
-    s.rounds = rounds
+    s.rounds = _renumber_default_labels(rounds)
     for pi in db.query(SalePlanItem).filter(SalePlanItem.season_id == s.id):
         pi.round_pcts = _permute(pi.round_pcts)
     for ov in db.query(SaleVariantOverride).filter(SaleVariantOverride.season_id == s.id):

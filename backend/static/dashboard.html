@@ -3636,7 +3636,7 @@
                 </div>`;
             el.innerHTML = startChip + rounds.map((r, i) => `
                 <div class="flex items-center gap-1 border rounded-lg px-2 py-1.5 bg-gray-50">
-                    <span class="text-[10px] text-gray-400">${r.label || ('R' + (i + 1))}</span>
+                    <input type="text" value="${(r.label || ('Round ' + (i + 1))).replace(/"/g, '&quot;')}" onchange="updateRoundLabel(${i}, this.value)" title="Round name (rename freely; default 'Round N' names auto-renumber on reorder)" class="border rounded px-1 py-0.5 text-xs w-20">
                     <input type="number" min="0" max="90" value="${r.pct ?? ''}" onchange="updateRoundPct(${i}, this.value)" class="border rounded px-1 py-0.5 text-sm w-14 text-right">
                     <span class="text-xs text-gray-400">%</span>
                     <input type="date" value="${r.date || ''}" onchange="updateRoundDate(${i}, this.value)" title="Round start date (drives Performance windows)" class="border rounded px-1 py-0.5 text-xs text-gray-500 ml-1">
@@ -3650,6 +3650,7 @@
             await fetch(`${API_BASE}/sale/seasons/${saleSeason.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rounds: saleSeason.rounds }) });
         }
         function updateRoundPct(i, val) { saleSeason.rounds[i].pct = val === '' ? null : parseFloat(val); saveRounds().then(loadSaleCandidates); }
+        function updateRoundLabel(i, val) { saleSeason.rounds[i].label = val.trim() || `Round ${i + 1}`; saveRounds().then(() => { renderRoundsEditor(); loadSaleCandidates(); }); }
         function updateRoundDate(i, val) { saleSeason.rounds[i].date = val || null; saveRounds().then(() => { if (salePerfLoaded) loadSalePerformance(); }); }
         function updateSeasonStart(val) {
             saleSeason.starts_on = val || null;

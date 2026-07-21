@@ -500,13 +500,55 @@
             try {
                 const rows = await (await fetch(url)).json();
                 body.innerHTML = rows.length ? rows.map(p => `
-                    <tr class="border-b">
-                        <td class="py-2 px-3"><div class="font-medium text-gray-800">${p.name || p.sku}</div><div class="text-xs text-gray-400 font-mono">${p.sku}</div></td>
+                    <tr class="border-b hover:bg-blue-50 cursor-pointer" onclick="toggleTpDetail(this, '${escAttr(p.sku)}')">
+                        <td class="py-2 px-3"><div class="font-medium text-blue-700">${p.name || p.sku}</div><div class="text-xs text-gray-400 font-mono">${p.sku}</div></td>
                         <td class="text-right py-2 px-3">${p.quantity_sold || 0}</td>
                         <td class="text-right py-2 px-3 font-semibold">${formatCurrency(p.revenue || 0)}</td>
                         <td class="text-right py-2 px-3">${ly ? deltaCell(p.revenue, p.prev_revenue) : '<span class="text-gray-300">·</span>'}</td>
                     </tr>`).join('') : '<tr><td colspan="4" class="py-4 text-center text-gray-400">No sales in this window.</td></tr>';
             } catch (e) { body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Failed to load.</td></tr>'; }
+        }
+
+        // Click a product -> sizes sold; click a size -> which stores sold it.
+        async function toggleTpDetail(row, sku) {
+            const nxt = row.nextElementSibling;
+            if (nxt && nxt.classList.contains('ap-detail')) { nxt.remove(); return; }
+            document.querySelectorAll('#tpBody tr.ap-detail').forEach(r => r.remove());   // one open at a time
+            const tr = document.createElement('tr');
+            tr.className = 'ap-detail bg-gray-50';
+            tr.innerHTML = '<td colspan="4" class="px-4 py-3"><div class="text-xs text-gray-500 mb-2">Sizes sold in this window — click a size to see which stores sold it.</div><div class="wrap text-sm text-gray-400">Loading…</div></td>';
+            row.after(tr);
+            const wrap = tr.querySelector('.wrap');
+            const { start, end } = apDates();
+            try {
+                const url = `${API_BASE}/products/variants?parent_sku=${encodeURIComponent(sku)}&start_date=${start}&end_date=${end}&location=${encodeURIComponent(_val('apLoc'))}`;
+                const sizes = await (await fetch(url)).json();
+                if (!sizes.length) { wrap.innerHTML = '<div class="text-gray-400">No size-level sales in this window.</div>'; return; }
+                wrap.innerHTML = `<table class="w-full"><tbody>${sizes.map(s => `
+                    <tr class="border-b border-gray-200 cursor-pointer hover:bg-white" onclick="toggleSizeStores(this, '${escAttr(s.sku)}')">
+                        <td class="py-1.5 px-2 font-medium w-24">${s.size || s.sku}</td>
+                        <td class="py-1.5 px-2 text-xs text-gray-400 font-mono">${s.sku}</td>
+                        <td class="text-right py-1.5 px-2">${s.quantity_sold || 0} pcs</td>
+                        <td class="text-right py-1.5 px-2 text-gray-600">${formatCurrency(s.revenue || 0)}</td>
+                    </tr>`).join('')}</tbody></table>`;
+            } catch (e) { wrap.innerHTML = '<div class="text-gray-400">Failed to load sizes.</div>'; }
+        }
+
+        async function toggleSizeStores(sizeRow, sku) {
+            const nxt = sizeRow.nextElementSibling;
+            if (nxt && nxt.classList.contains('ap-store')) { nxt.remove(); return; }
+            const tr = document.createElement('tr');
+            tr.className = 'ap-store';
+            tr.innerHTML = '<td colspan="4" class="px-2 pb-2"><div class="box pl-3 border-l-2 border-blue-200 text-xs text-gray-400">Loading…</div></td>';
+            sizeRow.after(tr);
+            const box = tr.querySelector('.box');
+            const { start, end } = apDates();
+            try {
+                const stores = await (await fetch(`${API_BASE}/products/variant-locations?sku=${encodeURIComponent(sku)}&start_date=${start}&end_date=${end}`)).json();
+                box.innerHTML = stores.length ? stores.map(s => `
+                    <div class="flex justify-between py-0.5"><span class="text-gray-600">${shortLoc(s.location)}</span><span class="text-gray-500">${s.quantity_sold} pcs · ${formatCurrency(s.revenue)}</span></div>`).join('')
+                    : '<div class="text-gray-400">No store-level sales for this size.</div>';
+            } catch (e) { box.innerHTML = '<div class="text-gray-400">Failed to load stores.</div>'; }
         }
 
         async function loadCategories() {

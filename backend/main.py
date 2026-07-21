@@ -128,6 +128,8 @@ _STORE_EXACT = {
     "/api/v1/dashboard/sale/export/price-schedule",
     # Top products / Categories analytics views on the store page (read-only):
     "/api/v1/dashboard/products",
+    "/api/v1/dashboard/products/variants",
+    "/api/v1/dashboard/products/variant-locations",
     "/api/v1/dashboard/categories",
     "/api/v1/dashboard/categories/groups",
     "/api/v1/dashboard/locations/list",

@@ -115,6 +115,34 @@ app = FastAPI(
 APP_USERNAME = os.getenv("APP_USERNAME", "livid")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 
+# Optional read-only store-manager login. Full access to the /store page and the
+# (GET-only) stock + sale-list endpoints it needs, but NOT the admin dashboard.
+# Enabled only when STORE_PASSWORD is set.
+STORE_USERNAME = os.getenv("STORE_USERNAME", "store")
+STORE_PASSWORD = os.getenv("STORE_PASSWORD", "")
+
+# Paths a store-manager login may reach (GET/HEAD only); anything else -> 403.
+_STORE_EXACT = {
+    "/store",
+    "/api/v1/dashboard/sale/seasons",
+    "/api/v1/dashboard/sale/export/price-schedule",
+}
+_STORE_PREFIX = ("/api/v1/dashboard/stock/",)
+
+
+def _creds_match(username, password, exp_user, exp_pass):
+    # Compare on bytes: secrets.compare_digest raises on non-ASCII str, which would
+    # silently lock out any password containing e.g. æ/ø/å. Bytes accept anything.
+    return (secrets.compare_digest(username.encode("utf-8"), exp_user.encode("utf-8"))
+            and secrets.compare_digest(password.encode("utf-8"), exp_pass.encode("utf-8")))
+
+
+def _store_allowed(request) -> bool:
+    if request.method not in ("GET", "HEAD"):
+        return False
+    p = request.url.path
+    return p in _STORE_EXACT or p.startswith(_STORE_PREFIX)
+
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -122,16 +150,22 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
         if request.url.path == "/health":
             return await call_next(request)
 
+        username = password = None
         auth = request.headers.get("Authorization")
         if auth and auth.startswith("Basic "):
             try:
                 decoded = base64.b64decode(auth[6:]).decode("utf-8")
                 username, password = decoded.split(":", 1)
-                if (secrets.compare_digest(username, APP_USERNAME)
-                        and secrets.compare_digest(password, APP_PASSWORD)):
-                    return await call_next(request)
             except Exception:
-                pass
+                username = password = None
+
+        if username is not None:
+            if _creds_match(username, password, APP_USERNAME, APP_PASSWORD):
+                return await call_next(request)                     # admin: full access
+            if STORE_PASSWORD and _creds_match(username, password, STORE_USERNAME, STORE_PASSWORD):
+                if _store_allowed(request):
+                    return await call_next(request)                 # store: allowlisted GETs
+                return Response(status_code=403, content="Forbidden")  # valid store login, admin-only path
 
         return Response(
             status_code=401,

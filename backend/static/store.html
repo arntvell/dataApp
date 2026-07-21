@@ -23,6 +23,8 @@
             <div class="flex gap-1 ml-2">
                 <button id="tb-sale" onclick="showStoreTab('sale')" class="px-4 py-1.5 text-sm rounded-lg bg-blue-600 text-white font-medium">Sale list</button>
                 <button id="tb-stock" onclick="showStoreTab('stock')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Stock</button>
+                <button id="tb-top" onclick="showStoreTab('top')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Top products</button>
+                <button id="tb-cat" onclick="showStoreTab('cat')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Categories</button>
             </div>
         </div>
     </div>
@@ -116,6 +118,73 @@
                 </div>
             </div>
 
+        </div>
+
+        <!-- Shared analytics controls (used by Top products + Categories) -->
+        <div id="analyticsControls" class="card mb-4 hidden !p-3">
+            <div class="flex flex-wrap gap-3 items-center">
+                <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm" id="apPresetBar">
+                    <button data-p="30"  onclick="setApPreset('30')"  class="px-3 py-1.5 bg-blue-600 text-white font-medium">30d</button>
+                    <button data-p="90"  onclick="setApPreset('90')"  class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">90d</button>
+                    <button data-p="365" onclick="setApPreset('365')" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">365d</button>
+                    <button data-p="ytd" onclick="setApPreset('ytd')" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">YTD</button>
+                    <button data-p="custom" onclick="setApPreset('custom')" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">Custom</button>
+                </div>
+                <div id="apCustom" class="hidden flex items-center gap-2 text-sm">
+                    <span class="text-gray-500">From</span><input type="date" id="apStart" onchange="onApCustom()" class="border rounded px-2 py-1 text-sm">
+                    <span class="text-gray-500">To</span><input type="date" id="apEnd" onchange="onApCustom()" class="border rounded px-2 py-1 text-sm">
+                </div>
+                <div class="flex items-center gap-1"><label class="text-sm text-gray-600">Location</label>
+                    <select id="apLoc" onchange="loadAnalytics()" class="px-2 py-1 text-sm border rounded-lg bg-white"><option>All</option></select></div>
+                <div class="flex items-center gap-1"><label class="text-sm text-gray-600">Vendor</label>
+                    <select id="apVendor" onchange="loadAnalytics()" class="px-2 py-1 text-sm border rounded-lg bg-white"><option>All</option></select></div>
+                <div class="flex items-center gap-1"><label class="text-sm text-gray-600">Type</label>
+                    <select id="apType" onchange="loadAnalytics()" class="px-2 py-1 text-sm border rounded-lg bg-white"><option>All</option></select></div>
+                <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm" id="apSortBar">
+                    <button data-s="revenue"  onclick="setApSort('revenue')"  class="px-3 py-1.5 bg-blue-600 text-white font-medium">Revenue</button>
+                    <button data-s="quantity" onclick="setApSort('quantity')" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200">Qty</button>
+                </div>
+                <label class="flex items-center gap-1 text-sm text-gray-600 border-l pl-3"><input type="checkbox" id="apLY" checked onchange="loadAnalytics()" class="w-4 h-4 rounded"> vs last year</label>
+            </div>
+        </div>
+
+        <!-- Top products -->
+        <div id="tab-top" class="hidden">
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-1">Top products</h2>
+                <p class="text-xs text-gray-400 mb-3">Best sellers for the selected window. Revenue is product sales, VAT included. "vs LY" compares the same window one year earlier.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                            <th class="text-left py-2 px-3">Product</th>
+                            <th class="text-right py-2 px-3">Qty</th>
+                            <th class="text-right py-2 px-3">Revenue</th>
+                            <th class="text-right py-2 px-3">vs LY</th>
+                        </tr></thead>
+                        <tbody id="tpBody"><tr><td colspan="4" class="py-4 text-center text-gray-400">Loading…</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Categories -->
+        <div id="tab-cat" class="hidden">
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-1">Top categories</h2>
+                <p class="text-xs text-gray-400 mb-3">Pick a <b>Type</b> above to drill into its sub-categories. "vs LY" compares the same window one year earlier.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                            <th class="text-left py-2 px-3">Category</th>
+                            <th class="text-right py-2 px-3">Qty</th>
+                            <th class="text-right py-2 px-3">Orders</th>
+                            <th class="text-right py-2 px-3">Revenue</th>
+                            <th class="text-right py-2 px-3">vs LY</th>
+                        </tr></thead>
+                        <tbody id="catBody"><tr><td colspan="5" class="py-4 text-center text-gray-400">Loading…</td></tr></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -331,12 +400,136 @@
         }
 
         let storeStockLoaded = false;
+        const STORE_TABS = ['sale', 'stock', 'top', 'cat'];
         function showStoreTab(t) {
-            document.getElementById('tab-sale').classList.toggle('hidden', t !== 'sale');
-            document.getElementById('tab-stock').classList.toggle('hidden', t !== 'stock');
-            document.getElementById('tb-sale').className = 'px-4 py-1.5 text-sm rounded-lg ' + (t === 'sale' ? 'bg-blue-600 text-white font-medium' : 'text-gray-600 hover:bg-gray-100');
-            document.getElementById('tb-stock').className = 'px-4 py-1.5 text-sm rounded-lg ' + (t === 'stock' ? 'bg-blue-600 text-white font-medium' : 'text-gray-600 hover:bg-gray-100');
+            STORE_TABS.forEach(x => {
+                document.getElementById('tab-' + x).classList.toggle('hidden', x !== t);
+                document.getElementById('tb-' + x).className = 'px-4 py-1.5 text-sm rounded-lg ' +
+                    (x === t ? 'bg-blue-600 text-white font-medium' : 'text-gray-600 hover:bg-gray-100');
+            });
+            document.getElementById('analyticsControls').classList.toggle('hidden', t !== 'top' && t !== 'cat');
             if (t === 'stock' && !storeStockLoaded) { storeStockLoaded = true; loadStockTab(); }
+            if (t === 'top' || t === 'cat') { apActive = t; ensureApLists().then(() => setApPreset(apPreset)); }
+        }
+
+        // ============== Top products / Categories analytics ==============
+        let apPreset = '30', apSort = 'revenue', apActive = null, apListsLoaded = false;
+
+        function _apToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+        function _apStr(d) {
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
+        function apDates() {
+            if (apPreset === 'custom') {
+                return { start: document.getElementById('apStart').value, end: document.getElementById('apEnd').value };
+            }
+            const today = _apToday();
+            let start = new Date(today);
+            if (apPreset === 'ytd') start = new Date(today.getFullYear(), 0, 1);
+            else start.setDate(today.getDate() - (parseInt(apPreset) - 1));
+            return { start: _apStr(start), end: _apStr(today) };
+        }
+        function _restyleBar(barId, dataAttr, active) {
+            document.querySelectorAll(`#${barId} button`).forEach((b, i) => {
+                const on = b.dataset[dataAttr] === String(active);
+                b.className = 'px-3 py-1.5 ' + (i > 0 ? 'border-l border-gray-200 ' : '') +
+                    (on ? 'bg-blue-600 text-white font-medium' : 'bg-white text-gray-600 hover:bg-gray-50');
+            });
+        }
+        function setApPreset(p) {
+            apPreset = p;
+            _restyleBar('apPresetBar', 'p', p);
+            const custom = document.getElementById('apCustom');
+            custom.classList.toggle('hidden', p !== 'custom');
+            if (p === 'custom') {
+                const s = document.getElementById('apStart'), e = document.getElementById('apEnd');
+                if (!s.value) { const d = _apToday(); d.setDate(d.getDate() - 29); s.value = _apStr(d); }
+                if (!e.value) e.value = _apStr(_apToday());
+            }
+            loadAnalytics();
+        }
+        function onApCustom() {
+            const s = document.getElementById('apStart').value, e = document.getElementById('apEnd').value;
+            if (s && e) { apPreset = 'custom'; _restyleBar('apPresetBar', 'p', 'custom'); loadAnalytics(); }
+        }
+        function setApSort(s) { apSort = s; _restyleBar('apSortBar', 's', s); loadAnalytics(); }
+
+        function _fillSel(id, opts) {
+            const s = document.getElementById(id);
+            if (s) s.innerHTML = opts.map(o => `<option value="${escAttr(o)}">${o}</option>`).join('');
+        }
+        function _val(id) { return document.getElementById(id)?.value || 'All'; }
+
+        async function ensureApLists() {
+            if (apListsLoaded) return;
+            apListsLoaded = true;
+            try {
+                const [locs, vendors, groups] = await Promise.all([
+                    fetch(`${API_BASE}/locations/list`).then(r => r.json()),
+                    fetch(`${API_BASE}/vendors/list`).then(r => r.json()),
+                    fetch(`${API_BASE}/categories/groups`).then(r => r.json()),
+                ]);
+                _fillSel('apLoc', ['All', 'Stores', 'Online', ...locs.filter(l => l !== 'Online')]);
+                _fillSel('apVendor', ['All', ...vendors.filter(Boolean)]);
+                _fillSel('apType', ['All', ...groups.filter(g => g && g !== 'Uncategorized')]);
+            } catch (e) { apListsLoaded = false; }   // allow retry on next tab open
+        }
+
+        function loadAnalytics() {
+            if (apActive === 'top') loadTopProducts();
+            else if (apActive === 'cat') loadCategories();
+        }
+
+        function deltaCell(cur, prev) {
+            cur = cur || 0; prev = prev || 0;
+            if (!prev) return cur > 0 ? '<span class="text-emerald-600 text-xs font-medium">new</span>' : '<span class="text-gray-300">·</span>';
+            const pct = Math.round((cur - prev) / prev * 100), up = pct >= 0;
+            return `<span class="${up ? 'text-emerald-600' : 'text-red-600'} text-xs font-medium" title="Last year: ${formatCurrency(prev)}">${up ? '▲' : '▼'} ${Math.abs(pct)}%</span>`;
+        }
+
+        async function loadTopProducts() {
+            const { start, end } = apDates();
+            const body = document.getElementById('tpBody');
+            if (!start || !end) { body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Pick a date range.</td></tr>'; return; }
+            const ly = document.getElementById('apLY').checked;
+            let url = `${API_BASE}/products?start_date=${start}&end_date=${end}&aggregate_by=parent&limit=100&sort_by=${apSort}&location=${encodeURIComponent(_val('apLoc'))}`;
+            if (_val('apVendor') !== 'All') url += `&vendor=${encodeURIComponent(_val('apVendor'))}`;
+            if (_val('apType') !== 'All') url += `&category=${encodeURIComponent(_val('apType'))}`;
+            if (ly) url += '&compare_to=previous_year';
+            body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Loading…</td></tr>';
+            try {
+                const rows = await (await fetch(url)).json();
+                body.innerHTML = rows.length ? rows.map(p => `
+                    <tr class="border-b">
+                        <td class="py-2 px-3"><div class="font-medium text-gray-800">${p.name || p.sku}</div><div class="text-xs text-gray-400 font-mono">${p.sku}</div></td>
+                        <td class="text-right py-2 px-3">${p.quantity_sold || 0}</td>
+                        <td class="text-right py-2 px-3 font-semibold">${formatCurrency(p.revenue || 0)}</td>
+                        <td class="text-right py-2 px-3">${ly ? deltaCell(p.revenue, p.prev_revenue) : '<span class="text-gray-300">·</span>'}</td>
+                    </tr>`).join('') : '<tr><td colspan="4" class="py-4 text-center text-gray-400">No sales in this window.</td></tr>';
+            } catch (e) { body.innerHTML = '<tr><td colspan="4" class="py-4 text-center text-gray-400">Failed to load.</td></tr>'; }
+        }
+
+        async function loadCategories() {
+            const { start, end } = apDates();
+            const body = document.getElementById('catBody');
+            if (!start || !end) { body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Pick a date range.</td></tr>'; return; }
+            const ly = document.getElementById('apLY').checked;
+            let url = `${API_BASE}/categories?start_date=${start}&end_date=${end}&limit=200&location=${encodeURIComponent(_val('apLoc'))}`;
+            if (_val('apVendor') !== 'All') url += `&vendor=${encodeURIComponent(_val('apVendor'))}`;
+            if (_val('apType') !== 'All') url += `&category_group=${encodeURIComponent(_val('apType'))}`;
+            if (ly) url += '&compare_to=previous_year';
+            body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Loading…</td></tr>';
+            try {
+                const rows = await (await fetch(url)).json();
+                body.innerHTML = rows.length ? rows.map(c => `
+                    <tr class="border-b">
+                        <td class="py-2 px-3 font-medium text-gray-800">${c.category}</td>
+                        <td class="text-right py-2 px-3">${c.quantity_sold || 0}</td>
+                        <td class="text-right py-2 px-3 text-gray-500">${c.order_count || 0}</td>
+                        <td class="text-right py-2 px-3 font-semibold">${formatCurrency(c.revenue || 0)}</td>
+                        <td class="text-right py-2 px-3">${ly ? deltaCell(c.revenue, c.prev_revenue) : '<span class="text-gray-300">·</span>'}</td>
+                    </tr>`).join('') : '<tr><td colspan="5" class="py-4 text-center text-gray-400">No sales in this window.</td></tr>';
+            } catch (e) { body.innerHTML = '<tr><td colspan="5" class="py-4 text-center text-gray-400">Failed to load.</td></tr>'; }
         }
         let storeSeasonId = null, storeSaleRound = 0, _storeSaleTimer = null;
         function refreshSaleFrame() {

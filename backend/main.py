@@ -126,6 +126,12 @@ _STORE_EXACT = {
     "/store",
     "/api/v1/dashboard/sale/seasons",
     "/api/v1/dashboard/sale/export/price-schedule",
+    # Top products / Categories analytics views on the store page (read-only):
+    "/api/v1/dashboard/products",
+    "/api/v1/dashboard/categories",
+    "/api/v1/dashboard/categories/groups",
+    "/api/v1/dashboard/locations/list",
+    "/api/v1/dashboard/vendors/list",
 }
 _STORE_PREFIX = ("/api/v1/dashboard/stock/",)
 

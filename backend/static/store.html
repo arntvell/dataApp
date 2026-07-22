@@ -90,9 +90,12 @@
             <div class="card mb-6">
                 <div class="flex flex-wrap justify-between items-center mb-1 gap-2">
                     <h2 class="text-xl font-semibold">Stock by category × location</h2>
-                    <div id="stockMatrixCrumb" class="text-sm"></div>
+                    <div class="flex items-center gap-3">
+                        <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="hideNoStoreStock" onchange="toggleHideNoStoreStock(this.checked)" class="w-4 h-4 rounded"> Only styles with store stock</label>
+                        <div id="stockMatrixCrumb" class="text-sm"></div>
+                    </div>
                 </div>
-                <p class="text-xs text-gray-400 mb-3">On-hand units per location. Click a category to drill into products, then a product to plan a move.</p>
+                <p class="text-xs text-gray-400 mb-3">On-hand units per location. Click a category to drill into products, then a product to plan a move. Toggle to hide styles that sit only in the warehouse with nothing in stores.</p>
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm" id="stockMatrixTable">
                         <thead id="stockMatrixHead"></thead>
@@ -198,6 +201,8 @@
         // ============== Stock / Inventory planning (standalone) ==============
         let stockDays = 30;
         let stockMatrixGroup = null;
+        let hideNoStoreStock = false;
+        function toggleHideNoStoreStock(on) { hideNoStoreStock = on; renderStockMatrix(); }
         let transferPlanItems = [];
         let _stockSearchTimer = null;
 
@@ -228,6 +233,11 @@
         function fmtCell(v) { return v ? formatCurrency(v) : '<span class="text-gray-300">·</span>'; }
         function escAttr(s) { return (s || '').replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
         function shortLoc(l) { return l.replace('Livid ', '').replace('Sentrallager', 'Lager'); }
+        function isWarehouseLoc(l) { return (l || '').includes('Sentrallager'); }
+        // Store on-hand = every location except the warehouse (Sentrallager).
+        function storeOnHand(cells, locations) {
+            return locations.reduce((s, loc) => s + (isWarehouseLoc(loc) ? 0 : (cells[loc] || 0)), 0);
+        }
 
         async function renderStockLocCards() {
             const el = document.getElementById('stockLocCards');
@@ -288,12 +298,14 @@
                     crumb.innerHTML = `<button onclick="drillStockGroup(null)" class="text-blue-600 hover:underline">‹ All categories</button> › <span class="font-medium text-gray-700">${stockMatrixGroup}</span>`;
                     const d = await (await fetch(`${API_BASE}/stock/matrix/products?category_group=${encodeURIComponent(stockMatrixGroup)}&days=${stockDays}`)).json();
                     head.innerHTML = stockHeadRow('Product', d.locations, 'Total');
-                    body.innerHTML = d.products.map(p => `
+                    let products = d.products;
+                    if (hideNoStoreStock) products = products.filter(p => storeOnHand(p.cells, d.locations) > 0);
+                    body.innerHTML = products.map(p => `
                         <tr class="border-b hover:bg-blue-50 cursor-pointer" onclick="openStockProduct('${escAttr(p.parent_sku)}')">
                             <td class="py-2 px-3"><div class="font-medium text-blue-700 text-xs">${p.name || p.parent_sku}</div><div class="text-xs text-gray-400 font-mono">${p.parent_sku}</div></td>
                             ${d.locations.map(loc => `<td class="text-right py-2 px-3">${fmtCell(p.cells[loc])}</td>`).join('')}
                             <td class="text-right py-2 px-3 font-semibold">${formatCurrency(p.on_hand)}</td><td></td>
-                        </tr>`).join('') || `<tr><td class="py-4 text-center text-gray-400">No products.</td></tr>`;
+                        </tr>`).join('') || `<tr><td class="py-4 text-center text-gray-400">${hideNoStoreStock ? 'No styles with store stock in this category.' : 'No products.'}</td></tr>`;
                 }
             } catch (e) { body.innerHTML = `<tr><td class="py-4 text-center text-gray-400">Failed to load.</td></tr>`; }
         }

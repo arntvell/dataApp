@@ -36,6 +36,7 @@
             <div class="flex flex-wrap gap-2 items-center mb-3">
                 <div id="saleRoundBar" class="flex flex-wrap gap-2 items-center"></div>
                 <span class="flex-1"></span>
+                <label class="flex items-center gap-1.5 text-sm text-gray-600 whitespace-nowrap"><input type="checkbox" id="saleInStoreOnly" onchange="refreshSaleFrame()" class="w-4 h-4 rounded"> Only styles with store stock</label>
                 <input id="saleSearchBox" oninput="onStoreSaleSearch()" placeholder="Search product / brand / SKU…" class="px-3 py-1.5 border rounded-lg text-sm w-full sm:w-64">
             </div>
             <div id="saleFrameWrap" class="card !p-0 overflow-hidden" style="height:78vh">
@@ -591,6 +592,7 @@
             const q = document.getElementById('saleSearchBox').value.trim();
             let src = `${API_BASE}/sale/export/price-schedule?season_id=${storeSeasonId}&round=${storeSaleRound}&embed=1`;
             if (q) src += `&q=${encodeURIComponent(q)}`;
+            if (document.getElementById('saleInStoreOnly').checked) src += '&in_store_only=1';
             document.getElementById('saleFrame').src = src;
         }
         function showSaleRound(round) {

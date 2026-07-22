@@ -945,11 +945,13 @@ def _round_nav(season_id, rounds, active):
 @router.get("/export/price-schedule", response_class=HTMLResponse)
 async def export_price_schedule(season_id: int = Query(...), round: int = Query(0),
                                 embed: int = Query(0), q: str = Query(None),
+                                in_store_only: int = Query(0),
                                 db: Session = Depends(get_db)):
     """Sale list. round=0 → master list with every round's discount/price (colour-coded).
     round=N → a single-round pick list (only that round's items, WAS/NOW/% off + stock).
     embed=1 hides the round-switcher nav (the host page provides its own).
-    q filters by product name, SKU or brand."""
+    q filters by product name, SKU or brand.
+    in_store_only=1 hides styles with no on-hand across the physical stores (warehouse-only)."""
     season = _season_or_404(db, season_id)
     rows, rounds, wh = _sale_export_rows(db, season)
     rows = sorted(rows, key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
@@ -957,6 +959,8 @@ async def export_price_schedule(season_id: int = Query(...), round: int = Query(
     if ql:
         rows = [r for r in rows if ql in (r["name"] or "").lower()
                 or ql in (r["parent_sku"] or "").lower() or ql in (r["brand"] or "").lower()]
+    if in_store_only:
+        rows = [r for r in rows if sum(r["store_stock"].values()) > 0]
     nav = "" if embed else _round_nav(season_id, rounds, round if 1 <= round <= len(rounds) else 0)
 
     # ---- Single-round pick list ----

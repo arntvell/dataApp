@@ -75,6 +75,42 @@ class CategoryMetrics(BaseModel):
 
 # ============== HELPER FUNCTIONS ==============
 
+# ---- Net revenue (returns-adjusted) building blocks ----
+#
+# Online (Shopify) orders are stored GROSS: the order and its line items stay
+# positive and the refund lives in SalesOrder.total_refunded (cumulative per
+# order, dated by order_date = the cohort/order the sale belongs to). Stores
+# (Sitoo) are the opposite — a return is a negative-amount order that already
+# nets out in any SUM(), and Sitoo total_refunded is always 0. So a single
+# uniform formula (subtract total_refunded) nets online without touching stores.
+
+# Order-grain net: revenue after returns for an order-level SUM.
+net_order_amount = SalesOrder.total_amount - func.coalesce(SalesOrder.total_refunded, 0)
+
+
+def net_line_expr():
+    """Item-grain net line_total: allocate each order's refund across its lines
+    proportionally, using the per-order line-total sum as the denominator so the
+    allocated returns reconcile *exactly* to the order's total_refunded.
+
+    Requires SalesOrder to be joined (uses SalesOrder.total_refunded). A window
+    function can't sit inside a GROUP BY aggregate, so callers use this via the
+    _net_line_items() subquery below and then group over that.
+    """
+    order_line_sum = func.sum(SalesOrderItem.line_total).over(
+        partition_by=SalesOrderItem.order_id
+    )
+    retained = case(
+        (order_line_sum > 0,
+         func.greatest(
+             0.0,
+             1 - func.coalesce(SalesOrder.total_refunded, 0) / order_line_sum,
+         )),
+        else_=1.0,
+    )
+    return SalesOrderItem.line_total * retained
+
+
 def get_refunds_total(db: Session, start_date: date, end_date: date) -> float:
     """Get total refund amount for refunds processed within a date range"""
     start_dt = datetime.combine(start_date, datetime.min.time())
@@ -86,6 +122,35 @@ def get_refunds_total(db: Session, start_date: date, end_date: date) -> float:
         SalesRefund.refund_date <= end_dt
     ).scalar()
     return float(result or 0)
+
+
+def net_line_items_subquery(db: Session, *filters):
+    """Build the per-line net subquery. Columns:
+      order_id, sku, vendor, product_name, product_category,
+      order_date, location, source_system, gross_line, net_line
+
+    `filters` are applied inside so the window denominator (per-order line sum)
+    only spans in-scope lines. Group over the returned subquery and outer-join
+    CategoryMapping / ParentSkuMapping on `.sku` as the raw items table allows.
+    """
+    return (
+        db.query(
+            SalesOrderItem.order_id.label("order_id"),
+            SalesOrderItem.sku.label("sku"),
+            SalesOrderItem.vendor.label("vendor"),
+            SalesOrderItem.product_name.label("product_name"),
+            SalesOrderItem.product_category.label("product_category"),
+            SalesOrderItem.quantity.label("quantity"),
+            SalesOrder.order_date.label("order_date"),
+            SalesOrder.location.label("location"),
+            SalesOrder.source_system.label("source_system"),
+            SalesOrderItem.line_total.label("gross_line"),
+            net_line_expr().label("net_line"),
+        )
+        .join(SalesOrder, SalesOrderItem.order_id == SalesOrder.id)
+        .filter(and_(*filters))
+        .subquery()
+    )
 
 
 def get_date_filter(start_date: date, end_date: date):
@@ -175,13 +240,10 @@ async def get_summary(
     gross_revenue = float(totals.revenue or 0)
     total_orders = totals.order_count or 0
 
-    # Refunds processed in this period (from refund table, by refund_date)
-    total_refunded = get_refunds_total(db, start_date, end_date)
-    total_revenue = gross_revenue - total_refunded
-
     # Gross (before discounts & returns) and a COMPLETE returns figure.
-    # Returns come from two places, both VAT-inclusive:
-    #   - Online (Shopify): refund records -> total_refunded
+    # Returns come from two places, both VAT-inclusive and attributed to the
+    # ORDER they belong to (cohort basis, by order_date):
+    #   - Online (Shopify): SalesOrder.total_refunded (>0 only for shopify)
     #   - Stores (Sitoo): in-store returns are negative-amount orders
     # Gross = positive (sales) orders with their discounts added back.
     amounts = db.query(
@@ -195,21 +257,26 @@ async def get_summary(
         func.coalesce(func.sum(case(
             (SalesOrder.total_amount < 0, -SalesOrder.total_amount),
             else_=0)), 0).label('store_returns'),
+        func.coalesce(func.sum(SalesOrder.total_refunded), 0).label('online_returns'),
     ).filter(date_filter).first()
 
     gross_sales = float(amounts.gross or 0)
     total_discount = float(amounts.discount or 0)
     store_returns = float(amounts.store_returns or 0)
-    online_returns = total_refunded
+    # Cohort basis: online refunds attributed to the order's date, not refund_date.
+    online_returns = float(amounts.online_returns or 0)
     total_returns = store_returns + online_returns
+    # total_revenue nets both channels: sum(total_amount) already absorbs Sitoo
+    # negative-order returns; subtracting online_returns nets Shopify refunds.
+    total_refunded = online_returns  # kept for response back-compat
+    total_revenue = gross_revenue - online_returns
 
-    # Last year metrics
+    # Last year metrics (same cohort netting)
     ly_totals = db.query(
-        func.coalesce(func.sum(SalesOrder.total_amount), 0).label('revenue'),
+        func.coalesce(func.sum(net_order_amount), 0).label('revenue'),
         func.count(SalesOrder.id).label('order_count')
     ).filter(ly_filter).first()
-    ly_refunded = get_refunds_total(db, ly_start, ly_end)
-    ly_revenue = float(ly_totals.revenue or 0) - ly_refunded
+    ly_revenue = float(ly_totals.revenue or 0)
     ly_orders = ly_totals.order_count or 0
 
     # Get total items sold (current and LY)
@@ -236,22 +303,23 @@ async def get_summary(
     avg_order_value_yoy = yoy(avg_order_value, ly_avg_order_value)
     avg_items_per_order_yoy = yoy(avg_items_per_order, ly_avg_items_per_order)
     
-    # Metrics by location (gross from orders; Online refunds subtracted below)
+    # Metrics by location — net of returns (Online refunds netted via
+    # net_order_amount; Stores net automatically via negative orders).
     location_data = db.query(
         SalesOrder.location,
-        func.sum(SalesOrder.total_amount).label('revenue'),
+        func.sum(net_order_amount).label('revenue'),
         func.count(SalesOrder.id).label('order_count')
     ).filter(date_filter).group_by(SalesOrder.location).order_by(
-        func.sum(SalesOrder.total_amount).desc()
+        func.sum(net_order_amount).desc()
     ).all()
 
-    # Last year by location
+    # Last year by location (net)
     ly_location_data = db.query(
         SalesOrder.location,
-        func.sum(SalesOrder.total_amount).label('revenue')
+        func.sum(net_order_amount).label('revenue')
     ).filter(ly_filter).group_by(SalesOrder.location).all()
     ly_location_map = {loc.location: float(loc.revenue or 0) for loc in ly_location_data}
-    
+
     locations = []
     for loc in location_data:
         loc_items = db.query(
@@ -261,13 +329,8 @@ async def get_summary(
         ).scalar() or 0
 
         loc_revenue = float(loc.revenue or 0)
-        # Subtract Shopify refunds from Online location
-        if loc.location == 'Online':
-            loc_revenue -= total_refunded
         loc_orders = loc.order_count or 0
         loc_ly_revenue = ly_location_map.get(loc.location, 0)
-        if loc.location == 'Online':
-            loc_ly_revenue -= ly_refunded
         loc_yoy = ((loc_revenue - loc_ly_revenue) / loc_ly_revenue * 100) if loc_ly_revenue > 0 else 0
 
         locations.append(LocationMetrics(
@@ -400,81 +463,79 @@ async def get_top_products(
     
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
-    
-    # Build category filter
-    cat_filter = True
-    if standard_category and standard_category not in ['ALL', 'All', '']:
-        sc_filter = CategoryMapping.standard_category == standard_category
-        if category and category not in ['ALL', 'All', '']:
-            grp_filter = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category) == category
-            cat_filter = and_(sc_filter, grp_filter)
-        else:
-            cat_filter = sc_filter
-    elif category and category not in ['ALL', 'All', '']:
-        cat_filter = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category) == category
-    
-    # Build vendor filter
-    vendor_filter = True
-    if vendor and vendor not in ['ALL', 'All', '']:
-        vendor_filter = SalesOrderItem.vendor == vendor
-
-    # Build designed_for filter
-    gender_filter = True
-    if designed_for and designed_for not in ['ALL', 'All', '']:
-        gender_filter = CategoryMapping.designed_for == designed_for
-
-    sort_expr = func.sum(SalesOrderItem.quantity).desc() if sort_by == "quantity" else func.sum(SalesOrderItem.line_total).desc()
 
     def apply_limit(q):
         return q.all() if limit == 0 else q.limit(limit).all()
 
-    # Helper function to get product data for a period
-    def get_products_data(d_filter, l_filter, c_filter, v_filter, g_filter):
+    # Helper function to get product data for a period.
+    # revenue = net of returns (online refunds allocated per line via the
+    # net-line subquery; stores net via negative orders). Only date + location
+    # go into the subquery so the per-order allocation denominator spans the
+    # order's whole line set; category/vendor/gender filters are applied on the
+    # OUTER query (they split an order's lines, so allocation happens first).
+    def get_products_data(d_filter, l_filter):
+        sq = net_line_items_subquery(db, d_filter, l_filter)
+
+        grp_expr = func.coalesce(CategoryMapping.category_group,
+                                 CategoryMapping.standard_category, sq.c.product_category)
+        c_filter = True
+        if standard_category and standard_category not in ['ALL', 'All', '']:
+            sc_filter = CategoryMapping.standard_category == standard_category
+            c_filter = and_(sc_filter, grp_expr == category) if (
+                category and category not in ['ALL', 'All', '']) else sc_filter
+        elif category and category not in ['ALL', 'All', '']:
+            c_filter = grp_expr == category
+        v_filter = (sq.c.vendor == vendor) if (vendor and vendor not in ['ALL', 'All', '']) else True
+        g_filter = (CategoryMapping.designed_for == designed_for) if (
+            designed_for and designed_for not in ['ALL', 'All', '']) else True
+
+        cat_expr = func.coalesce(CategoryMapping.standard_category, sq.c.product_category)
+        sort_expr = (func.sum(sq.c.quantity).desc() if sort_by == "quantity"
+                     else func.sum(sq.c.net_line).desc())
+
         if aggregate_by == "parent":
             q_parent = db.query(
-                func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku).label('sku'),
+                func.coalesce(ParentSkuMapping.parent_sku, sq.c.sku).label('sku'),
                 func.coalesce(
                     func.min(ParentSkuMapping.base_product_name),
-                    func.min(SalesOrderItem.product_name)
+                    func.min(sq.c.product_name)
                 ).label('name'),
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
+                cat_expr.label('category'),
                 func.min(CategoryMapping.designed_for).label('designed_for'),
-                func.sum(SalesOrderItem.quantity).label('quantity_sold'),
-                func.sum(SalesOrderItem.line_total).label('revenue'),
-                func.count(func.distinct(SalesOrderItem.sku)).label('variant_count')
-            ).join(SalesOrder).outerjoin(
-                ParentSkuMapping, SalesOrderItem.sku == ParentSkuMapping.sku
+                func.sum(sq.c.quantity).label('quantity_sold'),
+                func.sum(sq.c.net_line).label('revenue'),
+                func.sum(sq.c.gross_line).label('gross_revenue'),
+                func.count(func.distinct(sq.c.sku)).label('variant_count')
             ).outerjoin(
-                CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
+                ParentSkuMapping, sq.c.sku == ParentSkuMapping.sku
+            ).outerjoin(
+                CategoryMapping, sq.c.sku == CategoryMapping.sku
             ).filter(
-                and_(d_filter, l_filter, c_filter, v_filter, g_filter)
+                and_(c_filter, v_filter, g_filter)
             ).group_by(
-                func.coalesce(ParentSkuMapping.parent_sku, SalesOrderItem.sku),
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category)
+                func.coalesce(ParentSkuMapping.parent_sku, sq.c.sku), cat_expr
             ).order_by(sort_expr)
             return apply_limit(q_parent)
         else:
             q_sku = db.query(
-                SalesOrderItem.sku,
-                SalesOrderItem.product_name.label('name'),
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category).label('category'),
+                sq.c.sku.label('sku'),
+                func.min(sq.c.product_name).label('name'),
+                cat_expr.label('category'),
                 CategoryMapping.designed_for,
-                func.sum(SalesOrderItem.quantity).label('quantity_sold'),
-                func.sum(SalesOrderItem.line_total).label('revenue')
-            ).join(SalesOrder).outerjoin(
-                CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
+                func.sum(sq.c.quantity).label('quantity_sold'),
+                func.sum(sq.c.net_line).label('revenue'),
+                func.sum(sq.c.gross_line).label('gross_revenue')
+            ).outerjoin(
+                CategoryMapping, sq.c.sku == CategoryMapping.sku
             ).filter(
-                and_(d_filter, l_filter, c_filter, v_filter, g_filter)
+                and_(c_filter, v_filter, g_filter)
             ).group_by(
-                SalesOrderItem.sku, SalesOrderItem.product_name,
-                func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category),
-                CategoryMapping.designed_for
-            ).order_by(sort_expr
-            )
+                sq.c.sku, cat_expr, CategoryMapping.designed_for
+            ).order_by(sort_expr)
             return apply_limit(q_sku)
-    
+
     # Get current period data
-    products = get_products_data(date_filter, loc_filter, cat_filter, vendor_filter, gender_filter)
+    products = get_products_data(date_filter, loc_filter)
 
     # Get comparison data if requested
     compare_data = {}
@@ -482,19 +543,23 @@ async def get_top_products(
         compare_start, compare_end = get_comparison_period(start_date, end_date, compare_to)
         if compare_start and compare_end:
             compare_date_filter = get_date_filter(compare_start, compare_end)
-            compare_products = get_products_data(compare_date_filter, loc_filter, cat_filter, vendor_filter, gender_filter)
+            compare_products = get_products_data(compare_date_filter, loc_filter)
             compare_data = {p.sku: {'qty': p.quantity_sold, 'rev': float(p.revenue or 0)} for p in compare_products}
     
     # Build result
     result = []
     for p in products:
+        gross = float(p.gross_revenue or 0)
+        net = float(p.revenue or 0)
         item = {
             'sku': p.sku,
             'name': p.name,
             'category': p.category,
             'designed_for': p.designed_for,
             'quantity_sold': p.quantity_sold,
-            'revenue': float(p.revenue or 0),
+            'revenue': net,
+            'gross_revenue': gross,
+            'returns': gross - net,
         }
         if aggregate_by == "parent":
             item['variants'] = p.variant_count
@@ -540,21 +605,22 @@ async def get_product_variants(
     if not variant_skus:
         variant_skus = [parent_sku]
 
+    # Net of returns: allocate refunds per line, then filter to this parent's
+    # variants on the outer query (allocation denominator spans the full order).
+    sq = net_line_items_subquery(db, date_filter, loc_filter)
     rows = (
         db.query(
-            SalesOrderItem.sku,
-            func.min(SalesOrderItem.product_name).label('name'),
-            func.coalesce(ParentSkuMapping.size_code, SalesOrderItem.sku).label('size'),
-            func.sum(SalesOrderItem.quantity).label('quantity_sold'),
-            func.sum(SalesOrderItem.line_total).label('revenue'),
+            sq.c.sku,
+            func.min(sq.c.product_name).label('name'),
+            func.coalesce(ParentSkuMapping.size_code, sq.c.sku).label('size'),
+            func.sum(sq.c.quantity).label('quantity_sold'),
+            func.sum(sq.c.net_line).label('revenue'),
+            func.sum(sq.c.gross_line).label('gross_revenue'),
         )
-        .join(SalesOrder)
-        .outerjoin(ParentSkuMapping, SalesOrderItem.sku == ParentSkuMapping.sku)
-        .filter(
-            and_(date_filter, loc_filter, SalesOrderItem.sku.in_(variant_skus))
-        )
-        .group_by(SalesOrderItem.sku, ParentSkuMapping.size_code)
-        .order_by(func.sum(SalesOrderItem.line_total).desc())
+        .outerjoin(ParentSkuMapping, sq.c.sku == ParentSkuMapping.sku)
+        .filter(sq.c.sku.in_(variant_skus))
+        .group_by(sq.c.sku, ParentSkuMapping.size_code)
+        .order_by(func.sum(sq.c.net_line).desc())
         .all()
     )
 
@@ -564,6 +630,8 @@ async def get_product_variants(
             'size': r.size,
             'quantity_sold': r.quantity_sold,
             'revenue': float(r.revenue or 0),
+            'gross_revenue': float(r.gross_revenue or 0),
+            'returns': float((r.gross_revenue or 0) - (r.revenue or 0)),
         }
         for r in rows
     ]
@@ -582,16 +650,19 @@ async def get_variant_locations(
     if end_date is None:
         end_date = start_date
 
+    # Net of returns: allocate refunds per line, then filter to this SKU on the
+    # outer query so the allocation denominator spans the full order.
+    sq = net_line_items_subquery(db, get_date_filter(start_date, end_date))
     rows = (
         db.query(
-            SalesOrder.location,
-            func.sum(SalesOrderItem.quantity).label('quantity_sold'),
-            func.sum(SalesOrderItem.line_total).label('revenue'),
+            sq.c.location,
+            func.sum(sq.c.quantity).label('quantity_sold'),
+            func.sum(sq.c.net_line).label('revenue'),
+            func.sum(sq.c.gross_line).label('gross_revenue'),
         )
-        .join(SalesOrder)
-        .filter(and_(get_date_filter(start_date, end_date), SalesOrderItem.sku == sku))
-        .group_by(SalesOrder.location)
-        .order_by(func.sum(SalesOrderItem.quantity).desc())
+        .filter(sq.c.sku == sku)
+        .group_by(sq.c.location)
+        .order_by(func.sum(sq.c.quantity).desc())
         .all()
     )
     return [
@@ -599,6 +670,8 @@ async def get_variant_locations(
             'location': r.location or 'Unknown',
             'quantity_sold': r.quantity_sold,
             'revenue': float(r.revenue or 0),
+            'gross_revenue': float(r.gross_revenue or 0),
+            'returns': float((r.gross_revenue or 0) - (r.revenue or 0)),
         }
         for r in rows
     ]
@@ -655,55 +728,60 @@ async def get_top_categories(
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
 
-    vendor_filter = True
-    if vendor and vendor not in ['ALL', 'All', '']:
-        vendor_filter = SalesOrderItem.vendor == vendor
+    # revenue = net of returns via the per-line net subquery. Only date+location
+    # scope the subquery (order-level); vendor/group filters apply on the outer
+    # query so the per-order allocation denominator spans the whole order.
+    def get_category_data(d_filter, l_filter):
+        sq = net_line_items_subquery(db, d_filter, l_filter)
 
-    # group_expr: the label used for aggregation
-    # In drill-down mode we filter to the chosen group and break out by standard_category
-    group_col = func.coalesce(CategoryMapping.category_group, CategoryMapping.standard_category, SalesOrderItem.product_category, 'Uncategorized')
-    std_col   = func.coalesce(CategoryMapping.standard_category, SalesOrderItem.product_category, 'Uncategorized')
+        group_col = func.coalesce(CategoryMapping.category_group,
+                                  CategoryMapping.standard_category, sq.c.product_category, 'Uncategorized')
+        std_col = func.coalesce(CategoryMapping.standard_category, sq.c.product_category, 'Uncategorized')
+        if category_group:
+            agg_col = std_col
+            group_filter = group_col == category_group
+        else:
+            agg_col = group_col
+            group_filter = True
+        v_filter = (sq.c.vendor == vendor) if (vendor and vendor not in ['ALL', 'All', '']) else True
 
-    if category_group:
-        agg_col   = std_col
-        group_filter = group_col == category_group
-    else:
-        agg_col   = group_col
-        group_filter = True
-
-    def get_category_data(d_filter, l_filter, v_filter):
         return db.query(
             agg_col.label('category'),
-            func.sum(SalesOrderItem.quantity).label('quantity_sold'),
-            func.sum(SalesOrderItem.line_total).label('revenue'),
-            func.count(func.distinct(SalesOrder.id)).label('order_count')
-        ).join(SalesOrder).outerjoin(
-            CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku
+            func.sum(sq.c.quantity).label('quantity_sold'),
+            func.sum(sq.c.net_line).label('revenue'),
+            func.sum(sq.c.gross_line).label('gross_revenue'),
+            func.count(func.distinct(sq.c.order_id)).label('order_count')
+        ).outerjoin(
+            CategoryMapping, sq.c.sku == CategoryMapping.sku
         ).filter(
-            and_(d_filter, l_filter, v_filter, group_filter)
+            and_(v_filter, group_filter)
         ).group_by(agg_col).order_by(
-            func.sum(SalesOrderItem.line_total).desc()
+            func.sum(sq.c.net_line).desc()
         ).limit(limit).all()
-    
+
     # Get current period data
-    categories = get_category_data(date_filter, loc_filter, vendor_filter)
-    
+    categories = get_category_data(date_filter, loc_filter)
+
     # Get comparison data if requested
     compare_data = {}
     if compare_to:
         compare_start, compare_end = get_comparison_period(start_date, end_date, compare_to)
         if compare_start and compare_end:
             compare_date_filter = get_date_filter(compare_start, compare_end)
-            compare_categories = get_category_data(compare_date_filter, loc_filter, vendor_filter)
+            compare_categories = get_category_data(compare_date_filter, loc_filter)
             compare_data = {c.category: {'qty': c.quantity_sold, 'rev': float(c.revenue or 0)} for c in compare_categories}
-    
+
     # Build result
     result = []
     for c in categories:
+        gross = float(c.gross_revenue or 0)
+        net = float(c.revenue or 0)
         item = {
             'category': c.category,
             'quantity_sold': c.quantity_sold,
-            'revenue': float(c.revenue or 0),
+            'revenue': net,
+            'gross_revenue': gross,
+            'returns': gross - net,
             'order_count': c.order_count
         }
         
@@ -737,18 +815,21 @@ async def get_brands(
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
 
+    # revenue = net of returns (online refunds allocated per line; stores net
+    # via negative orders).
     def get_brand_data(d_filter, l_filter):
+        sq = net_line_items_subquery(db, d_filter, l_filter)
+        vendor_col = func.coalesce(func.nullif(sq.c.vendor, ''), '—')
         return db.query(
-            func.coalesce(func.nullif(SalesOrderItem.vendor, ''), '—').label('vendor'),
-            func.sum(SalesOrderItem.line_total).label('revenue'),
-            func.sum(SalesOrderItem.quantity).label('quantity'),
-            func.count(func.distinct(SalesOrder.id)).label('orders'),
-        ).join(SalesOrder).filter(
-            and_(d_filter, l_filter)
+            vendor_col.label('vendor'),
+            func.sum(sq.c.net_line).label('revenue'),
+            func.sum(sq.c.gross_line).label('gross_revenue'),
+            func.sum(sq.c.quantity).label('quantity'),
+            func.count(func.distinct(sq.c.order_id)).label('orders'),
         ).group_by(
-            func.coalesce(func.nullif(SalesOrderItem.vendor, ''), '—')
+            vendor_col
         ).order_by(
-            func.sum(SalesOrderItem.line_total).desc()
+            func.sum(sq.c.net_line).desc()
         ).all()
 
     brands = get_brand_data(date_filter, loc_filter)
@@ -768,9 +849,13 @@ async def get_brands(
     seen = set()
     for b in brands:
         seen.add(b.vendor)
+        gross = float(b.gross_revenue or 0)
+        net = float(b.revenue or 0)
         item = {
             'vendor': b.vendor,
-            'revenue': float(b.revenue or 0),
+            'revenue': net,
+            'gross_revenue': gross,
+            'returns': gross - net,
             'quantity': b.quantity,
             'orders': b.orders,
         }
@@ -788,6 +873,8 @@ async def get_brands(
                 result.append({
                     'vendor': vendor,
                     'revenue': 0,
+                    'gross_revenue': 0,
+                    'returns': 0,
                     'quantity': 0,
                     'orders': 0,
                     'prev_revenue': prev['revenue'],
@@ -1316,6 +1403,9 @@ async def export_sales(
             SalesOrderItem.unit_price,
             SalesOrderItem.discount_amount,
             SalesOrderItem.line_total,
+            # Returns-adjusted line total (online refund allocated per line;
+            # stores unchanged). line_total - line_net = allocated return.
+            net_line_expr().label("line_net"),
         )
         .join(SalesOrder)
         .outerjoin(CategoryMapping, SalesOrderItem.sku == CategoryMapping.sku)
@@ -1327,7 +1417,7 @@ async def export_sales(
     headers = [
         "order_date", "source", "location", "order_id", "staff",
         "sku", "product", "category", "vendor", "designed_for",
-        "qty", "unit_price", "discount", "line_total",
+        "qty", "unit_price", "discount", "line_total", "line_net",
     ]
     return _csv_response(rows, headers, f"sales_{start_date}_{end_date}.csv")
 
@@ -1397,24 +1487,27 @@ async def export_categories(
         else:
             filters.append(SalesOrder.location == location)
 
+    # revenue = net of returns; returns column = allocated refunds.
+    sq = net_line_items_subquery(db, *filters)
     rows = (
         db.query(
-            SalesOrderItem.product_category,
-            SalesOrder.location,
-            func.count(SalesOrderItem.id).label("items_sold"),
-            func.sum(SalesOrderItem.quantity).label("quantity"),
-            func.sum(SalesOrderItem.line_total).label("revenue"),
+            sq.c.product_category,
+            sq.c.location,
+            func.count().label("items_sold"),
+            func.sum(sq.c.quantity).label("quantity"),
+            func.sum(sq.c.net_line).label("revenue"),
+            func.sum(sq.c.gross_line).label("gross_revenue"),
         )
-        .join(SalesOrder)
-        .filter(and_(*filters))
-        .group_by(SalesOrderItem.product_category, SalesOrder.location)
-        .order_by(func.sum(SalesOrderItem.line_total).desc())
+        .group_by(sq.c.product_category, sq.c.location)
+        .order_by(func.sum(sq.c.net_line).desc())
         .all()
     )
 
-    headers = ["category", "location", "items_sold", "quantity", "revenue"]
+    headers = ["category", "location", "items_sold", "quantity", "revenue", "gross_revenue", "returns"]
     return _csv_response(
-        [(r.product_category, r.location, r.items_sold, r.quantity, f"{r.revenue:.2f}") for r in rows],
+        [(r.product_category, r.location, r.items_sold, r.quantity,
+          f"{float(r.revenue or 0):.2f}", f"{float(r.gross_revenue or 0):.2f}",
+          f"{float((r.gross_revenue or 0) - (r.revenue or 0)):.2f}") for r in rows],
         headers,
         f"categories_{start_date}_{end_date}.csv",
     )
@@ -1449,14 +1542,17 @@ async def get_daily_revenue(
 
     loc_filter = get_location_filter(location)
 
+    # revenue = net of returns; gross exposed so the UI can toggle Net/Gross.
     current = db.query(
         period_expr.label("period"),
-        func.sum(SalesOrder.total_amount).label("revenue"),
+        func.sum(net_order_amount).label("revenue"),
+        func.sum(SalesOrder.total_amount).label("gross"),
     ).filter(and_(date_filter, loc_filter)).group_by(period_expr).order_by(period_expr).all()
 
     ly = db.query(
         period_expr.label("period"),
-        func.sum(SalesOrder.total_amount).label("revenue"),
+        func.sum(net_order_amount).label("revenue"),
+        func.sum(SalesOrder.total_amount).label("gross"),
     ).filter(and_(ly_filter, loc_filter)).group_by(period_expr).order_by(period_expr).all()
 
     # Budget grouped by the same truncation
@@ -1484,7 +1580,10 @@ async def get_daily_revenue(
         {
             "date": row.period.date().isoformat(),
             "revenue": float(row.revenue or 0),
+            "gross_revenue": float(row.gross or 0),
+            "returns": float((row.gross or 0) - (row.revenue or 0)),
             "revenue_last_year": float(ly[i].revenue or 0) if i < len(ly) else 0,
+            "gross_revenue_last_year": float(ly[i].gross or 0) if i < len(ly) else 0,
             "budget": budget_map.get(row.period.date().isoformat(), None),
         }
         for i, row in enumerate(current)
@@ -1517,11 +1616,12 @@ async def get_revenue_by_weekday(
     ).all()
     day_count_map = {int(r.weekday): int(r.day_count) for r in day_counts}
 
-    # Revenue per weekday per channel
+    # Revenue per weekday per channel — net of returns (online refunds netted
+    # via net_order_amount; stores net via negative orders).
     rows = db.query(
         func.extract("dow", SalesOrder.order_date).label("weekday"),
         SalesOrder.source_system,
-        func.sum(SalesOrder.total_amount).label("total_revenue"),
+        func.sum(net_order_amount).label("total_revenue"),
     ).filter(combined).group_by(
         func.extract("dow", SalesOrder.order_date),
         SalesOrder.source_system,
@@ -1572,9 +1672,10 @@ async def get_running_total(
     date_filter = get_date_filter(start_date, end_date)
     loc_filter = get_location_filter(location)
 
+    # Net of returns so cumulative revenue lines up with the netted KPI.
     daily = db.query(
         cast(SalesOrder.order_date, Date).label("day"),
-        func.sum(SalesOrder.total_amount).label("revenue"),
+        func.sum(net_order_amount).label("revenue"),
     ).filter(and_(date_filter, loc_filter)).group_by(
         cast(SalesOrder.order_date, Date)
     ).order_by(cast(SalesOrder.order_date, Date)).all()

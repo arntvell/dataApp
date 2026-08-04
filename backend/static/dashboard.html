@@ -76,6 +76,14 @@
                         <span class="text-gray-400 text-sm">→</span>
                         <input type="date" id="endDate" class="px-2 py-1.5 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm">
                     </div>
+                    <!-- Revenue basis: Net (after returns) vs Gross (before returns) -->
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-xs text-gray-400 whitespace-nowrap">Revenue</span>
+                        <div class="flex rounded-lg border border-gray-200 overflow-hidden text-sm" title="Net = after returns · Gross = before returns">
+                            <button onclick="setRevBasis('net')"   id="revBasis-net"   class="px-3 py-1.5 bg-blue-600 text-white font-medium transition">Net</button>
+                            <button onclick="setRevBasis('gross')" id="revBasis-gross" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 border-l border-gray-200 transition">Gross</button>
+                        </div>
+                    </div>
                     <!-- Sync: pulls fresh data from POS/Shopify, distinct from date refresh -->
                     <button onclick="syncData()" id="syncBtn" class="px-3 py-1.5 border border-gray-200 text-gray-500 rounded-lg hover:bg-gray-50 transition flex items-center gap-1.5 text-sm">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -583,7 +591,7 @@
                     </tbody>
                 </table>
             </div>
-            <p class="text-xs text-gray-400 mt-2 italic">Product revenue (item-level). Returns and order-level discounts are not attributed per category — KPI cards show net revenue.</p>
+            <p class="text-xs text-gray-400 mt-2 italic">Net revenue after returns (VAT incl). Online refunds are allocated proportionally across an order's lines; use the Revenue Net/Gross toggle to compare. Order-level discounts are not attributed per category.</p>
         </div>
 
         </div> <!-- end tab-categories -->
@@ -625,7 +633,7 @@
                     </tbody>
                 </table>
             </div>
-            <p class="text-xs text-gray-400 mt-2 italic">Product revenue (item-level). Returns and order-level discounts are not attributed per brand — KPI cards show net revenue.</p>
+            <p class="text-xs text-gray-400 mt-2 italic">Net revenue after returns (VAT incl). Online refunds are allocated proportionally across an order's lines; use the Revenue Net/Gross toggle to compare. Order-level discounts are not attributed per brand.</p>
         </div>
         </div> <!-- end tab-brands -->
 
@@ -971,10 +979,60 @@
 
         // Format currency
         function formatCurrency(value) {
-            return new Intl.NumberFormat('nb-NO', { 
+            return new Intl.NumberFormat('nb-NO', {
                 minimumFractionDigits: 0,
-                maximumFractionDigits: 0 
+                maximumFractionDigits: 0
             }).format(value);
+        }
+
+        // ===== Revenue basis (Net vs Gross) + returns display =====
+        // Every breakdown row now carries revenue(net), gross_revenue and returns.
+        // Net is the default; the header toggle flips to gross. Returns are shown
+        // inline under the figure whenever a row has any (online refunds; stores
+        // are always 0 because in-store returns are negative orders).
+        let revBasis = 'net';   // 'net' | 'gross'
+
+        function revOf(r) {
+            if (!r) return 0;
+            if (revBasis === 'gross') return (r.gross_revenue != null ? r.gross_revenue : (r.revenue || 0));
+            return r.revenue || 0;
+        }
+        function retOf(r) {
+            if (!r) return 0;
+            if (r.returns != null) return r.returns;
+            return (r.gross_revenue != null ? r.gross_revenue - (r.revenue || 0) : 0);
+        }
+        // Formatted revenue cell content: the basis figure + an inline returns hint.
+        function fmtRev(r, { hint = true } = {}) {
+            const ret = retOf(r);
+            const main = formatCurrency(revOf(r));
+            if (hint && ret > 0.5) {
+                return `${main}<div class="text-[10px] leading-tight text-rose-500 font-normal" title="Returns netted from gross">▼ ${formatCurrency(ret)} ret</div>`;
+            }
+            return main;
+        }
+        // Sum a basis-aware total across rows.
+        function sumRev(rows) { return rows.reduce((s, r) => s + revOf(r), 0); }
+
+        function setRevBasis(basis) {
+            revBasis = basis;
+            ['net', 'gross'].forEach(b => {
+                const btn = document.getElementById('revBasis-' + b);
+                if (!btn) return;
+                const active = b === basis;
+                btn.className = active
+                    ? 'px-3 py-1.5 bg-blue-600 text-white font-medium transition'
+                    : 'px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50 transition';
+                if (b === 'gross') btn.className += ' border-l border-gray-200';
+            });
+            refreshRevenueViews();
+        }
+        // Re-render the tabs whose figures depend on the basis.
+        function refreshRevenueViews() {
+            if (typeof refreshDashboard === 'function') refreshDashboard();
+            if (typeof brandsLoaded !== 'undefined' && brandsLoaded && typeof onBrandFilterChange === 'function') {
+                onBrandFilterChange();
+            }
         }
 
         // Format date for display
@@ -1218,7 +1276,7 @@
                         onclick="toggleVariantLocations(this)" title="Show which stores sold this size">
                         <td class="py-1.5 px-3 pl-8 text-sm text-gray-600">▸ ${v.size || v.sku}</td>
                         <td class="text-right py-1.5 px-3 text-sm">${v.quantity_sold}</td>
-                        <td class="text-right py-1.5 px-3 text-sm">${formatCurrency(v.revenue)}</td>
+                        <td class="text-right py-1.5 px-3 text-sm">${fmtRev(v)}</td>
                         <td></td>
                     </tr>
                 `).join('');
@@ -1249,7 +1307,7 @@
                     <tr class="bg-blue-50/20 border-b border-blue-100" data-parent="${row.dataset.parent}" data-locrow="${skuAttr}">
                         <td class="py-1 px-3 pl-16 text-xs text-gray-500">${l.location}</td>
                         <td class="text-right py-1 px-3 text-xs text-gray-500">${l.quantity_sold}</td>
-                        <td class="text-right py-1 px-3 text-xs text-gray-500">${formatCurrency(l.revenue)}</td>
+                        <td class="text-right py-1 px-3 text-xs text-gray-500">${fmtRev(l, { hint: false })}</td>
                         <td></td>
                     </tr>
                 `).join('');
@@ -1354,7 +1412,7 @@
                 <tr class="border-b hover:bg-gray-50">
                     <td class="py-2 px-4">${p.name || p.sku}</td>
                     <td class="text-right py-2 px-4">${p.quantity_sold}</td>
-                    <td class="text-right py-2 px-4 font-semibold">${formatCurrency(p.revenue)}</td>
+                    <td class="text-right py-2 px-4 font-semibold">${fmtRev(p)}</td>
                 </tr>
             `).join('');
         }
@@ -1458,7 +1516,7 @@
             const chevron = `<svg class="w-3.5 h-3.5 text-gray-400 inline ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>`;
             const totalRow = `<tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">`;
             if (showCompare) {
-                const totRev     = brands.reduce((s, b) => s + (b.revenue || 0), 0);
+                const totRev     = sumRev(brands);
                 const totPrevRev = brands.reduce((s, b) => s + (b.prev_revenue || 0), 0);
                 const totQty     = brands.reduce((s, b) => s + (b.quantity || 0), 0);
                 const totOrd     = brands.reduce((s, b) => s + (b.orders || 0), 0);
@@ -1469,7 +1527,7 @@
                     return `
                         <tr class="border-b hover:bg-gray-50 cursor-pointer" ${onclick}>
                             <td class="py-2 px-4 font-medium">${b.vendor}${chevron}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(b.revenue)}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${fmtRev(b)}</td>
                             <td class="text-right py-2 px-4 text-gray-400">${b.prev_revenue ? formatCurrency(b.prev_revenue) : '-'}</td>
                             <td class="text-right py-2 px-4">${revChange.formatted}</td>
                             <td class="text-right py-2 px-4">${b.quantity}</td>
@@ -1485,7 +1543,7 @@
                         <td class="text-right py-2 px-4">${totOrd}</td>
                     </tr>`;
             } else {
-                const totRev = brands.reduce((s, b) => s + (b.revenue || 0), 0);
+                const totRev = sumRev(brands);
                 const totQty = brands.reduce((s, b) => s + (b.quantity || 0), 0);
                 const totOrd = brands.reduce((s, b) => s + (b.orders || 0), 0);
                 tbody.innerHTML = brands.map(b => {
@@ -1493,7 +1551,7 @@
                     return `
                         <tr class="border-b hover:bg-gray-50 cursor-pointer" ${onclick}>
                             <td class="py-2 px-4 font-medium">${b.vendor}${chevron}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(b.revenue)}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${fmtRev(b)}</td>
                             <td class="text-right py-2 px-4">${b.quantity}</td>
                             <td class="text-right py-2 px-4">${b.orders}</td>
                         </tr>`;
@@ -1534,7 +1592,7 @@
             }
             const totalRowB = `<tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-gray-800">`;
             if (showCompare) {
-                const totRev     = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totRev     = sumRev(categories);
                 const totPrevRev = categories.reduce((s, c) => s + (c.prev_revenue || 0), 0);
                 const totQty     = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
                 const totOrd     = categories.reduce((s, c) => s + (c.order_count || 0), 0);
@@ -1544,7 +1602,7 @@
                     return `
                         <tr class="border-b hover:bg-gray-50">
                             <td class="py-2 px-4 font-medium">${c.category}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${fmtRev(c)}</td>
                             <td class="text-right py-2 px-4 text-gray-400">${c.prev_revenue ? formatCurrency(c.prev_revenue) : '-'}</td>
                             <td class="text-right py-2 px-4">${revChange.formatted}</td>
                             <td class="text-right py-2 px-4">${c.quantity_sold}</td>
@@ -1560,14 +1618,14 @@
                         <td class="text-right py-2 px-4">${totOrd}</td>
                     </tr>`;
             } else {
-                const totRev = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totRev = sumRev(categories);
                 const totQty = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
                 const totOrd = categories.reduce((s, c) => s + (c.order_count || 0), 0);
                 tbody.innerHTML = categories.map(c => {
                     return `
                         <tr class="border-b hover:bg-gray-50">
                             <td class="py-2 px-4 font-medium">${c.category}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${fmtRev(c)}</td>
                             <td class="text-right py-2 px-4">${c.quantity_sold}</td>
                             <td class="text-right py-2 px-4">${c.order_count}</td>
                         </tr>`;
@@ -1859,13 +1917,13 @@
                             <div class="text-xs text-gray-400 font-mono">${p.sku || '-'}</div>
                         </td>
                         <td class="text-right py-2 px-3 text-sm">${p.quantity_sold}</td>
-                        <td class="text-right py-2 px-3 text-sm font-semibold">${formatCurrency(p.revenue)}</td>
+                        <td class="text-right py-2 px-3 text-sm font-semibold">${fmtRev(p)}</td>
                         <td class="text-right py-2 px-3">${change}</td>
                     </tr>
                 `;
             });
             const totalQty = products.reduce((s, p) => s + (p.quantity_sold || 0), 0);
-            const totalRevenue = products.reduce((s, p) => s + (p.revenue || 0), 0);
+            const totalRevenue = sumRev(products);
             rows.push(`
                 <tr class="border-t-2 border-gray-300 bg-gray-50 font-semibold text-sm">
                     <td class="py-2 px-3">${products.length} products</td>
@@ -1931,7 +1989,7 @@
             if (showCompare) {
                 const totQty     = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
                 const totPrevQty = categories.reduce((s, c) => s + (c.prev_quantity_sold || 0), 0);
-                const totRev     = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totRev     = sumRev(categories);
                 const totPrevRev = categories.reduce((s, c) => s + (c.prev_revenue || 0), 0);
                 const qtyTot  = formatChange(totQty, totPrevQty);
                 const revTot  = formatChange(totRev, totPrevRev);
@@ -1944,7 +2002,7 @@
                             <td class="text-right py-2 px-4 font-semibold">${c.quantity_sold}</td>
                             <td class="text-right py-2 px-4 text-gray-400">${c.prev_quantity_sold || '-'}</td>
                             <td class="text-right py-2 px-4">${qtyChange.formatted}</td>
-                            <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                            <td class="text-right py-2 px-4 font-semibold">${fmtRev(c)}</td>
                             <td class="text-right py-2 px-4 text-gray-400">${c.prev_revenue ? formatCurrency(c.prev_revenue) : '-'}</td>
                             <td class="text-right py-2 px-4">${revChange.formatted}</td>
                         </tr>
@@ -1962,13 +2020,13 @@
             } else {
                 const totQty = categories.reduce((s, c) => s + (c.quantity_sold || 0), 0);
                 const totOrd = categories.reduce((s, c) => s + (c.order_count || 0), 0);
-                const totRev = categories.reduce((s, c) => s + (c.revenue || 0), 0);
+                const totRev = sumRev(categories);
                 tbody.innerHTML = categories.map(c => `
                     <tr ${rowClick(c.category)}>
                         <td class="py-2 px-4 font-medium">${c.category}${chevron}</td>
                         <td class="text-right py-2 px-4">${c.quantity_sold}</td>
                         <td class="text-right py-2 px-4">${c.order_count}</td>
-                        <td class="text-right py-2 px-4 font-semibold">${formatCurrency(c.revenue)}</td>
+                        <td class="text-right py-2 px-4 font-semibold">${fmtRev(c)}</td>
                     </tr>
                 `).join('') + `
                     ${totalRow}
@@ -2626,9 +2684,11 @@
             const tension = groupBy === 'day' ? 0.3 : 0.15;
             const hasBudget = data.some(d => d.budget !== null && d.budget > 0);
 
+            // Net by default; the header Revenue toggle flips the series to gross.
+            const grossMode = revBasis === 'gross';
             const datasets = [{
-                label: 'Revenue',
-                data: data.map(d => d.revenue),
+                label: grossMode ? 'Gross revenue' : 'Net revenue',
+                data: data.map(d => grossMode ? (d.gross_revenue ?? d.revenue) : d.revenue),
                 borderColor: '#00AEEF',
                 backgroundColor: 'rgba(0,174,239,0.08)',
                 borderWidth: 2,
@@ -2654,7 +2714,7 @@
             if (showLY) {
                 datasets.push({
                     label: 'Last Year',
-                    data: data.map(d => d.revenue_last_year),
+                    data: data.map(d => grossMode ? (d.gross_revenue_last_year ?? d.revenue_last_year) : d.revenue_last_year),
                     borderColor: '#94a3b8',
                     borderDash: [4, 4],
                     borderWidth: 1.5,

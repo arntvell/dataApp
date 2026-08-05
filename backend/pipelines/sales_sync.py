@@ -116,9 +116,15 @@ class SalesSyncPipeline:
             if self.shopify.authenticate():
                 shopify_status = self._get_sync_status(db, 'shopify')
 
-                from_date = shopify_status.last_order_date
-                if from_date:
-                    from_date = from_date - timedelta(days=1)
+                # Pull by UPDATED_AT (not created_at) so orders REFUNDED after their
+                # original sync are re-fetched — refunds lag the sale by weeks, and a
+                # created_at-only forward window never revisits them, silently losing
+                # ~half of all returns. Watermark = last successful incremental sync
+                # (only advances on success, so a failed run doesn't open a gap),
+                # minus a 1-day overlap for safety.
+                watermark = shopify_status.last_incremental_sync
+                if watermark:
+                    from_date = watermark - timedelta(days=1)
                 else:
                     from_date = datetime.now() - timedelta(days=30)
 
@@ -127,19 +133,27 @@ class SalesSyncPipeline:
                 try:
                     orders = self.shopify.get_all_detailed_orders(
                         from_date=from_date,
+                        date_field='updated_at',
                         progress_callback=progress_callback,
                     )
                     self._save_sales_orders(db, orders)
                     results['shopify'] = len(orders)
 
+                    # updated_at pulls can include old orders (e.g. a January order
+                    # refunded today), so never let the display watermark regress.
                     max_date = max(
                         [o['order_date'] for o in orders if o.get('order_date')],
                         default=None,
                     )
+                    prev_date = shopify_status.last_order_date
+                    if max_date and prev_date:
+                        new_last_order_date = max(max_date, prev_date)
+                    else:
+                        new_last_order_date = max_date or prev_date
                     self._update_sync_status(db, 'shopify',
                         sync_in_progress=False,
                         last_incremental_sync=datetime.now(),
-                        last_order_date=max_date or shopify_status.last_order_date,
+                        last_order_date=new_last_order_date,
                         last_sync_orders_count=len(orders),
                     )
                     logger.info(f"Incremental sync: {len(orders)} orders from Shopify")

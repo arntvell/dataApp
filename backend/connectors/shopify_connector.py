@@ -532,32 +532,45 @@ class ShopifyConnector(BaseConnector):
     
     def get_all_detailed_orders(self, from_date: datetime = None, to_date: datetime = None,
                                  batch_size: int = 250, max_orders: int = None,
-                                 progress_callback=None) -> List[Dict[str, Any]]:
-        """Retrieve ALL detailed orders with cursor-based pagination"""
+                                 progress_callback=None, date_field: str = "created_at") -> List[Dict[str, Any]]:
+        """Retrieve ALL detailed orders with cursor-based pagination.
+
+        date_field selects which timestamp the from/to filter applies to:
+          - 'created_at' (default): new orders only — used for full/backfill pulls.
+          - 'updated_at': any order MODIFIED in the window, so refunds applied to
+            older orders are re-fetched. Used by the incremental sync so returns
+            (which lag the sale) are not missed.
+        Note: order_date is always stored from createdAt regardless of this flag,
+        so downstream date logic (dashboards, sale planner) is unaffected.
+        """
         all_orders = []
         cursor = None
         has_next_page = True
-        
+
+        # Filter on and sort by the same field so cursor pagination stays stable.
+        field = "updated_at" if date_field == "updated_at" else "created_at"
+        sort_key = "UPDATED_AT" if field == "updated_at" else "CREATED_AT"
+
         try:
             # Build date filter
             date_filter = ""
             if from_date:
-                date_filter = f'created_at:>={from_date.strftime("%Y-%m-%d")}'
+                date_filter = f'{field}:>={from_date.strftime("%Y-%m-%d")}'
             if to_date:
                 if date_filter:
-                    date_filter += f' created_at:<={to_date.strftime("%Y-%m-%d")}'
+                    date_filter += f' {field}:<={to_date.strftime("%Y-%m-%d")}'
                 else:
-                    date_filter = f'created_at:<={to_date.strftime("%Y-%m-%d")}'
-            
+                    date_filter = f'{field}:<={to_date.strftime("%Y-%m-%d")}'
+
             query_filter = f', query: "{date_filter}"' if date_filter else ''
-            
+
             while has_next_page:
                 # Build cursor param
                 after_param = f', after: "{cursor}"' if cursor else ''
-                
+
                 query = f"""
                 {{
-                    orders(first: {batch_size}, sortKey: CREATED_AT{query_filter}{after_param}) {{
+                    orders(first: {batch_size}, sortKey: {sort_key}{query_filter}{after_param}) {{
                         pageInfo {{
                             hasNextPage
                             endCursor

@@ -25,6 +25,7 @@
                 <button id="tb-stock" onclick="showStoreTab('stock')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Stock</button>
                 <button id="tb-top" onclick="showStoreTab('top')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Top products</button>
                 <button id="tb-cat" onclick="showStoreTab('cat')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Categories</button>
+                <button id="tb-alloc" onclick="showStoreTab('alloc')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Incoming</button>
             </div>
         </div>
     </div>
@@ -189,6 +190,20 @@
                     </table>
                 </div>
             </div>
+        </div>
+
+        <!-- Incoming / outgoing sale allocation for one store (read-only) -->
+        <div id="tab-alloc" class="hidden">
+            <div class="flex flex-wrap gap-2 items-center mb-3">
+                <label class="text-sm text-gray-600">Store:
+                    <select id="allocStorePick" onchange="renderStoreAlloc()" class="ml-1 border rounded-lg px-2 py-1.5 text-sm"></select>
+                </label>
+                <span id="allocStoreMeta" class="text-sm text-gray-400"></span>
+                <span class="flex-1"></span>
+                <input id="allocStoreSearch" oninput="renderStoreAlloc()" placeholder="Search product / brand / SKU…" class="px-3 py-1.5 border rounded-lg text-sm w-full sm:w-64">
+            </div>
+            <div id="allocStoreBody"><div class="py-10 text-center text-gray-400">Loading…</div></div>
+            <p class="text-xs text-gray-400 mt-2">What this store will <b>receive</b> and must <b>send out</b> for the sale, from the latest allocation plan. View only.</p>
         </div>
     </div>
 
@@ -413,7 +428,7 @@
         }
 
         let storeStockLoaded = false;
-        const STORE_TABS = ['sale', 'stock', 'top', 'cat'];
+        const STORE_TABS = ['sale', 'stock', 'top', 'cat', 'alloc'];
         function showStoreTab(t) {
             STORE_TABS.forEach(x => {
                 document.getElementById('tab-' + x).classList.toggle('hidden', x !== t);
@@ -423,6 +438,77 @@
             document.getElementById('analyticsControls').classList.toggle('hidden', t !== 'top' && t !== 'cat');
             if (t === 'stock' && !storeStockLoaded) { storeStockLoaded = true; loadStockTab(); }
             if (t === 'top' || t === 'cat') { apActive = t; ensureApLists().then(() => setApPreset(apPreset)); }
+            if (t === 'alloc' && !storeAllocLoaded) { storeAllocLoaded = true; initStoreAlloc(); }
+        }
+
+        // ============== Incoming / outgoing allocation (read-only) ==============
+        let storeAllocData = null, storeAllocLoaded = false;
+
+        async function initStoreAlloc() {
+            const body = document.getElementById('allocStoreBody');
+            if (storeSeasonId == null) {
+                try {
+                    const seasons = await (await fetch(`${API_BASE}/sale/seasons`)).json();
+                    if (seasons && seasons.length) storeSeasonId = seasons[0].id;
+                } catch (e) { /* ignore */ }
+            }
+            if (storeSeasonId == null) { body.innerHTML = '<div class="py-10 text-center text-gray-400">No sale season yet.</div>'; return; }
+            try {
+                storeAllocData = await (await fetch(`${API_BASE}/sale/allocation-plan?season_id=${storeSeasonId}`)).json();
+                document.getElementById('allocStorePick').innerHTML =
+                    (storeAllocData.stores || []).map(s => `<option value="${s}">${s}</option>`).join('');
+                renderStoreAlloc();
+            } catch (e) {
+                body.innerHTML = '<div class="py-10 text-center text-red-400">Could not load the allocation plan.</div>';
+            }
+        }
+
+        function _allocShortLoc(s) {
+            return (s || '').replace('Livid Sentrallager', 'Warehouse').replace('Livid ', '').replace('Past Løkka', 'Past');
+        }
+
+        function renderStoreAlloc() {
+            if (!storeAllocData) return;
+            const store = document.getElementById('allocStorePick').value;
+            const q = (document.getElementById('allocStoreSearch').value || '').trim().toLowerCase();
+            const match = m => !q || `${m.name} ${m.brand} ${m.sku}`.toLowerCase().includes(q);
+            const incoming = (storeAllocData.moves || []).filter(m => m.to === store && match(m));
+            const outgoing = (storeAllocData.moves || []).filter(m => m.from === store && match(m));
+
+            const section = (title, rows, dirLabel, dirField, chip) => {
+                const units = rows.reduce((a, m) => a + m.qty, 0);
+                if (!rows.length) {
+                    return `<div class="card mb-4"><h2 class="text-base font-semibold mb-1">${title}</h2>
+                        <p class="text-sm text-gray-400">Nothing to ${title === 'Incoming' ? 'receive' : 'send'} for this store.</p></div>`;
+                }
+                const groups = {};
+                rows.forEach(m => (groups[m.brand || '—'] = groups[m.brand || '—'] || []).push(m));
+                const bodyRows = Object.keys(groups).sort().map(b => {
+                    const arr = groups[b].sort((x, y) => (x.name || '').localeCompare(y.name || '') || String(x.size).localeCompare(String(y.size)));
+                    const trs = arr.map(m => `<tr class="border-b border-gray-100">
+                        <td class="py-1.5 px-3">${m.name}</td>
+                        <td class="py-1.5 px-3 whitespace-nowrap">${m.size}</td>
+                        <td class="py-1.5 px-3 text-right font-medium">${m.qty}</td>
+                        <td class="py-1.5 px-3 text-gray-500 whitespace-nowrap">${_allocShortLoc(m[dirField])}</td>
+                    </tr>`).join('');
+                    return `<tr class="bg-gray-50"><td colspan="4" class="py-1.5 px-3 font-medium text-gray-700">${b}</td></tr>${trs}`;
+                }).join('');
+                return `<div class="card mb-4">
+                    <div class="flex items-center gap-2 mb-2"><h2 class="text-base font-semibold">${title}</h2>
+                        <span class="text-xs ${chip} rounded px-2 py-0.5">${units} units</span></div>
+                    <div class="overflow-x-auto"><table class="w-full text-sm">
+                        <thead><tr class="border-b bg-gray-50 text-xs text-gray-500 uppercase">
+                            <th class="text-left py-2 px-3">Product</th><th class="text-left py-2 px-3">Size</th>
+                            <th class="text-right py-2 px-3">Qty</th><th class="text-left py-2 px-3">${dirLabel}</th>
+                        </tr></thead><tbody>${bodyRows}</tbody></table></div>
+                </div>`;
+            };
+
+            document.getElementById('allocStoreMeta').textContent =
+                `${incoming.reduce((a, m) => a + m.qty, 0)} in · ${outgoing.reduce((a, m) => a + m.qty, 0)} out`;
+            document.getElementById('allocStoreBody').innerHTML =
+                section('Incoming', incoming, 'From', 'from', 'bg-green-100 text-green-700')
+                + section('Outgoing', outgoing, 'To', 'to', 'bg-red-100 text-red-600');
         }
 
         // ============== Top products / Categories analytics ==============

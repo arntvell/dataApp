@@ -1022,6 +1022,19 @@
                     </div>
 
                     <div id="allocActiveOverrides" class="mb-2"></div>
+
+                    <div id="allocMatrixControls" class="flex flex-wrap items-center gap-2 mb-2">
+                        <div class="inline-flex rounded-lg border overflow-hidden text-sm">
+                            <button id="mmWh" onclick="setMatrixMode('wh')" class="px-2 py-1 bg-blue-600 text-white font-medium">Warehouse → stores</button>
+                            <button id="mmReb" onclick="setMatrixMode('rebalance')" class="px-2 py-1 bg-white text-gray-600 hover:bg-gray-50">Rebalance</button>
+                            <button id="mmAll" onclick="setMatrixMode('all')" class="px-2 py-1 bg-white text-gray-600 hover:bg-gray-50">All</button>
+                        </div>
+                        <select id="allocMatrixBrand" onchange="renderAllocMatrix()" class="border rounded-lg px-2 py-1.5 text-sm"><option value="">All brands</option></select>
+                        <input id="allocMatrixSearch" oninput="renderAllocMatrix()" placeholder="Search style / SKU…" class="border rounded-lg px-3 py-1.5 text-sm w-52">
+                        <label class="text-sm text-gray-600 flex items-center gap-1" title="Only styles that have stock in the warehouse to send out"><input type="checkbox" id="allocWhOnly" onchange="renderAllocMatrix()"> WH stock only</label>
+                        <span id="allocMatrixHint" class="text-xs text-gray-400"></span>
+                    </div>
+
                     <div id="allocBody">
                         <div class="py-6 text-center"><button onclick="loadAllocPlan()" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Generate allocation plan</button></div>
                     </div>
@@ -4300,6 +4313,9 @@
             document.getElementById('mvFrom').innerHTML = storeOpts + `<option value="${escAttr(wh)}">WH</option>`;
             document.getElementById('mvTo').innerHTML = storeOpts;
             document.getElementById('soStore').innerHTML = storeOpts;
+            const brands = [...new Set(styles.map(s => s.brand))].filter(Boolean).sort();
+            document.getElementById('allocMatrixBrand').innerHTML =
+                '<option value="">All brands</option>' + brands.map(b => `<option>${escAttr(b)}</option>`).join('');
         }
 
         function onManualStyle() {
@@ -4388,76 +4404,96 @@
             loadAllocPlan();
         }
 
+        let matrixMode = 'wh';   // 'wh' (warehouse→stores) | 'rebalance' (store↔store) | 'all'
+        function setMatrixMode(mode) {
+            matrixMode = mode;
+            const on = 'px-2 py-1 bg-blue-600 text-white font-medium', off = 'px-2 py-1 bg-white text-gray-600 hover:bg-gray-50';
+            document.getElementById('mmWh').className = mode === 'wh' ? on : off;
+            document.getElementById('mmReb').className = mode === 'rebalance' ? on : off;
+            document.getElementById('mmAll').className = mode === 'all' ? on : off;
+            renderAllocMatrix();
+        }
+
         function renderAllocPlan() {
             if (!allocPlanData) { document.getElementById('allocBody').innerHTML = ''; return; }
             renderAllocSummary();
             renderActiveOverrides();
             renderStoreExcludeBar();
-            document.getElementById('allocDestFilter').classList.toggle('hidden', allocLayout === 'matrix');
-            if (allocLayout === 'matrix') renderAllocMatrix(); else renderAllocList();
+            const isMatrix = allocLayout === 'matrix';
+            document.getElementById('allocDestFilter').classList.toggle('hidden', isMatrix);
+            document.getElementById('allocTypeFilter').classList.toggle('hidden', isMatrix);   // list-only lens
+            document.getElementById('allocMatrixControls').classList.toggle('hidden', !isMatrix);
+            if (isMatrix) renderAllocMatrix(); else renderAllocList();
         }
 
-        // ----- Matrix view: styles × stores, expandable to sizes, cells = units to send in -----
-        function _allocStyleMap() {
-            const map = {};
-            (saleStockData && saleStockData.styles || []).forEach(s => map[s.parent_sku] = s);
-            return map;
+        // ----- Matrix view: ALL sale styles × stores. Source toggle picks what a cell means. -----
+        function _movesOf(parent) { return (allocPlanData.moves || []).filter(m => m.parent_sku === parent); }
+
+        // Per-store value for a set of (already-filtered) moves, by mode.
+        function _cellVal(moves, store, wh) {
+            if (matrixMode === 'wh') return moves.filter(m => m.from === wh && m.to === store).reduce((a, m) => a + m.qty, 0);
+            if (matrixMode === 'rebalance') {
+                const inn = moves.filter(m => m.to === store && m.from !== wh).reduce((a, m) => a + m.qty, 0);
+                const out = moves.filter(m => m.from === store && m.to !== wh).reduce((a, m) => a + m.qty, 0);
+                return inn - out;
+            }
+            const inn = moves.filter(m => m.to === store).reduce((a, m) => a + m.qty, 0);
+            const out = moves.filter(m => m.from === store).reduce((a, m) => a + m.qty, 0);
+            return inn - out;
         }
         function renderAllocMatrix() {
             const body = document.getElementById('allocBody');
             const stores = allocPlanData.stores || [];
             const ex = new Set(allocPlanData.excluded_stores || []);
-            const smap = _allocStyleMap();
-            // Type filter acts as a read-only lens on the matrix (net + cells reflect it).
-            const typeF = document.getElementById('allocTypeFilter').value;
-            const view = typeF ? allocPlanData.moves.filter(m => m.type === typeF) : allocPlanData.moves;
-            const parents = {};
-            view.forEach(m => (parents[m.parent_sku] = parents[m.parent_sku] || []).push(m));
-            (allocPlanData.overrides || []).forEach(o => { if (o.parent_sku && !parents[o.parent_sku]) parents[o.parent_sku] = []; });
-            const keys = Object.keys(parents).sort((a, b) => {
-                const A = smap[a] || {}, B = smap[b] || {};
-                return (A.brand || '').localeCompare(B.brand || '') || (A.name || '').localeCompare(B.name || '');
-            });
-            if (!keys.length) {
-                body.innerHTML = '<div class="py-6 text-center text-gray-400">No planned moves. Adjust parameters or add manual moves.</div>';
-                return;
-            }
+            const wh = allocPlanData.warehouse;
+            const brand = document.getElementById('allocMatrixBrand').value;
+            const q = (document.getElementById('allocMatrixSearch').value || '').trim().toLowerCase();
+            const whOnly = document.getElementById('allocWhOnly').checked;
+            let styles = ((saleStockData && saleStockData.styles) || []).filter(s =>
+                (!brand || s.brand === brand)
+                && (!q || `${s.name} ${s.brand} ${s.parent_sku}`.toLowerCase().includes(q))
+                && (!whOnly || ((s.warehouse_total || {}).available || 0) > 0));
+            styles = [...styles].sort((a, b) => (a.brand || '').localeCompare(b.brand || '') || (a.name || '').localeCompare(b.name || ''));
+            const hints = {
+                wh: 'Cells = units to send from the warehouse to each store. Expand a style to edit per size.',
+                rebalance: 'Net +/− per store from store-to-store moves. Expand a style to add or remove transfers.',
+                all: 'Combined net +/− per store across every move (read-only overview).'
+            };
+            document.getElementById('allocMatrixHint').textContent = hints[matrixMode] || '';
+            if (!styles.length) { body.innerHTML = '<div class="py-6 text-center text-gray-400">No sale styles match your filter.</div>'; return; }
             const th = 'sticky top-0 z-20 bg-gray-50 px-2 py-1 text-right font-medium';
             const storeCols = stores.map(s => `<th class="${th} ${ex.has(s) ? 'text-gray-300 line-through' : ''}">${_shortStoreJs(s)}</th>`).join('');
             const header = `<thead><tr class="text-[11px] text-gray-500 uppercase border-b">
                 <th class="sticky top-0 z-20 bg-gray-50 px-2 py-1.5 text-left font-medium">Style</th>
                 <th class="${th}" title="Sell-through 365d">ST%</th>
                 <th class="${th}" title="Units sold 365d">Sold</th>
-                ${storeCols}<th class="${th}">WH</th>
+                ${storeCols}<th class="${th}" title="Warehouse stock available">WH</th>
                 <th class="sticky top-0 z-20 bg-gray-50 px-2 py-1"></th>
             </tr></thead>`;
-            const rows = keys.map(p => matrixStyleRow(p, parents[p], smap[p], stores, ex)).join('');
-            const note = typeF ? `<div class="text-xs text-amber-600 mb-2">Showing <b>${typeF}</b> moves only — clear the type filter to edit cells.</div>` : '';
-            body.innerHTML = note + `<div class="overflow-auto max-h-[75vh] border rounded-lg"><table class="w-full text-sm">${header}<tbody>${rows}</tbody></table></div>`;
+            const rows = styles.map(s => matrixStyleRow(s, stores, ex, wh)).join('');
+            body.innerHTML = `<div class="overflow-auto max-h-[75vh] border rounded-lg"><table class="w-full text-sm">${header}<tbody>${rows}</tbody></table></div>`;
         }
 
-        function matrixStyleRow(parent, moves, s, stores, ex) {
-            s = s || { name: parent, brand: '', sell_through: 0, sold: 0 };
+        function matrixStyleRow(s, stores, ex, wh) {
+            const moves = _movesOf(s.parent_sku);
             const whAvail = Math.round((s.warehouse_total || {}).available || 0);
-            const net = {}; stores.forEach(st => net[st] = 0);
-            moves.forEach(m => { if (m.to in net) net[m.to] += m.qty; if (m.from in net) net[m.from] -= m.qty; });
             const cell = st => {
                 if (ex.has(st)) return '<td class="px-2 py-1.5 text-right text-gray-300">—</td>';
-                const n = net[st];
+                const n = _cellVal(moves, st, wh);
                 if (!n) return '<td class="px-2 py-1.5 text-right text-gray-300">·</td>';
                 const cls = n > 0 ? 'text-green-600' : 'text-red-500';
                 return `<td class="px-2 py-1.5 text-right ${cls} font-medium">${n > 0 ? '+' : ''}${n}</td>`;
             };
-            const storeSel = `<select onchange="if(this.value){setStyleOverrideFor('consolidate','${escAttr(parent)}',this.value)};this.selectedIndex=0" class="border rounded px-1 py-0.5 text-[11px] text-gray-500" title="Move all stock to one store">
+            const key = escAttr(s.parent_sku);
+            const storeSel = `<select onchange="if(this.value){setStyleOverrideFor('consolidate','${key}',this.value)};this.selectedIndex=0" class="border rounded px-1 py-0.5 text-[11px] text-gray-500" title="Move all stock to one store">
                 <option value="">move all →</option>${stores.filter(x => !ex.has(x)).map(x => `<option value="${escAttr(x)}">${_shortStoreJs(x)}</option>`).join('')}</select>`;
-            const key = escAttr(parent);
             const stColor = s.sell_through < 40 ? 'text-red-600' : s.sell_through < 70 ? 'text-amber-600' : 'text-green-600';
             return `<tr class="border-b hover:bg-gray-50 cursor-pointer" data-mstyle="${key}" onclick="toggleMatrixStyle(this)">
                 <td class="px-2 py-1.5"><span class="matrixChevron text-gray-400 mr-1">▸</span><span class="font-medium">${s.name}</span> <span class="text-[11px] text-gray-400">${s.brand}</span></td>
                 <td class="px-2 py-1.5 text-right ${stColor}">${s.sell_through ?? 0}%</td>
                 <td class="px-2 py-1.5 text-right text-gray-500">${s.sold ?? 0}</td>
                 ${stores.map(cell).join('')}
-                <td class="px-2 py-1.5 text-right text-gray-400" title="Warehouse stock available to push">${whAvail || '·'}</td>
+                <td class="px-2 py-1.5 text-right text-gray-400">${whAvail || '·'}</td>
                 <td class="px-2 py-1.5 text-right whitespace-nowrap" onclick="event.stopPropagation()">
                     ${storeSel}
                     <button onclick="setStyleOverrideFor('exclude','${key}')" title="Exclude this style" class="text-red-400 hover:text-red-600 text-xs ml-1">✕</button>
@@ -4475,98 +4511,136 @@
             if (chev) chev.textContent = '▾';
             const stores = allocPlanData.stores || [];
             const ex = new Set(allocPlanData.excluded_stores || []);
-            const s = _allocStyleMap()[key];
-            if (!s) return;
-            const typeF = document.getElementById('allocTypeFilter').value;   // read-only lens
-            const moves = allocPlanData.moves.filter(m => escAttr(m.parent_sku) === key && (!typeF || m.type === typeF));
-            const inQty = (sku, st) => { const m = moves.find(x => x.sku === sku && x.to === st); return m ? m.qty : 0; };
-            const rowsHtml = (s.variants || []).map(v => {
+            const wh = allocPlanData.warehouse;
+            const s = (saleStockData.styles || []).find(x => escAttr(x.parent_sku) === key);
+            if (!s) { row.insertAdjacentHTML('afterend', `<tr data-mdetail="${key}"><td colspan="99" class="px-2 py-2 pl-8 text-xs text-gray-400">No size detail.</td></tr>`); return; }
+            const html = (s.variants || []).map(v => matrixSizeRow(v, s, stores, ex, wh, key)).join('');
+            row.insertAdjacentHTML('afterend', html);
+        }
+
+        function matrixSizeRow(v, s, stores, ex, wh, key) {
+            const skuMoves = _movesOf(s.parent_sku).filter(m => m.sku === v.sku);
+            if (matrixMode === 'wh') {
                 const cells = stores.map(st => {
                     if (ex.has(st)) return '<td class="px-2 py-1 text-right text-gray-300">—</td>';
                     const cur = Math.round((v.store_stock[st] || {}).on_hand || 0);
-                    const q = inQty(v.sku, st);
-                    if (typeF) return `<td class="px-2 py-1 text-right ${q ? 'text-green-600 font-medium' : 'text-gray-300'}" title="in ${st} now: ${cur}">${q || '·'}</td>`;
-                    return `<td class="px-2 py-1 text-right"><input type="number" min="0" value="${q}" title="in ${st} now: ${cur}"
-                        onchange="onMatrixCell('${escAttr(v.sku)}','${escAttr(st)}',this.value)"
-                        class="border rounded px-1 py-0.5 text-sm w-12 text-right ${q ? 'bg-green-50' : ''}"></td>`;
+                    const qv = skuMoves.filter(m => m.from === wh && m.to === st).reduce((a, m) => a + m.qty, 0);
+                    return `<td class="px-2 py-1 text-right"><input type="number" min="0" value="${qv}" title="in ${st} now: ${cur}"
+                        onchange="onMatrixWhCell('${escAttr(v.sku)}','${escAttr(st)}',this.value)"
+                        class="border rounded px-1 py-0.5 text-sm w-12 text-right ${qv ? 'bg-green-50' : ''}"></td>`;
                 }).join('');
-                const wh = Math.round((v.warehouse || {}).available || 0);
+                const whc = Math.round((v.warehouse || {}).available || 0);
                 return `<tr data-mdetail="${key}" class="border-b border-gray-100 bg-gray-50/40">
                     <td class="px-2 py-1 pl-8 text-gray-600 whitespace-nowrap">${v.size} <span class="text-[10px] text-gray-400">${v.sku}</span></td>
-                    <td colspan="2"></td>
-                    ${cells}
-                    <td class="px-2 py-1 text-right text-gray-500">${wh || '·'}</td>
-                    <td></td>
+                    <td colspan="2"></td>${cells}
+                    <td class="px-2 py-1 text-right text-gray-500">${whc || '·'}</td><td></td>
                 </tr>`;
-            }).join('');
-            row.insertAdjacentHTML('afterend', rowsHtml);
-        }
-
-        // Edit a size×store cell = units to send INTO that store; source auto-resolved.
-        async function onMatrixCell(sku, store, val) {
-            const qty = Math.max(0, parseInt(val) || 0);
-            let parentSku = null;
-            let m = allocPlanData.moves.find(x => x.sku === sku && x.to === store);
-            if (m) {
-                parentSku = m.parent_sku;
-                m.qty = qty;
-                if (qty <= 0) allocPlanData.moves = allocPlanData.moves.filter(x => x !== m);
-                else if (m.origin === 'suggested') m.origin = 'edited';
-                await _postOverride({ kind: 'move', parent_sku: m.parent_sku, sku, from_loc: m.from, to_loc: store, qty, payload: { size: m.size } });
-            } else if (qty > 0) {
-                const src = _pickSource(sku, store);
-                if (!src) { alert('No stock available anywhere to source this from.'); return; }
-                let size = sku, brand = '', name = sku;
-                for (const s of (saleStockData.styles || [])) {
-                    const v = (s.variants || []).find(v => v.sku === sku);
-                    if (v) { parentSku = s.parent_sku; size = v.size; brand = s.brand; name = s.name; break; }
-                }
-                allocPlanData.moves.push({ type: 'manual', origin: 'manual', from: src, to: store, parent_sku: parentSku, sku, size, brand, name, qty, reason: 'manual override' });
-                await _postOverride({ kind: 'move', parent_sku: parentSku, sku, from_loc: src, to_loc: store, qty, payload: { size } });
             }
-            renderAllocSummary();
-            if (parentSku) _updateMatrixNet(parentSku);   // update the row's net cells, keep expansion open
+            // rebalance / all: read-only net cells with current-stock context
+            const cells = stores.map(st => {
+                if (ex.has(st)) return '<td class="px-2 py-1 text-right text-gray-300">—</td>';
+                const cur = Math.round((v.store_stock[st] || {}).on_hand || 0);
+                const n = _cellVal(skuMoves, st, wh);
+                const netStr = n ? ` <span class="${n > 0 ? 'text-green-600' : 'text-red-500'} font-medium">${n > 0 ? '+' : ''}${n}</span>` : '';
+                return `<td class="px-2 py-1 text-right"><span class="text-gray-400">${cur || '·'}</span>${netStr}</td>`;
+            }).join('');
+            const whc = Math.round((v.warehouse || {}).available || 0);
+            const actions = matrixMode === 'rebalance'
+                ? `<button onclick="toggleTransferForm(this,'${escAttr(v.sku)}','${key}')" class="text-[11px] text-blue-600 hover:underline whitespace-nowrap">＋ transfer</button>` : '';
+            return `<tr data-mdetail="${key}" class="border-b border-gray-100 bg-gray-50/40">
+                <td class="px-2 py-1 pl-8 text-gray-600 whitespace-nowrap">${v.size} <span class="text-[10px] text-gray-400">${v.sku}</span></td>
+                <td colspan="2"></td>${cells}
+                <td class="px-2 py-1 text-right text-gray-500">${whc || '·'}</td>
+                <td class="px-2 py-1 text-right">${actions}</td>
+            </tr>`;
         }
 
-        // Recompute a style row's per-store net (+in/−out) after a cell edit, in place.
-        function _updateMatrixNet(parent) {
-            const rows = [...document.querySelectorAll('#allocBody tr[data-mstyle]')];
-            const row = rows.find(r => r.dataset.mstyle === escAttr(parent));
+        // WH mode: cell = units to send from warehouse → store for this size.
+        async function onMatrixWhCell(sku, store, val) {
+            const wh = allocPlanData.warehouse;
+            const qty = Math.max(0, parseInt(val) || 0);
+            let parentSku = null, size = sku, brand = '', name = sku;
+            for (const s of (saleStockData.styles || [])) {
+                const v = (s.variants || []).find(v => v.sku === sku);
+                if (v) { parentSku = s.parent_sku; size = v.size; brand = s.brand; name = s.name; break; }
+            }
+            let m = allocPlanData.moves.find(x => x.sku === sku && x.from === wh && x.to === store);
+            if (m) { m.qty = qty; if (qty <= 0) allocPlanData.moves = allocPlanData.moves.filter(x => x !== m); else if (m.origin === 'suggested') m.origin = 'edited'; }
+            else if (qty > 0) { allocPlanData.moves.push({ type: 'manual', origin: 'manual', from: wh, to: store, parent_sku: parentSku, sku, size, brand, name, qty, reason: 'warehouse allocation' }); }
+            await _postOverride({ kind: 'move', parent_sku: parentSku, sku, from_loc: wh, to_loc: store, qty, payload: { size } });
+            renderAllocSummary();
+            _updateMatrixRow(parentSku);
+        }
+
+        // Rebalance mode: inline store→store transfer form per size.
+        function toggleTransferForm(btn, sku, key) {
+            const tr = btn.closest('tr');
+            const nx = tr.nextElementSibling;
+            if (nx && nx.dataset.xfer === sku && nx.dataset.mdetail === key) { nx.remove(); return; }
+            tr.insertAdjacentHTML('afterend', _transferFormHtml(sku, key));
+        }
+        function _transferFormHtml(sku, key) {
+            const stores = (allocPlanData.stores || []).filter(s => !(new Set(allocPlanData.excluded_stores || [])).has(s));
+            const opt = stores.map(s => `<option value="${escAttr(s)}">${_shortStoreJs(s)}</option>`).join('');
+            const existing = (allocPlanData.moves || []).filter(m => m.sku === sku && stores.includes(m.from) && stores.includes(m.to));
+            const chips = existing.length ? existing.map(m =>
+                `<span class="inline-flex items-center gap-1 text-[11px] bg-white border rounded px-1.5 py-0.5 mr-1">${_shortStoreJs(m.from)}→${_shortStoreJs(m.to)} ${m.qty}
+                    <button onclick="removeMatrixMove('${escAttr(m.from)}','${escAttr(m.to)}','${escAttr(sku)}','${key}')" class="text-red-400 hover:text-red-600">✕</button></span>`).join('')
+                : '<span class="text-[11px] text-gray-400">no store-to-store moves yet</span>';
+            return `<tr data-xfer="${escAttr(sku)}" data-mdetail="${key}" class="bg-blue-50/40"><td colspan="99" class="px-2 py-2 pl-8">
+                <div class="flex flex-wrap items-center gap-1 text-sm">
+                    <span class="text-xs text-gray-500 mr-1">Transfer:</span>
+                    <select class="xf_from border rounded px-1 py-0.5 text-xs">${opt}</select><span class="text-gray-400">→</span>
+                    <select class="xf_to border rounded px-1 py-0.5 text-xs">${opt}</select>
+                    <input class="xf_qty border rounded px-1 py-0.5 text-xs w-12 text-right" type="number" min="1" value="1">
+                    <button onclick="addTransfer(this,'${escAttr(sku)}','${key}')" class="text-xs px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700">Add</button>
+                    <span class="mx-2 text-gray-300">|</span>${chips}
+                </div></td></tr>`;
+        }
+        async function addTransfer(btn, sku, key) {
+            const tr = btn.closest('tr');
+            const from = tr.querySelector('.xf_from').value, to = tr.querySelector('.xf_to').value;
+            const qty = Math.max(1, parseInt(tr.querySelector('.xf_qty').value) || 1);
+            if (from === to) { alert('From and To must differ.'); return; }
+            let parentSku = null, size = sku, brand = '', name = sku;
+            for (const s of (saleStockData.styles || [])) {
+                const v = (s.variants || []).find(v => v.sku === sku);
+                if (v) { parentSku = s.parent_sku; size = v.size; brand = s.brand; name = s.name; break; }
+            }
+            let m = allocPlanData.moves.find(x => x.sku === sku && x.from === from && x.to === to);
+            if (m) { m.qty += qty; if (m.origin === 'suggested') m.origin = 'edited'; }
+            else { m = { type: 'manual', origin: 'manual', from, to, parent_sku: parentSku, sku, size, brand, name, qty, reason: 'manual transfer' }; allocPlanData.moves.push(m); }
+            await _postOverride({ kind: 'move', parent_sku: parentSku, sku, from_loc: from, to_loc: to, qty: m.qty, payload: { size } });
+            renderAllocSummary(); _updateMatrixRow(parentSku);
+            tr.outerHTML = _transferFormHtml(sku, key);   // refresh chips
+        }
+        async function removeMatrixMove(from, to, sku, key) {
+            const m = allocPlanData.moves.find(x => x.sku === sku && x.from === from && x.to === to);
+            const parentSku = m ? m.parent_sku : null;
+            allocPlanData.moves = allocPlanData.moves.filter(x => !(x.sku === sku && x.from === from && x.to === to));
+            await _postOverride({ kind: 'move', parent_sku: parentSku, sku, from_loc: from, to_loc: to, qty: 0, payload: {} });
+            renderAllocSummary(); if (parentSku) _updateMatrixRow(parentSku);
+            const formRow = [...document.querySelectorAll('#allocBody tr[data-xfer]')].find(r => r.dataset.xfer === sku && r.dataset.mdetail === key);
+            if (formRow) formRow.outerHTML = _transferFormHtml(sku, key);
+        }
+
+        // Recompute a style row's per-store cells after an edit, respecting the current mode.
+        function _updateMatrixRow(parent) {
+            if (!parent) return;
+            const row = [...document.querySelectorAll('#allocBody tr[data-mstyle]')].find(r => r.dataset.mstyle === escAttr(parent));
             if (!row) return;
             const stores = allocPlanData.stores || [];
             const ex = new Set(allocPlanData.excluded_stores || []);
-            const net = {}; stores.forEach(st => net[st] = 0);
-            allocPlanData.moves.filter(m => m.parent_sku === parent).forEach(m => {
-                if (m.to in net) net[m.to] += m.qty; if (m.from in net) net[m.from] -= m.qty;
-            });
+            const wh = allocPlanData.warehouse;
+            const moves = _movesOf(parent);
             const tds = row.children;  // 0 Style, 1 ST%, 2 Sold, then stores...
             stores.forEach((st, i) => {
                 const td = tds[3 + i]; if (!td) return;
                 if (ex.has(st)) { td.className = 'px-2 py-1.5 text-right text-gray-300'; td.textContent = '—'; return; }
-                const n = net[st];
+                const n = _cellVal(moves, st, wh);
                 if (!n) { td.className = 'px-2 py-1.5 text-right text-gray-300'; td.textContent = '·'; }
                 else { td.className = `px-2 py-1.5 text-right font-medium ${n > 0 ? 'text-green-600' : 'text-red-500'}`; td.textContent = `${n > 0 ? '+' : ''}${n}`; }
             });
-        }
-
-        // Pick a source for a new inflow: warehouse first, else the store with most available.
-        function _pickSource(sku, dest) {
-            const wh = allocPlanData.warehouse;
-            const ex = new Set(allocPlanData.excluded_stores || []);
-            let variant = null;
-            for (const s of (saleStockData.styles || [])) {
-                const v = (s.variants || []).find(v => v.sku === sku);
-                if (v) { variant = v; break; }
-            }
-            if (!variant) return null;
-            if ((variant.warehouse || {}).available > 0) return wh;
-            let best = null, bestAv = 0;
-            (allocPlanData.stores || []).forEach(st => {
-                if (st === dest || ex.has(st)) return;
-                const av = (variant.store_stock[st] || {}).available || 0;
-                if (av > bestAv) { bestAv = av; best = st; }
-            });
-            return best;
         }
 
         async function setStyleOverrideFor(kind, parent, toLoc) {

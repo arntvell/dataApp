@@ -23,6 +23,7 @@ from database.models import (
     ProductMaster, ParentSkuMapping, Cin7Stock, RawShopifyProduct,
     SalesOrder, SalesOrderItem,
     SaleSeason, SalePlanItem, SaleVariantOverride, SaleAllocation,
+    SaleTransferOverride,
 )
 from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since
 from config import settings
@@ -1329,6 +1330,510 @@ async def performance(season_id: int = Query(...), db: Session = Depends(get_db)
         "totals": totals,
         "styles": styles_out,
     }
+
+
+def _variant_size(sku, parent, size_map):
+    """Human size label: mapping table first, else strip the parent-SKU prefix, else the SKU."""
+    if size_map.get(sku):
+        return size_map[sku]
+    if parent and sku != parent and sku.startswith(parent):
+        return sku[len(parent):].lstrip("-") or sku
+    return sku
+
+
+def _stock_report_data(db, season):
+    """Core data for the Sale Stock report / allocation engine: every INCLUDED, in-stock
+    style with each size's on-hand + available per store & warehouse, plus style-level
+    performance and per-store 365d demand. Returns {stores, warehouse, styles}."""
+    season_id = season.id
+    included_parents = {
+        p for (p,) in db.query(SalePlanItem.parent_sku).filter(
+            SalePlanItem.season_id == season_id, SalePlanItem.included.is_(True))
+    }
+    styles = _aggregate_styles(db)
+    styles = {p: st for p, st in styles.items()
+              if p in included_parents and st["on_hand"] > 0}
+    wh = WAREHOUSE[0]
+    if not styles:
+        return {"stores": RETAIL_STORES, "warehouse": wh, "styles": []}
+
+    parents = list(styles.keys())
+
+    # per-variant, per-location on-hand + available (physical locations only)
+    var_loc = {}   # parent -> sku -> location -> {on_hand, available}
+    for parent, sku, loc, oh, av in db.query(
+        ProductMaster.parent_sku, ProductMaster.sku, Cin7Stock.location,
+        func.sum(Cin7Stock.on_hand), func.sum(Cin7Stock.available),
+    ).select_from(Cin7Stock).join(
+        ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)
+    ).filter(
+        Cin7Stock.location.in_(PHYSICAL_LOCATIONS),
+        ProductMaster.parent_sku.in_(parents),
+    ).group_by(ProductMaster.parent_sku, ProductMaster.sku, Cin7Stock.location):
+        var_loc.setdefault(parent, {}).setdefault(sku, {})[loc] = {
+            "on_hand": float(oh or 0), "available": float(av or 0)}
+
+    # size labels (ProductMaster.sku is upper; _pm_sku normalizes the mapping side)
+    size_map = {}
+    for sku, size in db.query(_pm_sku(ParentSkuMapping.sku), ParentSkuMapping.size_code):
+        if sku:
+            size_map[sku] = size
+
+    # per-variant velocity over the same window as style-level `sold`
+    since = _since(VELOCITY_DAYS)
+    all_skus = [s for p in var_loc for s in var_loc[p]]
+    vsold = {}
+    if all_skus:
+        for sku, qty in db.query(
+            _pm_sku(SalesOrderItem.sku), func.sum(SalesOrderItem.quantity)
+        ).select_from(SalesOrderItem).join(
+            SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+        ).filter(
+            _pm_sku(SalesOrderItem.sku).in_(all_skus), SalesOrder.order_date >= since
+        ).group_by(_pm_sku(SalesOrderItem.sku)):
+            vsold[sku] = int(qty or 0)
+
+    # per-style, per-STORE units sold (365d) — the demand/history signal for allocation
+    store_sold = {}   # parent -> {store: units}
+    for parent, loc, q in db.query(
+        ProductMaster.parent_sku, SalesOrder.location, func.sum(SalesOrderItem.quantity)
+    ).select_from(SalesOrderItem).join(
+        SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+    ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
+        ProductMaster.parent_sku.in_(parents),
+        SalesOrder.order_date >= since,
+        SalesOrder.location.in_(RETAIL_STORES),
+    ).group_by(ProductMaster.parent_sku, SalesOrder.location):
+        store_sold.setdefault(parent, {})[loc] = int(q or 0)
+
+    def _blank_cell():
+        return {"on_hand": 0.0, "available": 0.0}
+
+    out = []
+    for parent, st in styles.items():
+        store_tot = {s: _blank_cell() for s in RETAIL_STORES}
+        wh_tot = _blank_cell()
+        variants = []
+        for sku, locs in var_loc.get(parent, {}).items():
+            v_oh = sum(c["on_hand"] for c in locs.values())
+            if v_oh <= 0:
+                continue                       # skip sizes with nothing physically in stock
+            store_stock = {}
+            for s in RETAIL_STORES:
+                c = locs.get(s, _blank_cell())
+                store_stock[s] = c
+                store_tot[s]["on_hand"] += c["on_hand"]
+                store_tot[s]["available"] += c["available"]
+            whc = locs.get(wh, _blank_cell())
+            wh_tot["on_hand"] += whc["on_hand"]
+            wh_tot["available"] += whc["available"]
+            variants.append({
+                "sku": sku, "size": _variant_size(sku, parent, size_map),
+                "on_hand": v_oh,
+                "available": sum(c["available"] for c in locs.values()),
+                "sold": vsold.get(sku, 0),
+                "store_stock": store_stock, "warehouse": whc,
+            })
+        variants.sort(key=lambda v: str(v["size"]))
+        sold = st["sold"]
+        denom = sold + st["on_hand"]
+        out.append({
+            "parent_sku": parent, "brand": st["brand"], "name": st["name"],
+            "gender": st["gender"], "category": st["category"], "season": st["season"],
+            "price": st["price"], "image_url": st["image_url"],
+            "on_hand": st["on_hand"],
+            "sold": sold, "sold_30d": st["sold_30d"],
+            "sold_disc": st["sold_disc"], "sold_full": st["sold_full"],
+            "sell_through": round(sold / denom * 100, 1) if denom > 0 else 0,
+            "store_sold": {s: store_sold.get(parent, {}).get(s, 0) for s in RETAIL_STORES},
+            "first_sold_year": st["first_sold_year"], "years_active": st["years_active"],
+            "old_flag": st["old_flag"], "carryover_flag": st["carryover_flag"],
+            "store_totals": store_tot, "warehouse_total": wh_tot,
+            "variants": variants,
+        })
+    out.sort(key=lambda r: (r["brand"], r["name"]))
+    return {"stores": RETAIL_STORES, "warehouse": wh, "styles": out}
+
+
+@router.get("/stock-report")
+async def stock_report(season_id: int = Query(...), db: Session = Depends(get_db)):
+    """Allocation stock report: every INCLUDED, in-stock style in the sale, with each
+    size's on-hand + available split across the retail stores and the warehouse, plus
+    style-level performance (sell-through, 365d/30d velocity, discounted/full split).
+    Only styles explicitly marked `included` are returned — and only those with stock.
+    Net-revenue / realized-markdown per style come from the /performance endpoint."""
+    season = _season_or_404(db, season_id)
+    data = _stock_report_data(db, season)
+    return {"season": _season_dict(season), **data}
+
+
+# ============== Allocation engine (performance-weighted, size-level) ==============
+# Turns the stock report into concrete transfer moves. Two kinds:
+#   push       — a size sits in the warehouse while a store that SELLS the style has none
+#   rebalance  — a size sits in a store that doesn't sell it while a store that does has none
+# "Sells the style" is judged by a demand cascade: this store's own 365d units of the style,
+# else the store's share of the style's category group, else the store's overall size.
+
+MIN_STYLE_HISTORY = 3      # style units sold (365d, all stores) needed to trust the per-style split
+DEMAND_REL_FLOOR = 0.15    # a store needs >=15% of the top store's demand to be a transfer target
+OLD_RUN_RATIO = 0.5        # old/carryover style: skip if fewer than this share of its sizes remain
+
+_SIZE_NUM_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)")
+
+
+def _size_num(label):
+    """Leading numeric value of a size label ('42', '40.5', '32/34' -> 42.0), else None."""
+    m = _SIZE_NUM_RE.match(str(label or ""))
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _style_size_meta(db, parents):
+    """Per style: its FULL original size run (all variants, regardless of stock) and, for
+    numeric-sized styles, the extreme (smallest/largest) size labels — so the allocation
+    engine can skip dead-end runs. Returns {parent: {full_count, numeric, extreme_labels}}."""
+    size_map = {}
+    for sku, size in db.query(_pm_sku(ParentSkuMapping.sku), ParentSkuMapping.size_code):
+        if sku:
+            size_map[sku] = size
+    labels = {}   # parent -> set of size labels
+    for sku, parent in db.query(ProductMaster.sku, ProductMaster.parent_sku).filter(
+        ProductMaster.parent_sku.in_(parents)
+    ):
+        labels.setdefault(parent, set()).add(_variant_size(sku, parent, size_map))
+    meta = {}
+    for parent, labs in labels.items():
+        nums = {l: _size_num(l) for l in labs}
+        numeric_labels = [l for l, n in nums.items() if n is not None]
+        extreme = set()
+        numeric = len(numeric_labels) >= 3
+        if numeric:
+            mn = min(nums[l] for l in numeric_labels)
+            mx = max(nums[l] for l in numeric_labels)
+            extreme = {l for l in numeric_labels if nums[l] in (mn, mx)}
+        meta[parent] = {"full_count": len(labs), "numeric": numeric, "extreme_labels": extreme}
+    return meta
+
+
+def _catgroup_store_share(db):
+    """Per category group: each store's share of that group's units (365d). Fallback demand
+    signal for styles with too little history of their own."""
+    since = _since(VELOCITY_DAYS)
+    raw = {}
+    for cg, loc, q in db.query(
+        ProductMaster.category_group, SalesOrder.location, func.sum(SalesOrderItem.quantity)
+    ).select_from(SalesOrderItem).join(
+        SalesOrder, SalesOrderItem.order_id == SalesOrder.id
+    ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
+        SalesOrder.order_date >= since, SalesOrder.location.in_(RETAIL_STORES),
+        ProductMaster.category_group.isnot(None),
+    ).group_by(ProductMaster.category_group, SalesOrder.location):
+        raw.setdefault(cg, {})[loc] = float(q or 0)
+    share = {}
+    for cg, d in raw.items():
+        tot = sum(d.values()) or 1.0
+        share[cg] = {s: d.get(s, 0) / tot for s in RETAIL_STORES}
+    return share
+
+
+def _demand_weights(store_sold, cat_group, cg_share, global_w):
+    """Cascade: per-style history -> category-group share -> global store size.
+    Returns (weights dict, basis label)."""
+    tot = sum(store_sold.values())
+    if tot >= MIN_STYLE_HISTORY:
+        return {s: float(store_sold.get(s, 0)) for s in RETAIL_STORES}, "style history"
+    sh = cg_share.get(cat_group)
+    if sh and sum(sh.values()) > 0:
+        return {s: sh.get(s, 0) for s in RETAIL_STORES}, "category demand"
+    return dict(global_w), "store size"
+
+
+def _skip_style(s, size_meta):
+    """Dead-end stock not worth moving. Returns a reason string, or None to proceed.
+      - old/carryover styles down to < half their original size run
+      - styles whose remaining stock is entirely extreme (tail) sizes (numeric runs)"""
+    meta = size_meta.get(s["parent_sku"], {})
+    instock = {v["size"] for v in s["variants"]}
+    full = meta.get("full_count") or len(instock) or 1
+    if (s.get("old_flag") or s.get("carryover_flag")) and (len(instock) / full) < OLD_RUN_RATIO:
+        return "old style, broken size run"
+    extreme = meta.get("extreme_labels") or set()
+    if meta.get("numeric") and instock and instock <= extreme:
+        return "only extreme sizes left"
+    return None
+
+
+def _consolidate_moves(style, to_loc, wh, stores=None):
+    """Move ALL of a style's stock (every size) from WH + other stores into one store."""
+    stores = stores or RETAIL_STORES
+    moves = []
+    for v in style["variants"]:
+        for loc in stores + [wh]:
+            if loc == to_loc:
+                continue
+            cell = v["warehouse"] if loc == wh else v["store_stock"].get(loc)
+            av = int((cell or {}).get("available", 0))
+            if av >= 1:
+                moves.append({
+                    "type": "consolidate", "from": loc, "to": to_loc,
+                    "parent_sku": style["parent_sku"], "sku": v["sku"], "size": v["size"],
+                    "brand": style["brand"], "name": style["name"], "qty": av,
+                    "dest_sold": int(style["store_sold"].get(to_loc, 0)), "src_sold": None,
+                    "basis": "consolidate", "origin": "consolidate",
+                    "reason": f"consolidate all stock of this style into {_short_store(to_loc)}",
+                })
+    return moves
+
+
+def _allocation_moves(data, cg_share, global_w, size_meta, min_move=1, include_rebalance=True,
+                      excluded=None, forced=None, consolidate=None, active_stores=None):
+    """Generate size-level transfer moves from the stock report data.
+    Returns (moves, skipped) where skipped = [{parent_sku, name, reason}]."""
+    stores = active_stores or RETAIL_STORES
+    wh = data["warehouse"]
+    excluded, forced, consolidate = excluded or set(), forced or set(), consolidate or set()
+    moves, skipped = [], []
+    for s in data["styles"]:
+        p = s["parent_sku"]
+        if p in consolidate:
+            continue                                   # handled by _consolidate_moves
+        if p in excluded:
+            skipped.append({"parent_sku": p, "name": s["name"], "reason": "excluded by you"})
+            continue
+        reason = None if p in forced else _skip_style(s, size_meta)
+        if reason:
+            skipped.append({"parent_sku": p, "name": s["name"], "reason": reason})
+            continue
+        weights, basis = _demand_weights(s["store_sold"], s["category"], cg_share, global_w)
+        top = max(weights.values()) if weights else 0
+        if top <= 0:
+            continue                                   # no demand signal anywhere — leave to manual
+        floor = top * DEMAND_REL_FLOOR
+        eligible = sorted([st for st in stores if weights[st] >= floor and weights[st] > 0],
+                          key=lambda st: weights[st], reverse=True)
+        if not eligible:
+            continue
+
+        # Per-size working state (shared across the push then rebalance passes).
+        sz = []
+        for v in s["variants"]:
+            sz.append({
+                "v": v,
+                "covered": {st: (v["store_stock"].get(st) or {}).get("on_hand", 0) for st in stores},
+                "avail_out": {st: (v["store_stock"].get(st) or {}).get("available", 0) for st in stores},
+                "wh": (v["warehouse"] or {}).get("available", 0),
+            })
+
+        # 1) WH push — for each size, fill eligible stores that are out, best demand first.
+        for z in sz:
+            v = z["v"]
+            for st in [x for x in eligible if z["covered"][x] <= 0]:
+                if z["wh"] < min_move:
+                    break
+                moves.append({
+                    "type": "push", "from": wh, "to": st,
+                    "parent_sku": s["parent_sku"], "sku": v["sku"], "size": v["size"],
+                    "brand": s["brand"], "name": s["name"], "qty": min_move,
+                    "dest_sold": int(s["store_sold"].get(st, 0)), "src_sold": None, "basis": basis,
+                    "origin": "suggested",
+                    "reason": f"{_short_store(st)} sells this ({int(s['store_sold'].get(st,0))}/yr) but has 0 in {v['size']}; WH has {int(z['wh'])}",
+                })
+                z["wh"] -= min_move
+                z["covered"][st] += min_move
+
+        # 2) Rebalance — complete the BEST store's full size run first, then the next.
+        #    Missing sizes are pulled from the lowest-demand store that holds them.
+        if include_rebalance:
+            for dest in eligible:
+                for z in sz:
+                    if z["covered"][dest] > 0:
+                        continue
+                    v = z["v"]
+                    donors = sorted(
+                        [d for d in stores if d != dest and weights[d] < floor and z["avail_out"][d] >= min_move],
+                        key=lambda d: weights[d])
+                    if not donors:
+                        continue
+                    d = donors[0]
+                    moves.append({
+                        "type": "rebalance", "from": d, "to": dest,
+                        "parent_sku": s["parent_sku"], "sku": v["sku"], "size": v["size"],
+                        "brand": s["brand"], "name": s["name"], "qty": min_move,
+                        "dest_sold": int(s["store_sold"].get(dest, 0)),
+                        "src_sold": int(s["store_sold"].get(d, 0)), "basis": basis,
+                        "origin": "suggested",
+                        "reason": f"complete {_short_store(dest)}'s run ({int(s['store_sold'].get(dest,0))}/yr): {v['size']} from {_short_store(d)} (sells ~{int(s['store_sold'].get(d,0))}/yr)",
+                    })
+                    z["avail_out"][d] -= min_move
+                    z["covered"][dest] += min_move
+    return moves, skipped
+
+
+def _short_store(name):
+    return (name or "").replace("Livid ", "").replace("Past Løkka", "Past")
+
+
+@router.get("/allocation-plan")
+async def allocation_plan(
+    season_id: int = Query(...),
+    min_move: int = Query(1, ge=1),
+    include_rebalance: int = Query(1),
+    db: Session = Depends(get_db),
+):
+    """Performance-weighted, size-level transfer suggestions for a sale season."""
+    season = _season_or_404(db, season_id)
+    data = _stock_report_data(db, season)
+    cg_share = _catgroup_store_share(db)
+    global_w = _store_weights(db)
+    size_meta = _style_size_meta(db, [s["parent_sku"] for s in data["styles"]]) if data["styles"] else {}
+    wh = data["warehouse"]
+
+    # ----- user overrides -----
+    ovs = db.query(SaleTransferOverride).filter(SaleTransferOverride.season_id == season_id).all()
+    excluded = {o.parent_sku for o in ovs if o.kind == "exclude" and o.parent_sku}
+    forced = {o.parent_sku for o in ovs if o.kind == "force" and o.parent_sku}
+    consolidate = {o.parent_sku: o.to_loc for o in ovs if o.kind == "consolidate" and o.parent_sku}
+    move_ovs = {(o.sku, o.from_loc, o.to_loc): o for o in ovs if o.kind == "move"}
+    excluded_stores = {o.to_loc for o in ovs if o.kind == "store_exclude" and o.to_loc}
+    active_stores = [s for s in RETAIL_STORES if s not in excluded_stores]
+
+    moves, skipped = _allocation_moves(
+        data, cg_share, global_w, size_meta,
+        min_move=min_move, include_rebalance=bool(include_rebalance),
+        excluded=excluded, forced=forced, consolidate=set(consolidate), active_stores=active_stores)
+
+    # consolidate-to-one-store moves (style-level "move all")
+    style_by_parent = {s["parent_sku"]: s for s in data["styles"]}
+    for parent, to_loc in consolidate.items():
+        s = style_by_parent.get(parent)
+        if s and to_loc and to_loc not in excluded_stores:
+            moves.extend(_consolidate_moves(s, to_loc, wh, stores=active_stores))
+
+    # apply per-line move overrides: pin qty / remove (qty 0) / add manual
+    for m in moves:
+        o = move_ovs.pop((m["sku"], m["from"], m["to"]), None)
+        if o is not None:
+            m["qty"] = int(o.qty or 0)
+            m["origin"] = "edited"
+    moves = [m for m in moves if m["qty"] > 0]          # qty-0 overrides delete the line
+    for o in move_ovs.values():                          # remaining = manual additions
+        if not o.qty:
+            continue
+        if o.from_loc in excluded_stores or o.to_loc in excluded_stores:
+            continue
+        s = style_by_parent.get(o.parent_sku, {})
+        moves.append({
+            "type": "manual", "origin": "manual", "from": o.from_loc, "to": o.to_loc,
+            "parent_sku": o.parent_sku, "sku": o.sku, "size": o.payload.get("size") if o.payload else o.sku,
+            "brand": s.get("brand", ""), "name": s.get("name", o.parent_sku or o.sku),
+            "qty": int(o.qty), "dest_sold": None, "src_sold": None, "basis": "manual",
+            "reason": "manual override",
+        })
+
+    # enforce "don't touch" excluded stores — drop anything moving into or out of them
+    if excluded_stores:
+        moves = [m for m in moves if m["from"] not in excluded_stores and m["to"] not in excluded_stores]
+
+    by_store = {s: {"in": 0, "out": 0} for s in RETAIL_STORES}
+    for m in moves:
+        if m["to"] in by_store:
+            by_store[m["to"]]["in"] += m["qty"]
+        if m["from"] in by_store:
+            by_store[m["from"]]["out"] += m["qty"]
+    skip_reasons = {}
+    for sk in skipped:
+        skip_reasons[sk["reason"]] = skip_reasons.get(sk["reason"], 0) + 1
+    summary = {
+        "push_moves": sum(1 for m in moves if m["type"] == "push"),
+        "rebalance_moves": sum(1 for m in moves if m["type"] == "rebalance"),
+        "consolidate_moves": sum(1 for m in moves if m["type"] == "consolidate"),
+        "manual_moves": sum(1 for m in moves if m["type"] == "manual"),
+        "total_units": sum(m["qty"] for m in moves),
+        "by_store": by_store,
+        "skipped_styles": len(skipped),
+        "skip_reasons": skip_reasons,
+        "override_count": len(ovs),
+    }
+    return {"season": _season_dict(season), "stores": RETAIL_STORES,
+            "warehouse": wh, "moves": moves, "skipped": skipped,
+            "excluded_stores": sorted(excluded_stores),
+            "overrides": [_override_dict(o) for o in ovs], "summary": summary}
+
+
+def _override_dict(o):
+    return {"id": o.id, "kind": o.kind, "parent_sku": o.parent_sku, "sku": o.sku,
+            "from_loc": o.from_loc, "to_loc": o.to_loc, "qty": o.qty, "payload": o.payload}
+
+
+@router.get("/overrides")
+async def list_overrides(season_id: int = Query(...), db: Session = Depends(get_db)):
+    ovs = db.query(SaleTransferOverride).filter(SaleTransferOverride.season_id == season_id).all()
+    return [_override_dict(o) for o in ovs]
+
+
+@router.post("/override")
+async def upsert_override(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Create or update one override. Matching key depends on kind:
+    move -> (sku, from_loc, to_loc); exclude/force/consolidate -> parent_sku."""
+    season_id = payload["season_id"]
+    kind = payload["kind"]
+    if kind == "move":
+        q = db.query(SaleTransferOverride).filter(
+            SaleTransferOverride.season_id == season_id, SaleTransferOverride.kind == "move",
+            SaleTransferOverride.sku == payload.get("sku"),
+            SaleTransferOverride.from_loc == payload.get("from_loc"),
+            SaleTransferOverride.to_loc == payload.get("to_loc"))
+    elif kind == "store_exclude":
+        q = db.query(SaleTransferOverride).filter(
+            SaleTransferOverride.season_id == season_id, SaleTransferOverride.kind == "store_exclude",
+            SaleTransferOverride.to_loc == payload.get("to_loc"))
+    else:
+        q = db.query(SaleTransferOverride).filter(
+            SaleTransferOverride.season_id == season_id, SaleTransferOverride.kind == kind,
+            SaleTransferOverride.parent_sku == payload.get("parent_sku"))
+    o = q.first()
+    if not o:
+        o = SaleTransferOverride(season_id=season_id, kind=kind)
+        db.add(o)
+    o.parent_sku = payload.get("parent_sku")
+    o.sku = payload.get("sku")
+    o.from_loc = payload.get("from_loc")
+    o.to_loc = payload.get("to_loc")
+    o.qty = payload.get("qty")
+    o.payload = payload.get("payload")
+    db.commit()
+    return {"ok": True, "id": o.id}
+
+
+@router.post("/override/delete")
+async def delete_override(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Delete by id, or by (season_id, kind, parent_sku) for a style-level override."""
+    if payload.get("id"):
+        db.query(SaleTransferOverride).filter(SaleTransferOverride.id == payload["id"]).delete()
+    elif payload.get("kind") == "store_exclude":
+        db.query(SaleTransferOverride).filter(
+            SaleTransferOverride.season_id == payload["season_id"],
+            SaleTransferOverride.kind == "store_exclude",
+            SaleTransferOverride.to_loc == payload["to_loc"]).delete()
+    elif payload.get("kind") and payload.get("parent_sku"):
+        db.query(SaleTransferOverride).filter(
+            SaleTransferOverride.season_id == payload["season_id"],
+            SaleTransferOverride.kind == payload["kind"],
+            SaleTransferOverride.parent_sku == payload["parent_sku"]).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/overrides/reset")
+async def reset_overrides(payload: dict = Body(...), db: Session = Depends(get_db)):
+    db.query(SaleTransferOverride).filter(
+        SaleTransferOverride.season_id == payload["season_id"]).delete()
+    db.commit()
+    return {"ok": True}
 
 
 # ============== Shopify tag push (newsletter pre-sale) ==============

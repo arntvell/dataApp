@@ -599,3 +599,27 @@ class SaleAllocation(Base):
     target_qty = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class SaleTransferOverride(Base):
+    """User overrides layered onto the generated allocation plan for a sale season.
+      kind='move'        -> (sku, from_loc, to_loc, qty): pin a line's qty, remove it (qty=0),
+                            or add a manual transfer the engine never proposed
+      kind='exclude'     -> (parent_sku): never allocate this style
+      kind='force'       -> (parent_sku): allocate even if the engine would skip it
+      kind='consolidate' -> (parent_sku, to_loc): move ALL of the style's stock into one store
+      kind='rule'        -> (payload): standing policy (added in a later phase)
+    """
+    __tablename__ = "sale_transfer_overrides"
+
+    id = Column(Integer, primary_key=True, index=True)
+    season_id = Column(Integer, ForeignKey("sale_seasons.id"), nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    parent_sku = Column(String, nullable=True, index=True)
+    sku = Column(String, nullable=True, index=True)
+    from_loc = Column(String, nullable=True)
+    to_loc = Column(String, nullable=True)
+    qty = Column(Integer, nullable=True)
+    payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

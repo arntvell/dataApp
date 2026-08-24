@@ -173,6 +173,10 @@
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Sale Planner
             </button>
+            <button onclick="showTab('sale-stock')" id="tab-btn-sale-stock"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Sale Stock
+            </button>
             <button onclick="showTab('allocate')" id="tab-btn-allocate"
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Allocate
@@ -910,6 +914,120 @@
             </div>
 
         </div> <!-- end tab-sale-planner -->
+
+        <!-- TAB: Sale Stock Report (per-size stock across stores, for allocation) -->
+        <div id="tab-sale-stock" class="hidden">
+            <div class="card mb-4">
+                <div class="flex flex-wrap items-center gap-3 mb-2">
+                    <h2 class="text-xl font-semibold">Sale Stock Report</h2>
+                    <select id="saleStockSeason" onchange="onSaleStockSeasonChange()" class="border rounded-lg px-2 py-1.5 text-sm"></select>
+                    <span class="text-sm text-gray-400" id="saleStockMeta"></span>
+                    <span class="flex-1"></span>
+                    <button onclick="loadSaleStockReport()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Refresh</button>
+                    <button onclick="exportSaleStockCsv()" id="saleStockCsvBtn" class="text-xs px-2 py-1 border rounded hover:bg-gray-50 hidden">Download CSV</button>
+                </div>
+                <div class="inline-flex rounded-lg border overflow-hidden mb-3 text-sm">
+                    <button id="saleStockViewReport" onclick="setSaleStockMode('report')" class="px-3 py-1.5 bg-blue-600 text-white font-medium">Stock report</button>
+                    <button id="saleStockViewAlloc" onclick="setSaleStockMode('alloc')" class="px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50">Allocation plan</button>
+                </div>
+
+                <!-- ===== Report view ===== -->
+                <div id="saleStockReportView">
+                <p class="text-xs text-gray-400 mb-3">Every style marked <b>in the sale</b> that still has stock. Expand a style to see each size's stock per store &amp; warehouse — <span class="text-gray-600">on-hand</span> <span class="text-gray-400">(available in grey)</span>. Performance is over the last 365 days; net revenue &amp; markdown are for the sale window.</p>
+                <div class="flex flex-wrap items-center gap-2 mb-3">
+                    <input id="saleStockSearch" oninput="renderSaleStock()" placeholder="Search style or SKU…" class="border rounded-lg px-3 py-1.5 text-sm w-56">
+                    <select id="saleStockView" onchange="renderSaleStock()" class="border rounded-lg px-2 py-1.5 text-sm bg-blue-50 font-medium" title="Declutter the list to what needs action">
+                        <option value="">View: All styles</option>
+                        <option value="push">View: Needs WH push (store missing a size WH has)</option>
+                        <option value="instore">View: In-store stock only</option>
+                        <option value="whonly">View: Sizes only in WH (no store has them)</option>
+                        <option value="low">View: Low sell-through (&lt;40%)</option>
+                        <option value="old">View: Carryover / older styles</option>
+                    </select>
+                    <select id="saleStockBrand" onchange="renderSaleStock()" class="border rounded-lg px-2 py-1.5 text-sm"><option value="">All brands</option></select>
+                    <select id="saleStockGender" onchange="renderSaleStock()" class="border rounded-lg px-2 py-1.5 text-sm">
+                        <option value="">All genders</option><option value="men">Men</option><option value="women">Women</option><option value="unisex">Unisex</option>
+                    </select>
+                    <select id="saleStockSort" onchange="renderSaleStock()" class="border rounded-lg px-2 py-1.5 text-sm">
+                        <option value="brand">Sort: Brand / name</option>
+                        <option value="sell_through">Sort: Sell-through ↑ (worst first)</option>
+                        <option value="sell_through_desc">Sort: Sell-through ↓ (best first)</option>
+                        <option value="on_hand">Sort: On-hand ↓</option>
+                        <option value="sold">Sort: Units sold 365d ↓</option>
+                        <option value="net_revenue">Sort: Net revenue ↓</option>
+                    </select>
+                    <button onclick="toggleAllSaleStock(true)" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Expand all</button>
+                    <button onclick="toggleAllSaleStock(false)" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Collapse all</button>
+                </div>
+                <div id="saleStockBody">
+                    <div class="py-6 text-center text-gray-400">Loading…</div>
+                </div>
+                </div>
+
+                <!-- ===== Allocation plan view ===== -->
+                <div id="saleStockAllocView" class="hidden">
+                    <p class="text-xs text-gray-400 mb-3">Suggested size-level transfers, ranked by where each style actually sells (365d sales → category demand → store size).
+                        <span class="text-blue-600">Push</span> fills a selling store that's out of a size from the warehouse; <span class="text-amber-600">rebalance</span> moves a size from a store that doesn't sell it to one that does. Tick the moves you want, adjust quantities, then export for Cin7.</p>
+                    <div class="flex flex-wrap items-center gap-3 mb-3">
+                        <label class="text-sm text-gray-600 flex items-center gap-1">Min units/move
+                            <input id="allocMinMove" type="number" min="1" value="1" class="border rounded px-2 py-1 text-sm w-16">
+                        </label>
+                        <label class="text-sm text-gray-600 flex items-center gap-1">
+                            <input id="allocRebalance" type="checkbox" checked> Include store↔store rebalance
+                        </label>
+                        <div class="inline-flex rounded-lg border overflow-hidden text-sm">
+                            <button id="allocLayoutMatrix" onclick="setAllocLayout('matrix')" class="px-2 py-1 bg-blue-600 text-white font-medium">Matrix</button>
+                            <button id="allocLayoutList" onclick="setAllocLayout('list')" class="px-2 py-1 bg-white text-gray-600 hover:bg-gray-50">By-store list</button>
+                        </div>
+                        <select id="allocDestFilter" onchange="renderAllocPlan()" class="border rounded-lg px-2 py-1.5 text-sm" title="Filters the by-store list">
+                            <option value="">All destinations</option>
+                        </select>
+                        <select id="allocTypeFilter" onchange="renderAllocPlan()" class="border rounded-lg px-2 py-1.5 text-sm" title="Filters the by-store list">
+                            <option value="">Push + rebalance</option>
+                            <option value="push">Push only</option>
+                            <option value="rebalance">Rebalance only</option>
+                        </select>
+                        <button onclick="loadAllocPlan()" class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">Generate plan</button>
+                        <span class="flex-1"></span>
+                        <button onclick="exportAllocCsv()" id="allocCsvBtn" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 hidden">Export transfer CSV</button>
+                        <button onclick="exportAllocImportCsv()" id="allocImportBtn" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 hidden">Export import CSV</button>
+                    </div>
+                    <div id="allocSummary" class="mb-3"></div>
+                    <div id="allocStoreExcludeBar" class="flex flex-wrap items-center gap-2 mb-3 text-xs"></div>
+
+                    <datalist id="allocStyleList"></datalist>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <button onclick="toggleAllocSub('allocManualForm')" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">＋ Add manual move</button>
+                        <button onclick="toggleAllocSub('allocStylePanel')" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Style overrides</button>
+                        <span class="flex-1"></span>
+                        <button onclick="resetAllOverrides()" class="text-xs px-2 py-1 border rounded text-red-500 hover:bg-red-50">Reset all overrides</button>
+                    </div>
+
+                    <div id="allocManualForm" class="hidden border rounded-lg p-3 mb-2 bg-gray-50 flex flex-wrap items-end gap-2">
+                        <label class="text-xs text-gray-500">Style<br><input list="allocStyleList" id="mvStyle" onchange="onManualStyle()" placeholder="search…" class="border rounded px-2 py-1 text-sm w-52"></label>
+                        <label class="text-xs text-gray-500">Size<br><select id="mvSize" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <label class="text-xs text-gray-500">From<br><select id="mvFrom" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <label class="text-xs text-gray-500">To<br><select id="mvTo" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <label class="text-xs text-gray-500">Qty<br><input id="mvQty" type="number" min="1" value="1" class="border rounded px-2 py-1 text-sm w-16 text-right"></label>
+                        <button onclick="addManualMove()" class="text-sm px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">Add move</button>
+                    </div>
+
+                    <div id="allocStylePanel" class="hidden border rounded-lg p-3 mb-2 bg-gray-50 flex flex-wrap items-end gap-2">
+                        <label class="text-xs text-gray-500">Style<br><input list="allocStyleList" id="soStyle" placeholder="search…" class="border rounded px-2 py-1 text-sm w-52"></label>
+                        <button onclick="setStyleOverride('exclude')" class="text-sm px-3 py-1.5 border rounded hover:bg-gray-100" title="Never allocate this style">Exclude</button>
+                        <button onclick="setStyleOverride('force')" class="text-sm px-3 py-1.5 border rounded hover:bg-gray-100" title="Allocate even if the engine would skip it">Force-include</button>
+                        <span class="text-gray-300">|</span>
+                        <label class="text-xs text-gray-500">Consolidate to<br><select id="soStore" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <button onclick="setStyleOverride('consolidate')" class="text-sm px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700" title="Move all of this style's stock into one store">Move all →</button>
+                    </div>
+
+                    <div id="allocActiveOverrides" class="mb-2"></div>
+                    <div id="allocBody">
+                        <div class="py-6 text-center"><button onclick="loadAllocPlan()" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">Generate allocation plan</button></div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- TAB: Allocate (central warehouse → stores) -->
         <div id="tab-allocate" class="hidden">
@@ -2964,7 +3082,7 @@
 
         let currentTab = 'sales';
 
-        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner', 'allocate'];
+        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner', 'sale-stock', 'allocate'];
 
         function showTab(tab) {
             currentTab = tab;
@@ -3008,6 +3126,12 @@
             if (tab === 'allocate' && !allocLoaded) {
                 allocLoaded = true;
                 loadAllocation();
+            }
+
+            // Lazy-load sale stock report tab on first visit
+            if (tab === 'sale-stock' && !saleStockLoaded) {
+                saleStockLoaded = true;
+                initSaleStockReport();
             }
 
             // Redraw charts when switching to sales (canvas visibility issue)
@@ -3869,6 +3993,720 @@
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = `sale_performance_${saleSeason.id}.csv`;
+            a.click();
+        }
+
+        // ============== Sale Stock Report ==============
+        let saleStockLoaded = false;
+        let saleStockSeason = null;      // season id selected in this tab
+        let saleStockData = null;        // { season, stores, warehouse, styles:[...] }
+        let saleStockPerf = {};          // parent_sku -> {net_revenue, markdown, avg_disc_pct}
+
+        async function initSaleStockReport() {
+            const sel = document.getElementById('saleStockSeason');
+            try {
+                const seasons = saleSeasons.length ? saleSeasons
+                    : await (await fetch(`${API_BASE}/sale/seasons`)).json();
+                saleSeasons = seasons;
+                if (!seasons.length) {
+                    sel.innerHTML = '<option>— no seasons —</option>';
+                    document.getElementById('saleStockBody').innerHTML =
+                        '<div class="py-6 text-center text-gray-400">Create a season in Sale Planner first.</div>';
+                    return;
+                }
+                sel.innerHTML = seasons.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+                saleStockSeason = (saleSeason && saleSeason.id) || seasons[0].id;
+                sel.value = saleStockSeason;
+                loadSaleStockReport();
+            } catch (e) {
+                document.getElementById('saleStockBody').innerHTML =
+                    '<div class="py-6 text-center text-red-400">Failed to load seasons.</div>';
+            }
+        }
+
+        function onSaleStockSeasonChange() {
+            saleStockSeason = parseInt(document.getElementById('saleStockSeason').value);
+            allocPlanLoaded = false; allocPlanData = null;   // rebuild plan for the new season on demand
+            loadSaleStockReport();
+        }
+
+        async function loadSaleStockReport() {
+            if (!saleStockSeason) return;
+            const body = document.getElementById('saleStockBody');
+            body.innerHTML = '<div class="py-6 text-center text-gray-400">Crunching stock…</div>';
+            document.getElementById('saleStockCsvBtn').classList.add('hidden');
+            try {
+                // Stock report (new) + performance (existing) — merge net revenue / markdown by style.
+                const [rep, perf] = await Promise.all([
+                    fetch(`${API_BASE}/sale/stock-report?season_id=${saleStockSeason}`).then(r => r.json()),
+                    fetch(`${API_BASE}/sale/performance?season_id=${saleStockSeason}`).then(r => r.json()).catch(() => null),
+                ]);
+                saleStockData = rep;
+                saleStockPerf = {};
+                (perf && perf.styles || []).forEach(s => {
+                    saleStockPerf[s.parent_sku] = {
+                        net_revenue: s.net_revenue, markdown: s.markdown, avg_disc_pct: s.avg_disc_pct };
+                });
+                // brand filter options
+                const brands = [...new Set((rep.styles || []).map(s => s.brand))].sort();
+                document.getElementById('saleStockBrand').innerHTML =
+                    '<option value="">All brands</option>' + brands.map(b => `<option>${escAttr(b)}</option>`).join('');
+                renderSaleStock();
+            } catch (e) {
+                body.innerHTML = '<div class="py-6 text-center text-red-400">Failed to load stock report.</div>';
+            }
+        }
+
+        // Does WH hold a size that at least one store is completely out of? (actionable gap)
+        function styleNeedsPush(s) {
+            const stores = saleStockData.stores || [];
+            return (s.variants || []).some(v => (v.warehouse.on_hand || 0) > 0
+                && stores.some(loc => ((v.store_stock[loc] || {}).on_hand || 0) <= 0));
+        }
+        // A size that exists in WH but no store has any of it.
+        function styleHasWhOnlySize(s) {
+            const stores = saleStockData.stores || [];
+            return (s.variants || []).some(v => (v.warehouse.on_hand || 0) > 0
+                && stores.every(loc => ((v.store_stock[loc] || {}).on_hand || 0) <= 0));
+        }
+        function styleInStore(s) {
+            return (saleStockData.stores || []).some(loc => ((s.store_totals[loc] || {}).on_hand || 0) > 0);
+        }
+
+        function saleStockRows() {
+            // apply search + view mode + brand + gender filter + sort, returning styles to render
+            if (!saleStockData) return [];
+            const q = (document.getElementById('saleStockSearch').value || '').trim().toLowerCase();
+            const brand = document.getElementById('saleStockBrand').value;
+            const gender = document.getElementById('saleStockGender').value;
+            const view = document.getElementById('saleStockView').value;
+            const sort = document.getElementById('saleStockSort').value;
+            let rows = (saleStockData.styles || []).filter(s => {
+                if (brand && s.brand !== brand) return false;
+                if (gender && (s.gender || '').toLowerCase() !== gender) return false;
+                if (q && !(`${s.name} ${s.parent_sku}`.toLowerCase().includes(q))) return false;
+                if (view === 'push' && !styleNeedsPush(s)) return false;
+                if (view === 'whonly' && !styleHasWhOnlySize(s)) return false;
+                if (view === 'instore' && !styleInStore(s)) return false;
+                if (view === 'low' && !(s.sell_through < 40)) return false;
+                if (view === 'old' && !(s.old_flag || s.carryover_flag)) return false;
+                return true;
+            });
+            const perf = p => saleStockPerf[p] || {};
+            const cmp = {
+                brand: (a, b) => (a.brand || '').localeCompare(b.brand || '') || (a.name || '').localeCompare(b.name || ''),
+                sell_through: (a, b) => a.sell_through - b.sell_through,
+                sell_through_desc: (a, b) => b.sell_through - a.sell_through,
+                on_hand: (a, b) => b.on_hand - a.on_hand,
+                sold: (a, b) => b.sold - a.sold,
+                net_revenue: (a, b) => (perf(b.parent_sku).net_revenue || 0) - (perf(a.parent_sku).net_revenue || 0),
+            }[sort] || cmpBrandFallback;
+            return rows.sort(cmp);
+        }
+        function cmpBrandFallback(a, b) { return (a.brand || '').localeCompare(b.brand || ''); }
+
+        function _cell(c) {
+            // on-hand bold, available in grey; blank cell if truly empty
+            const oh = Math.round(c.on_hand || 0), av = Math.round(c.available || 0);
+            if (!oh && !av) return '<span class="text-gray-300">·</span>';
+            return `${oh}<span class="text-gray-400 text-[10px] ml-0.5">(${av})</span>`;
+        }
+
+        function renderSaleStock() {
+            const body = document.getElementById('saleStockBody');
+            if (!saleStockData) { body.innerHTML = ''; return; }
+            const stores = saleStockData.stores || [];
+            const rows = saleStockRows();
+            document.getElementById('saleStockCsvBtn').classList.toggle('hidden', !rows.length);
+            document.getElementById('saleStockMeta').textContent =
+                `${(saleStockData.season || {}).name || ''} · ${rows.length} styles`;
+            if (!rows.length) {
+                body.innerHTML = '<div class="py-6 text-center text-gray-400">No styles match — or none are marked in the sale with stock.</div>';
+                return;
+            }
+            const th = 'sticky top-0 z-20 bg-gray-50 px-2 py-1 text-right font-medium';   // frozen header cells
+            const storeCols = stores.map(s => `<th class="${th}">${s.replace('Livid ', '').replace('Past Løkka', 'Past')}</th>`).join('')
+                + `<th class="${th}">WH</th>`;
+            const header = `<thead><tr class="text-[11px] text-gray-500 uppercase border-b">
+                <th class="sticky top-0 z-20 bg-gray-50 px-2 py-1.5 text-left font-medium">Style</th>
+                <th class="${th}" title="Sell-through: sold ÷ (sold + on-hand), 365d">ST%</th>
+                <th class="${th}" title="Units sold, last 365 days (last 30 days)">Sold</th>
+                <th class="${th}" title="Discounted / full-price units, 365d">D/F</th>
+                <th class="${th}" title="Net revenue in the sale window">Net rev</th>
+                <th class="${th}" title="Realized markdown vs regular price">Markdn</th>
+                ${storeCols}
+                <th class="${th}">Total</th>
+            </tr></thead>`;
+            const bodyRows = rows.map(s => saleStockStyleRow(s, stores)).join('');
+            body.innerHTML = `<div class="overflow-auto max-h-[75vh] border rounded-lg"><table class="w-full text-sm">${header}<tbody>${bodyRows}</tbody></table></div>`;
+        }
+
+        function saleStockStyleRow(s, stores) {
+            const p = saleStockPerf[s.parent_sku] || {};
+            const st = s.sell_through;
+            const stColor = st < 40 ? 'text-red-600' : st < 70 ? 'text-amber-600' : 'text-green-600';
+            const storeCells = stores.map(loc => `<td class="px-2 py-1.5 text-right whitespace-nowrap">${_cell(s.store_totals[loc] || {})}</td>`).join('')
+                + `<td class="px-2 py-1.5 text-right whitespace-nowrap">${_cell(s.warehouse_total || {})}</td>`;
+            const key = escAttr(s.parent_sku);
+            let badge = '';
+            if (s.carryover_flag) badge = '<span class="text-[9px] uppercase tracking-wide bg-amber-100 text-amber-700 rounded px-1 py-0.5 ml-1" title="Sold across several years — likely carry-over">carryover</span>';
+            else if (s.old_flag) badge = `<span class="text-[9px] uppercase tracking-wide bg-gray-200 text-gray-600 rounded px-1 py-0.5 ml-1" title="First sold ${s.first_sold_year || ''}">old${s.first_sold_year ? " '" + String(s.first_sold_year).slice(2) : ''}</span>`;
+            return `<tr class="border-b hover:bg-gray-50 cursor-pointer" data-stockstyle="${key}" onclick="toggleSaleStockStyle(this)">
+                <td class="px-2 py-1.5">
+                    <span class="saleStockChevron text-gray-400 mr-1">▸</span>
+                    <span class="font-medium">${s.name || s.parent_sku}</span>
+                    <span class="text-[11px] text-gray-400 ml-1">${s.brand} · ${s.parent_sku}</span>${badge}
+                </td>
+                <td class="px-2 py-1.5 text-right font-semibold ${stColor}">${st}%</td>
+                <td class="px-2 py-1.5 text-right">${s.sold}<span class="text-gray-400 text-[10px] ml-0.5">(${s.sold_30d})</span></td>
+                <td class="px-2 py-1.5 text-right text-gray-500 text-xs">${s.sold_disc}/${s.sold_full}</td>
+                <td class="px-2 py-1.5 text-right">${p.net_revenue != null ? fmtNok(p.net_revenue) : '—'}</td>
+                <td class="px-2 py-1.5 text-right text-gray-500">${p.markdown != null ? fmtNok(p.markdown) : '—'}</td>
+                ${storeCells}
+                <td class="px-2 py-1.5 text-right font-semibold">${_cell({ on_hand: s.on_hand, available: (s.variants || []).reduce((a, v) => a + v.available, 0) })}</td>
+            </tr>`;
+        }
+
+        function toggleSaleStockStyle(row) {
+            const key = row.dataset.stockstyle;
+            const chev = row.querySelector('.saleStockChevron');
+            // Already open? remove every detail row belonging to this style.
+            if (row.nextElementSibling && row.nextElementSibling.dataset.detailfor === key) {
+                while (row.nextElementSibling && row.nextElementSibling.dataset.detailfor === key)
+                    row.nextElementSibling.remove();
+                if (chev) chev.textContent = '▸';
+                return;
+            }
+            const s = (saleStockData.styles || []).find(x => escAttr(x.parent_sku) === key);
+            if (!s) return;
+            if (chev) chev.textContent = '▾';
+            const stores = saleStockData.stores || [];
+            // Detail rows are inserted into the SAME table so their columns line up under
+            // the frozen header. Column order matches saleStockStyleRow exactly.
+            // 1) history row: per-store units sold (365d) under the store columns.
+            const soldCells = stores.map(loc => {
+                const u = (s.store_sold || {})[loc] || 0;
+                return `<td class="px-2 py-1 text-right ${u ? 'text-indigo-600 font-medium' : 'text-gray-300'}">${u || '·'}</td>`;
+            }).join('') + '<td class="px-2 py-1"></td>';
+            const historyRow = `<tr data-detailfor="${key}" class="border-b border-gray-100 bg-indigo-50/30">
+                <td class="px-2 py-1 pl-8 text-[11px] uppercase tracking-wide text-indigo-500 whitespace-nowrap">Sold 365d by store →</td>
+                <td colspan="5"></td>
+                ${soldCells}
+                <td class="px-2 py-1 text-right text-indigo-400 text-xs">${s.sold}</td>
+            </tr>`;
+            // 2) one row per size: stock per store + WH + total.
+            const sizeRows = (s.variants || []).map(v => {
+                const storeCells = stores.map(loc => `<td class="px-2 py-1 text-right whitespace-nowrap">${_cell(v.store_stock[loc] || {})}</td>`).join('')
+                    + `<td class="px-2 py-1 text-right whitespace-nowrap">${_cell(v.warehouse || {})}</td>`;
+                return `<tr data-detailfor="${key}" class="border-b border-gray-100 bg-gray-50/40">
+                    <td class="px-2 py-1 pl-8 text-gray-600 whitespace-nowrap">${v.size || v.sku} <span class="text-[10px] text-gray-400">${v.sku}</span></td>
+                    <td></td>
+                    <td class="px-2 py-1 text-right text-gray-500">${v.sold}</td>
+                    <td colspan="3"></td>
+                    ${storeCells}
+                    <td class="px-2 py-1 text-right font-medium">${_cell({ on_hand: v.on_hand, available: v.available })}</td>
+                </tr>`;
+            }).join('');
+            row.insertAdjacentHTML('afterend', historyRow + sizeRows);
+        }
+
+        function toggleAllSaleStock(expand) {
+            document.querySelectorAll('#saleStockBody tr[data-stockstyle]').forEach(row => {
+                const open = row.nextElementSibling && row.nextElementSibling.dataset.detailfor === row.dataset.stockstyle;
+                if (expand && !open) toggleSaleStockStyle(row);
+                else if (!expand && open) toggleSaleStockStyle(row);
+            });
+        }
+
+        function exportSaleStockCsv() {
+            if (!saleStockData) return;
+            const stores = saleStockData.stores || [];
+            const locCols = [...stores, saleStockData.warehouse];
+            const head = ['Brand', 'Style', 'Parent SKU', 'SKU', 'Size', 'Gender', 'Carryover', 'First sold',
+                'Sell-through %', 'Sold 365d', 'Sold 30d', 'Disc units', 'Full units', 'Net revenue', 'Markdown',
+                ...stores.map(l => `${l} sold 365d`),
+                ...locCols.map(l => `${l} on-hand`), ...locCols.map(l => `${l} available`), 'Total on-hand', 'Total available'];
+            const lines = [head.join(';')];
+            const csv = a => `"${String(a ?? '').replace(/"/g, '""')}"`;
+            saleStockRows().forEach(s => {
+                const p = saleStockPerf[s.parent_sku] || {};
+                (s.variants || []).forEach(v => {
+                    const cells = [s.brand, s.name, s.parent_sku, v.sku, v.size, s.gender,
+                        s.carryover_flag ? 'yes' : '', s.first_sold_year ?? '',
+                        s.sell_through, s.sold, s.sold_30d, s.sold_disc, s.sold_full, p.net_revenue ?? '', p.markdown ?? '',
+                        ...stores.map(l => (s.store_sold || {})[l] || 0),
+                        ...locCols.map(l => Math.round(((l === saleStockData.warehouse ? v.warehouse : v.store_stock[l]) || {}).on_hand || 0)),
+                        ...locCols.map(l => Math.round(((l === saleStockData.warehouse ? v.warehouse : v.store_stock[l]) || {}).available || 0)),
+                        Math.round(v.on_hand), Math.round(v.available)];
+                    lines.push(cells.map(csv).join(';'));
+                });
+            });
+            const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `sale_stock_report_${saleStockSeason}.csv`;
+            a.click();
+        }
+
+        // ---------- Allocation plan (Phase 2) — persistent, DB-backed overrides ----------
+        let allocPlanData = null;        // server response: moves (with origin) + overrides + summary
+        let allocPlanLoaded = false;
+
+        function moveKey(m) { return `${m.from}>${m.to}:${m.sku}`; }
+        function _shortStoreJs(s) { return (s || '').replace('Livid ', '').replace('Past Løkka', 'Past'); }
+
+        function setSaleStockMode(mode) {
+            const isAlloc = mode === 'alloc';
+            document.getElementById('saleStockReportView').classList.toggle('hidden', isAlloc);
+            document.getElementById('saleStockAllocView').classList.toggle('hidden', !isAlloc);
+            const on = 'px-3 py-1.5 bg-blue-600 text-white font-medium';
+            const off = 'px-3 py-1.5 bg-white text-gray-600 hover:bg-gray-50';
+            document.getElementById('saleStockViewReport').className = isAlloc ? off : on;
+            document.getElementById('saleStockViewAlloc').className = isAlloc ? on : off;
+            if (isAlloc && !allocPlanLoaded) loadAllocPlan();
+        }
+
+        function toggleAllocSub(id) { document.getElementById(id).classList.toggle('hidden'); }
+
+        async function loadAllocPlan() {
+            if (!saleStockSeason) return;
+            allocPlanLoaded = true;
+            const body = document.getElementById('allocBody');
+            body.innerHTML = '<div class="py-6 text-center text-gray-400">Building plan…</div>';
+            document.getElementById('allocCsvBtn').classList.add('hidden');
+            const minMove = Math.max(1, parseInt(document.getElementById('allocMinMove').value) || 1);
+            const reb = document.getElementById('allocRebalance').checked ? 1 : 0;
+            try {
+                allocPlanData = await (await fetch(
+                    `${API_BASE}/sale/allocation-plan?season_id=${saleStockSeason}&min_move=${minMove}&include_rebalance=${reb}`)).json();
+                const dests = [...new Set(allocPlanData.moves.map(m => m.to))];
+                document.getElementById('allocDestFilter').innerHTML = '<option value="">All destinations</option>'
+                    + dests.map(d => `<option value="${escAttr(d)}">${d}</option>`).join('');
+                populateAllocPickers();
+                renderAllocPlan();
+            } catch (e) {
+                body.innerHTML = '<div class="py-6 text-center text-red-400">Failed to build plan.</div>';
+            }
+        }
+
+        // Fill the manual-move + style-override pickers from the loaded report data.
+        function populateAllocPickers() {
+            const stores = (allocPlanData && allocPlanData.stores) || [];
+            const wh = allocPlanData && allocPlanData.warehouse;
+            const styles = (saleStockData && saleStockData.styles) || [];
+            document.getElementById('allocStyleList').innerHTML =
+                styles.map(s => `<option value="${escAttr(s.parent_sku)}">${escAttr(s.name)} · ${escAttr(s.brand)}</option>`).join('');
+            const storeOpts = stores.map(s => `<option value="${escAttr(s)}">${_shortStoreJs(s)}</option>`).join('');
+            document.getElementById('mvFrom').innerHTML = storeOpts + `<option value="${escAttr(wh)}">WH</option>`;
+            document.getElementById('mvTo').innerHTML = storeOpts;
+            document.getElementById('soStore').innerHTML = storeOpts;
+        }
+
+        function onManualStyle() {
+            const parent = document.getElementById('mvStyle').value;
+            const s = (saleStockData.styles || []).find(x => x.parent_sku === parent);
+            document.getElementById('mvSize').innerHTML = s
+                ? (s.variants || []).map(v => `<option value="${escAttr(v.sku)}">${escAttr(v.size)}</option>`).join('')
+                : '';
+        }
+
+        function renderAllocSummary() {
+            const moves = allocPlanData.moves || [];
+            const stores = allocPlanData.stores || [];
+            const perStore = {}; stores.forEach(s => perStore[s] = { in: 0, out: 0 });
+            const sm = allocPlanData.summary || {};
+            moves.forEach(m => {
+                if (perStore[m.to]) perStore[m.to].in += m.qty;
+                if (perStore[m.from]) perStore[m.from].out += m.qty;
+            });
+            const chip = (label, val, cls) => `<div class="border rounded-lg px-3 py-2 ${cls || 'bg-gray-50'}">
+                <div class="text-[10px] uppercase tracking-wide text-gray-400">${label}</div><div class="text-lg font-semibold">${val}</div></div>`;
+            const storeChips = stores.map(s => `<div class="border rounded-lg px-3 py-2 bg-white">
+                <div class="text-[11px] font-medium text-gray-600">${_shortStoreJs(s)}</div>
+                <div class="text-xs"><span class="text-green-600">+${perStore[s].in}</span> <span class="text-gray-300">/</span> <span class="text-red-500">−${perStore[s].out}</span></div></div>`).join('');
+            const skipTitle = Object.entries(sm.skip_reasons || {}).map(([r, n]) => `${n} ${r}`).join(' · ');
+            const skipChip = sm.skipped_styles
+                ? `<div class="border rounded-lg px-3 py-2 bg-gray-50" title="${escAttr(skipTitle)}">
+                    <div class="text-[10px] uppercase tracking-wide text-gray-400">Skipped</div><div class="text-lg font-semibold text-gray-500">${sm.skipped_styles}</div></div>`
+                : '';
+            document.getElementById('allocSummary').innerHTML =
+                `<div class="flex flex-wrap gap-2 items-stretch">
+                    ${chip('Units to move', sm.total_units || 0, 'bg-blue-50')}
+                    ${chip('Push', sm.push_moves || 0)}${chip('Rebalance', sm.rebalance_moves || 0)}
+                    ${(sm.consolidate_moves ? chip('Consolidate', sm.consolidate_moves) : '')}
+                    ${(sm.manual_moves ? chip('Manual', sm.manual_moves) : '')}
+                    ${chip('Moves', moves.length)}${skipChip}
+                    ${storeChips}
+                </div>`;
+            document.getElementById('allocCsvBtn').classList.toggle('hidden', !moves.length);
+            document.getElementById('allocImportBtn').classList.toggle('hidden', !moves.length);
+        }
+
+        function renderActiveOverrides() {
+            const ovs = (allocPlanData.overrides || []).filter(o => o.kind !== 'move');
+            const el = document.getElementById('allocActiveOverrides');
+            if (!ovs.length) { el.innerHTML = ''; return; }
+            const nameOf = p => { const s = (saleStockData.styles || []).find(x => x.parent_sku === p); return s ? s.name : p; };
+            const label = o => o.kind === 'consolidate' ? `move all → ${_shortStoreJs(o.to_loc)}` : o.kind;
+            const cls = o => o.kind === 'exclude' ? 'bg-gray-200 text-gray-700' : o.kind === 'force' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
+            el.innerHTML = '<span class="text-xs text-gray-400 mr-1">Style overrides:</span>' + ovs.map(o =>
+                `<span class="inline-flex items-center gap-1 text-xs rounded px-2 py-0.5 mr-1 mb-1 ${cls(o)}">
+                    ${escAttr(nameOf(o.parent_sku))} · ${label(o)}
+                    <button onclick="clearStyleOverride('${o.kind}','${escAttr(o.parent_sku)}')" class="hover:text-black">✕</button>
+                </span>`).join('');
+        }
+
+        let allocLayout = 'matrix';   // 'matrix' | 'list'
+        function setAllocLayout(mode) {
+            allocLayout = mode;
+            const on = 'px-2 py-1 bg-blue-600 text-white font-medium';
+            const off = 'px-2 py-1 bg-white text-gray-600 hover:bg-gray-50';
+            document.getElementById('allocLayoutMatrix').className = mode === 'matrix' ? on : off;
+            document.getElementById('allocLayoutList').className = mode === 'list' ? on : off;
+            // Destination filter is a by-store-list concept — hide it in the matrix.
+            document.getElementById('allocDestFilter').classList.toggle('hidden', mode === 'matrix');
+            if (allocPlanData) renderAllocPlan();
+        }
+
+        function renderStoreExcludeBar() {
+            const stores = allocPlanData.stores || [];
+            const ex = new Set(allocPlanData.excluded_stores || []);
+            document.getElementById('allocStoreExcludeBar').innerHTML =
+                '<span class="text-gray-400">Stores in plan (click to exclude):</span>' + stores.map(s => {
+                    const on = !ex.has(s);
+                    return `<button onclick="toggleStoreExclude('${escAttr(s)}')" class="px-2 py-0.5 rounded border ${on ? 'bg-white text-gray-700 hover:bg-gray-50' : 'bg-gray-200 text-gray-400 line-through'}">${_shortStoreJs(s)}</button>`;
+                }).join('');
+        }
+        async function toggleStoreExclude(store) {
+            const ex = new Set(allocPlanData.excluded_stores || []);
+            if (ex.has(store)) {
+                await fetch(`${API_BASE}/sale/override/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ season_id: saleStockSeason, kind: 'store_exclude', to_loc: store }) });
+            } else {
+                await _postOverride({ kind: 'store_exclude', to_loc: store });
+            }
+            loadAllocPlan();
+        }
+
+        function renderAllocPlan() {
+            if (!allocPlanData) { document.getElementById('allocBody').innerHTML = ''; return; }
+            renderAllocSummary();
+            renderActiveOverrides();
+            renderStoreExcludeBar();
+            document.getElementById('allocDestFilter').classList.toggle('hidden', allocLayout === 'matrix');
+            if (allocLayout === 'matrix') renderAllocMatrix(); else renderAllocList();
+        }
+
+        // ----- Matrix view: styles × stores, expandable to sizes, cells = units to send in -----
+        function _allocStyleMap() {
+            const map = {};
+            (saleStockData && saleStockData.styles || []).forEach(s => map[s.parent_sku] = s);
+            return map;
+        }
+        function renderAllocMatrix() {
+            const body = document.getElementById('allocBody');
+            const stores = allocPlanData.stores || [];
+            const ex = new Set(allocPlanData.excluded_stores || []);
+            const smap = _allocStyleMap();
+            // Type filter acts as a read-only lens on the matrix (net + cells reflect it).
+            const typeF = document.getElementById('allocTypeFilter').value;
+            const view = typeF ? allocPlanData.moves.filter(m => m.type === typeF) : allocPlanData.moves;
+            const parents = {};
+            view.forEach(m => (parents[m.parent_sku] = parents[m.parent_sku] || []).push(m));
+            (allocPlanData.overrides || []).forEach(o => { if (o.parent_sku && !parents[o.parent_sku]) parents[o.parent_sku] = []; });
+            const keys = Object.keys(parents).sort((a, b) => {
+                const A = smap[a] || {}, B = smap[b] || {};
+                return (A.brand || '').localeCompare(B.brand || '') || (A.name || '').localeCompare(B.name || '');
+            });
+            if (!keys.length) {
+                body.innerHTML = '<div class="py-6 text-center text-gray-400">No planned moves. Adjust parameters or add manual moves.</div>';
+                return;
+            }
+            const th = 'sticky top-0 z-20 bg-gray-50 px-2 py-1 text-right font-medium';
+            const storeCols = stores.map(s => `<th class="${th} ${ex.has(s) ? 'text-gray-300 line-through' : ''}">${_shortStoreJs(s)}</th>`).join('');
+            const header = `<thead><tr class="text-[11px] text-gray-500 uppercase border-b">
+                <th class="sticky top-0 z-20 bg-gray-50 px-2 py-1.5 text-left font-medium">Style</th>
+                <th class="${th}" title="Sell-through 365d">ST%</th>
+                <th class="${th}" title="Units sold 365d">Sold</th>
+                ${storeCols}<th class="${th}">WH</th>
+                <th class="sticky top-0 z-20 bg-gray-50 px-2 py-1"></th>
+            </tr></thead>`;
+            const rows = keys.map(p => matrixStyleRow(p, parents[p], smap[p], stores, ex)).join('');
+            const note = typeF ? `<div class="text-xs text-amber-600 mb-2">Showing <b>${typeF}</b> moves only — clear the type filter to edit cells.</div>` : '';
+            body.innerHTML = note + `<div class="overflow-auto max-h-[75vh] border rounded-lg"><table class="w-full text-sm">${header}<tbody>${rows}</tbody></table></div>`;
+        }
+
+        function matrixStyleRow(parent, moves, s, stores, ex) {
+            s = s || { name: parent, brand: '', sell_through: 0, sold: 0 };
+            const whAvail = Math.round((s.warehouse_total || {}).available || 0);
+            const net = {}; stores.forEach(st => net[st] = 0);
+            moves.forEach(m => { if (m.to in net) net[m.to] += m.qty; if (m.from in net) net[m.from] -= m.qty; });
+            const cell = st => {
+                if (ex.has(st)) return '<td class="px-2 py-1.5 text-right text-gray-300">—</td>';
+                const n = net[st];
+                if (!n) return '<td class="px-2 py-1.5 text-right text-gray-300">·</td>';
+                const cls = n > 0 ? 'text-green-600' : 'text-red-500';
+                return `<td class="px-2 py-1.5 text-right ${cls} font-medium">${n > 0 ? '+' : ''}${n}</td>`;
+            };
+            const storeSel = `<select onchange="if(this.value){setStyleOverrideFor('consolidate','${escAttr(parent)}',this.value)};this.selectedIndex=0" class="border rounded px-1 py-0.5 text-[11px] text-gray-500" title="Move all stock to one store">
+                <option value="">move all →</option>${stores.filter(x => !ex.has(x)).map(x => `<option value="${escAttr(x)}">${_shortStoreJs(x)}</option>`).join('')}</select>`;
+            const key = escAttr(parent);
+            const stColor = s.sell_through < 40 ? 'text-red-600' : s.sell_through < 70 ? 'text-amber-600' : 'text-green-600';
+            return `<tr class="border-b hover:bg-gray-50 cursor-pointer" data-mstyle="${key}" onclick="toggleMatrixStyle(this)">
+                <td class="px-2 py-1.5"><span class="matrixChevron text-gray-400 mr-1">▸</span><span class="font-medium">${s.name}</span> <span class="text-[11px] text-gray-400">${s.brand}</span></td>
+                <td class="px-2 py-1.5 text-right ${stColor}">${s.sell_through ?? 0}%</td>
+                <td class="px-2 py-1.5 text-right text-gray-500">${s.sold ?? 0}</td>
+                ${stores.map(cell).join('')}
+                <td class="px-2 py-1.5 text-right text-gray-400" title="Warehouse stock available to push">${whAvail || '·'}</td>
+                <td class="px-2 py-1.5 text-right whitespace-nowrap" onclick="event.stopPropagation()">
+                    ${storeSel}
+                    <button onclick="setStyleOverrideFor('exclude','${key}')" title="Exclude this style" class="text-red-400 hover:text-red-600 text-xs ml-1">✕</button>
+                </td>
+            </tr>`;
+        }
+
+        function toggleMatrixStyle(row) {
+            const key = row.dataset.mstyle;
+            const chev = row.querySelector('.matrixChevron');
+            if (row.nextElementSibling && row.nextElementSibling.dataset.mdetail === key) {
+                while (row.nextElementSibling && row.nextElementSibling.dataset.mdetail === key) row.nextElementSibling.remove();
+                if (chev) chev.textContent = '▸'; return;
+            }
+            if (chev) chev.textContent = '▾';
+            const stores = allocPlanData.stores || [];
+            const ex = new Set(allocPlanData.excluded_stores || []);
+            const s = _allocStyleMap()[key];
+            if (!s) return;
+            const typeF = document.getElementById('allocTypeFilter').value;   // read-only lens
+            const moves = allocPlanData.moves.filter(m => escAttr(m.parent_sku) === key && (!typeF || m.type === typeF));
+            const inQty = (sku, st) => { const m = moves.find(x => x.sku === sku && x.to === st); return m ? m.qty : 0; };
+            const rowsHtml = (s.variants || []).map(v => {
+                const cells = stores.map(st => {
+                    if (ex.has(st)) return '<td class="px-2 py-1 text-right text-gray-300">—</td>';
+                    const cur = Math.round((v.store_stock[st] || {}).on_hand || 0);
+                    const q = inQty(v.sku, st);
+                    if (typeF) return `<td class="px-2 py-1 text-right ${q ? 'text-green-600 font-medium' : 'text-gray-300'}" title="in ${st} now: ${cur}">${q || '·'}</td>`;
+                    return `<td class="px-2 py-1 text-right"><input type="number" min="0" value="${q}" title="in ${st} now: ${cur}"
+                        onchange="onMatrixCell('${escAttr(v.sku)}','${escAttr(st)}',this.value)"
+                        class="border rounded px-1 py-0.5 text-sm w-12 text-right ${q ? 'bg-green-50' : ''}"></td>`;
+                }).join('');
+                const wh = Math.round((v.warehouse || {}).available || 0);
+                return `<tr data-mdetail="${key}" class="border-b border-gray-100 bg-gray-50/40">
+                    <td class="px-2 py-1 pl-8 text-gray-600 whitespace-nowrap">${v.size} <span class="text-[10px] text-gray-400">${v.sku}</span></td>
+                    <td colspan="2"></td>
+                    ${cells}
+                    <td class="px-2 py-1 text-right text-gray-500">${wh || '·'}</td>
+                    <td></td>
+                </tr>`;
+            }).join('');
+            row.insertAdjacentHTML('afterend', rowsHtml);
+        }
+
+        // Edit a size×store cell = units to send INTO that store; source auto-resolved.
+        async function onMatrixCell(sku, store, val) {
+            const qty = Math.max(0, parseInt(val) || 0);
+            let parentSku = null;
+            let m = allocPlanData.moves.find(x => x.sku === sku && x.to === store);
+            if (m) {
+                parentSku = m.parent_sku;
+                m.qty = qty;
+                if (qty <= 0) allocPlanData.moves = allocPlanData.moves.filter(x => x !== m);
+                else if (m.origin === 'suggested') m.origin = 'edited';
+                await _postOverride({ kind: 'move', parent_sku: m.parent_sku, sku, from_loc: m.from, to_loc: store, qty, payload: { size: m.size } });
+            } else if (qty > 0) {
+                const src = _pickSource(sku, store);
+                if (!src) { alert('No stock available anywhere to source this from.'); return; }
+                let size = sku, brand = '', name = sku;
+                for (const s of (saleStockData.styles || [])) {
+                    const v = (s.variants || []).find(v => v.sku === sku);
+                    if (v) { parentSku = s.parent_sku; size = v.size; brand = s.brand; name = s.name; break; }
+                }
+                allocPlanData.moves.push({ type: 'manual', origin: 'manual', from: src, to: store, parent_sku: parentSku, sku, size, brand, name, qty, reason: 'manual override' });
+                await _postOverride({ kind: 'move', parent_sku: parentSku, sku, from_loc: src, to_loc: store, qty, payload: { size } });
+            }
+            renderAllocSummary();
+            if (parentSku) _updateMatrixNet(parentSku);   // update the row's net cells, keep expansion open
+        }
+
+        // Recompute a style row's per-store net (+in/−out) after a cell edit, in place.
+        function _updateMatrixNet(parent) {
+            const rows = [...document.querySelectorAll('#allocBody tr[data-mstyle]')];
+            const row = rows.find(r => r.dataset.mstyle === escAttr(parent));
+            if (!row) return;
+            const stores = allocPlanData.stores || [];
+            const ex = new Set(allocPlanData.excluded_stores || []);
+            const net = {}; stores.forEach(st => net[st] = 0);
+            allocPlanData.moves.filter(m => m.parent_sku === parent).forEach(m => {
+                if (m.to in net) net[m.to] += m.qty; if (m.from in net) net[m.from] -= m.qty;
+            });
+            const tds = row.children;  // 0 Style, 1 ST%, 2 Sold, then stores...
+            stores.forEach((st, i) => {
+                const td = tds[3 + i]; if (!td) return;
+                if (ex.has(st)) { td.className = 'px-2 py-1.5 text-right text-gray-300'; td.textContent = '—'; return; }
+                const n = net[st];
+                if (!n) { td.className = 'px-2 py-1.5 text-right text-gray-300'; td.textContent = '·'; }
+                else { td.className = `px-2 py-1.5 text-right font-medium ${n > 0 ? 'text-green-600' : 'text-red-500'}`; td.textContent = `${n > 0 ? '+' : ''}${n}`; }
+            });
+        }
+
+        // Pick a source for a new inflow: warehouse first, else the store with most available.
+        function _pickSource(sku, dest) {
+            const wh = allocPlanData.warehouse;
+            const ex = new Set(allocPlanData.excluded_stores || []);
+            let variant = null;
+            for (const s of (saleStockData.styles || [])) {
+                const v = (s.variants || []).find(v => v.sku === sku);
+                if (v) { variant = v; break; }
+            }
+            if (!variant) return null;
+            if ((variant.warehouse || {}).available > 0) return wh;
+            let best = null, bestAv = 0;
+            (allocPlanData.stores || []).forEach(st => {
+                if (st === dest || ex.has(st)) return;
+                const av = (variant.store_stock[st] || {}).available || 0;
+                if (av > bestAv) { bestAv = av; best = st; }
+            });
+            return best;
+        }
+
+        async function setStyleOverrideFor(kind, parent, toLoc) {
+            const payload = { kind, parent_sku: parent };
+            if (kind === 'consolidate') payload.to_loc = toLoc;
+            await _postOverride(payload);
+            loadAllocPlan();
+        }
+
+        function renderAllocList() {
+            const body = document.getElementById('allocBody');
+            const destF = document.getElementById('allocDestFilter').value;
+            const typeF = document.getElementById('allocTypeFilter').value;
+            let moves = allocPlanData.moves.filter(m =>
+                (!destF || m.to === destF) && (!typeF || m.type === typeF));
+            if (!moves.length) {
+                body.innerHTML = '<div class="py-6 text-center text-gray-400">No moves — every selling store already holds its sizes, or nothing matches the filter.</div>';
+                return;
+            }
+            const badge = { push: 'bg-blue-100 text-blue-700', rebalance: 'bg-amber-100 text-amber-700', consolidate: 'bg-purple-100 text-purple-700', manual: 'bg-gray-800 text-white' };
+            const short = { push: 'push', rebalance: 'rebal', consolidate: 'cons', manual: 'manual' };
+            const originTag = o => o === 'edited' ? '<span class="text-[9px] text-blue-500 ml-1">edited</span>'
+                : o === 'manual' ? '<span class="text-[9px] text-gray-500 ml-1">manual</span>' : '';
+            const groups = {};
+            moves.forEach(m => (groups[m.to] = groups[m.to] || []).push(m));
+            body.innerHTML = Object.keys(groups).sort().map(dest => {
+                const arr = groups[dest].sort((a, b) => (a.brand || '').localeCompare(b.brand || '') || (a.name || '').localeCompare(b.name || ''));
+                const rows = arr.map((m, i) => {
+                    const k = moveKey(m);
+                    return `<tr class="border-b border-gray-100 hover:bg-gray-50" data-mk="${escAttr(k)}">
+                        <td class="px-2 py-1.5"><span class="text-[9px] uppercase rounded px-1 py-0.5 ${badge[m.type] || 'bg-gray-100'}">${short[m.type] || m.type}</span></td>
+                        <td class="px-2 py-1.5 text-gray-500 whitespace-nowrap">${_shortStoreJs(m.from)} →</td>
+                        <td class="px-2 py-1.5"><span class="font-medium">${m.name}</span> <span class="text-[11px] text-gray-400">${m.brand}</span>${originTag(m.origin)}</td>
+                        <td class="px-2 py-1.5 whitespace-nowrap">${m.size}</td>
+                        <td class="px-2 py-1.5"><input type="number" min="0" value="${m.qty}" onchange="onAllocQty('${escAttr(k)}', this.value)" class="border rounded px-1 py-0.5 text-sm w-14 text-right"></td>
+                        <td class="px-2 py-1.5">
+                            <button onclick="removeMove('${escAttr(k)}')" title="Remove this move" class="text-red-400 hover:text-red-600 text-xs">✕</button>
+                            ${m.origin === 'edited' ? `<button onclick="resetMove('${escAttr(k)}')" title="Reset to suggestion" class="text-blue-400 hover:text-blue-600 text-xs ml-1">↺</button>` : ''}
+                        </td>
+                        <td class="px-2 py-1.5 text-[11px] text-gray-400">${m.reason}</td>
+                    </tr>`;
+                }).join('');
+                const units = arr.reduce((a, m) => a + m.qty, 0);
+                return `<div class="mb-4">
+                    <div class="font-medium text-sm mb-1 flex items-center gap-2">${dest}
+                        <span class="text-xs text-gray-400 font-normal">${arr.length} moves · ${units} units in</span></div>
+                    <table class="w-full text-sm"><tbody>${rows}</tbody></table>
+                </div>`;
+            }).join('');
+        }
+
+        function _findMove(k) { return (allocPlanData.moves || []).find(m => moveKey(m) === k); }
+
+        async function _postOverride(payload) {
+            await fetch(`${API_BASE}/sale/override`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ season_id: saleStockSeason, ...payload }) });
+        }
+
+        // qty edit — persist, update locally without a full rebuild (keeps scroll position)
+        async function onAllocQty(k, val) {
+            const m = _findMove(k); if (!m) return;
+            const qty = Math.max(0, parseInt(val) || 0);
+            await _postOverride({ kind: 'move', parent_sku: m.parent_sku, sku: m.sku, from_loc: m.from, to_loc: m.to, qty, payload: { size: m.size } });
+            if (qty <= 0) { allocPlanData.moves = allocPlanData.moves.filter(x => moveKey(x) !== k); renderAllocPlan(); }
+            else { m.qty = qty; if (m.origin === 'suggested') m.origin = 'edited'; renderAllocPlan(); }
+        }
+        async function removeMove(k) {
+            const m = _findMove(k); if (!m) return;
+            await _postOverride({ kind: 'move', parent_sku: m.parent_sku, sku: m.sku, from_loc: m.from, to_loc: m.to, qty: 0, payload: { size: m.size } });
+            allocPlanData.moves = allocPlanData.moves.filter(x => moveKey(x) !== k);
+            renderAllocPlan();
+        }
+        async function resetMove(k) {
+            const o = (allocPlanData.overrides || []).find(o => o.kind === 'move' && `${o.from_loc}>${o.to_loc}:${o.sku}` === k);
+            if (o) await fetch(`${API_BASE}/sale/override/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: o.id }) });
+            loadAllocPlan();
+        }
+
+        async function addManualMove() {
+            const parent = document.getElementById('mvStyle').value;
+            const sku = document.getElementById('mvSize').value;
+            const from_loc = document.getElementById('mvFrom').value;
+            const to_loc = document.getElementById('mvTo').value;
+            const qty = Math.max(1, parseInt(document.getElementById('mvQty').value) || 1);
+            if (!sku || !from_loc || !to_loc) { alert('Pick style, size, from and to.'); return; }
+            if (from_loc === to_loc) { alert('From and To must differ.'); return; }
+            const size = document.getElementById('mvSize').selectedOptions[0]?.textContent || sku;
+            await _postOverride({ kind: 'move', parent_sku: parent, sku, from_loc, to_loc, qty, payload: { size } });
+            loadAllocPlan();
+        }
+
+        async function setStyleOverride(kind) {
+            const parent = document.getElementById('soStyle').value;
+            if (!parent) { alert('Pick a style.'); return; }
+            const payload = { kind, parent_sku: parent };
+            if (kind === 'consolidate') payload.to_loc = document.getElementById('soStore').value;
+            await _postOverride(payload);
+            loadAllocPlan();
+        }
+        async function clearStyleOverride(kind, parent) {
+            await fetch(`${API_BASE}/sale/override/delete`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ season_id: saleStockSeason, kind, parent_sku: parent }) });
+            loadAllocPlan();
+        }
+        async function resetAllOverrides() {
+            if (!confirm('Remove ALL overrides for this season?')) return;
+            await fetch(`${API_BASE}/sale/overrides/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ season_id: saleStockSeason }) });
+            loadAllocPlan();
+        }
+
+        function exportAllocCsv() {
+            const moves = (allocPlanData && allocPlanData.moves) || [];
+            if (!moves.length) return;
+            const head = ['From', 'To', 'Type', 'Brand', 'Style', 'SKU', 'Size', 'Qty', 'Reason'];
+            const csv = a => `"${String(a ?? '').replace(/"/g, '""')}"`;
+            const lines = [head.join(',')];
+            [...moves].sort((a, b) => a.to.localeCompare(b.to) || (a.brand || '').localeCompare(b.brand || ''))
+                .forEach(m => lines.push([m.from, m.to, m.type, m.brand, m.name, m.sku, m.size, m.qty, m.reason].map(csv).join(',')));
+            const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `sale_transfers_${saleStockSeason}.csv`;
+            a.click();
+        }
+
+        // Import format for the external system: From Location, To Location, SKU, Name, Quantity, Comments
+        // (Name and Comments intentionally left blank.)
+        function exportAllocImportCsv() {
+            const moves = (allocPlanData && allocPlanData.moves) || [];
+            if (!moves.length) return;
+            const head = ['From Location', 'To Location', 'SKU', 'Name', 'Quantity', 'Comments'];
+            const csv = a => `"${String(a ?? '').replace(/"/g, '""')}"`;
+            const lines = [head.join(',')];
+            [...moves].sort((a, b) => a.to.localeCompare(b.to) || (a.brand || '').localeCompare(b.brand || ''))
+                .forEach(m => lines.push([m.from, m.to, m.sku, '', m.qty, ''].map(csv).join(',')));
+            const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `sale_transfers_import_${saleStockSeason}.csv`;
             a.click();
         }
 

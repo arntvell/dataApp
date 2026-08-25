@@ -35,53 +35,62 @@ def _run_migrations():
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS raw"))
     Base.metadata.create_all(engine)
 
-    with engine.begin() as conn:
-        # Column additions
-        for sql in [
-            "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR",
-            "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
-            "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
-            "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
-            "ALTER TABLE sale_plan_items ADD COLUMN IF NOT EXISTS is_carryover BOOLEAN DEFAULT FALSE",
-            "ALTER TABLE raw.shopify_products ADD COLUMN IF NOT EXISTS image_url VARCHAR",
-            "ALTER TABLE product_master ADD COLUMN IF NOT EXISTS image_url VARCHAR",
-        ]:
-            conn.execute(text(sql))
+    # Idempotent column adds + one-off backfills. These are best-effort and must NEVER
+    # wedge startup: the ALTERs need brief exclusive locks, and if another connection
+    # holds the table (e.g. a prior instance mid-request) the DDL would block forever,
+    # failing the health check. A short lock_timeout + non-fatal handling means a boot
+    # skips them under contention (everything here is IF NOT EXISTS / guarded, so it
+    # simply applies on the next clean boot).
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SET lock_timeout = '5s'"))
+            conn.execute(text("SET statement_timeout = '60s'"))
+            for sql in [
+                "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancel_reason VARCHAR",
+                "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ",
+                "ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS note TEXT",
+                "ALTER TABLE sales_refunds ADD COLUMN IF NOT EXISTS note TEXT",
+                "ALTER TABLE sale_plan_items ADD COLUMN IF NOT EXISTS is_carryover BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE raw.shopify_products ADD COLUMN IF NOT EXISTS image_url VARCHAR",
+                "ALTER TABLE product_master ADD COLUMN IF NOT EXISTS image_url VARCHAR",
+            ]:
+                conn.execute(text(sql))
 
-        # Backfill category_group for any rows where it is NULL.
-        # Default to standard_category, then apply group overrides.
-        conn.execute(text("""
-            UPDATE category_mappings
-            SET category_group = standard_category
-            WHERE category_group IS NULL AND standard_category IS NOT NULL
-        """))
-        for std_cat, group in CATEGORY_GROUPS.items():
+            # Backfill category_group for any rows where it is NULL.
+            # Default to standard_category, then apply group overrides.
             conn.execute(text("""
                 UPDATE category_mappings
-                SET category_group = :group
-                WHERE standard_category = :std_cat
-                  AND category_group IS DISTINCT FROM :group
-            """), {"group": group, "std_cat": std_cat})
+                SET category_group = standard_category
+                WHERE category_group IS NULL AND standard_category IS NOT NULL
+            """))
+            for std_cat, group in CATEGORY_GROUPS.items():
+                conn.execute(text("""
+                    UPDATE category_mappings
+                    SET category_group = :group
+                    WHERE standard_category = :std_cat
+                      AND category_group IS DISTINCT FROM :group
+                """), {"group": group, "std_cat": std_cat})
 
-        # Backfill total_discount for Sitoo orders where it was previously hardcoded to 0.
-        # moneydiscount is stored ex-VAT per unit in sales_order_items.discount_amount;
-        # multiply by 1.25 to produce an inc-VAT figure consistent with total_amount.
-        conn.execute(text("""
-            UPDATE sales_orders so
-            SET total_discount = subq.order_discount
-            FROM (
-                SELECT order_id,
-                       SUM(discount_amount * quantity) * 1.25 AS order_discount
-                FROM sales_order_items
-                GROUP BY order_id
-            ) subq
-            WHERE so.id = subq.order_id
-              AND so.source_system = 'sitoo'
-              AND so.total_discount = 0
-              AND subq.order_discount > 0
-        """))
-
-    logger.info("Migrations applied")
+            # Backfill total_discount for Sitoo orders where it was previously hardcoded to 0.
+            # moneydiscount is stored ex-VAT per unit in sales_order_items.discount_amount;
+            # multiply by 1.25 to produce an inc-VAT figure consistent with total_amount.
+            conn.execute(text("""
+                UPDATE sales_orders so
+                SET total_discount = subq.order_discount
+                FROM (
+                    SELECT order_id,
+                           SUM(discount_amount * quantity) * 1.25 AS order_discount
+                    FROM sales_order_items
+                    GROUP BY order_id
+                ) subq
+                WHERE so.id = subq.order_id
+                  AND so.source_system = 'sitoo'
+                  AND so.total_discount = 0
+                  AND subq.order_discount > 0
+            """))
+        logger.info("Migrations applied")
+    except Exception as e:
+        logger.warning("Startup migrations skipped (non-fatal, will retry next clean boot): %s", e)
 
 
 @asynccontextmanager

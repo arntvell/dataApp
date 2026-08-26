@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, cast, Date, case
+from sqlalchemy import func, and_, or_, cast, Date, case
 from typing import Optional, List
 from datetime import datetime, date, timedelta
 from database.config import get_db
@@ -434,6 +434,16 @@ async def get_staff_performance(
     return result
 
 
+def _multi_values(val):
+    """Parse a comma-separated multi-select filter value into a clean list, or None
+    (meaning 'no filter'). Empty / 'All' entries are dropped."""
+    if not val:
+        return None
+    parts = [p.strip() for p in str(val).split(',')]
+    parts = [p for p in parts if p and p not in ('All', 'ALL')]
+    return parts or None
+
+
 @router.get("/products")
 async def get_top_products(
     start_date: date = Query(default=None),
@@ -442,8 +452,9 @@ async def get_top_products(
     location: str = Query(default="All", description="Filter: All, Stores, Online, or specific location"),
     category: str = Query(default=None, description="Filter by category group"),
     standard_category: str = Query(default=None, description="Filter by exact standard_category (subcategory drill-down)"),
-    vendor: str = Query(default=None, description="Filter by vendor"),
+    vendor: str = Query(default=None, description="Filter by vendor(s), comma-separated for multi-select"),
     designed_for: str = Query(default=None, description="Filter by designed_for: men, women, unisex"),
+    search: str = Query(default=None, description="Free-text search over product name / SKU / parent SKU"),
     aggregate_by: str = Query(default="parent", description="Aggregate by: 'sku' or 'parent'"),
     compare_to: str = Query(default=None, description="Compare to: 'previous_period' or 'previous_year'"),
     sort_by: str = Query(default="revenue", description="Sort by: 'revenue' or 'quantity'"),
@@ -478,14 +489,16 @@ async def get_top_products(
 
         grp_expr = func.coalesce(CategoryMapping.category_group,
                                  CategoryMapping.standard_category, sq.c.product_category)
+        # Category + vendor accept comma-separated multi-select values.
+        cats = _multi_values(category)
         c_filter = True
         if standard_category and standard_category not in ['ALL', 'All', '']:
             sc_filter = CategoryMapping.standard_category == standard_category
-            c_filter = and_(sc_filter, grp_expr == category) if (
-                category and category not in ['ALL', 'All', '']) else sc_filter
-        elif category and category not in ['ALL', 'All', '']:
-            c_filter = grp_expr == category
-        v_filter = (sq.c.vendor == vendor) if (vendor and vendor not in ['ALL', 'All', '']) else True
+            c_filter = and_(sc_filter, grp_expr.in_(cats)) if cats else sc_filter
+        elif cats:
+            c_filter = grp_expr.in_(cats)
+        vendors = _multi_values(vendor)
+        v_filter = sq.c.vendor.in_(vendors) if vendors else True
         g_filter = (CategoryMapping.designed_for == designed_for) if (
             designed_for and designed_for not in ['ALL', 'All', '']) else True
 
@@ -493,7 +506,14 @@ async def get_top_products(
         sort_expr = (func.sum(sq.c.quantity).desc() if sort_by == "quantity"
                      else func.sum(sq.c.net_line).desc())
 
+        like = f"%{search.strip()}%" if (search and search.strip()) else None
+
         if aggregate_by == "parent":
+            # parent view can also match on the parent SKU / base product name
+            s_filter = or_(
+                sq.c.product_name.ilike(like), sq.c.sku.ilike(like),
+                ParentSkuMapping.parent_sku.ilike(like), ParentSkuMapping.base_product_name.ilike(like),
+            ) if like else True
             q_parent = db.query(
                 func.coalesce(ParentSkuMapping.parent_sku, sq.c.sku).label('sku'),
                 func.coalesce(
@@ -511,12 +531,13 @@ async def get_top_products(
             ).outerjoin(
                 CategoryMapping, sq.c.sku == CategoryMapping.sku
             ).filter(
-                and_(c_filter, v_filter, g_filter)
+                and_(c_filter, v_filter, g_filter, s_filter)
             ).group_by(
                 func.coalesce(ParentSkuMapping.parent_sku, sq.c.sku), cat_expr
             ).order_by(sort_expr)
             return apply_limit(q_parent)
         else:
+            s_filter = or_(sq.c.product_name.ilike(like), sq.c.sku.ilike(like)) if like else True
             q_sku = db.query(
                 sq.c.sku.label('sku'),
                 func.min(sq.c.product_name).label('name'),
@@ -528,7 +549,7 @@ async def get_top_products(
             ).outerjoin(
                 CategoryMapping, sq.c.sku == CategoryMapping.sku
             ).filter(
-                and_(c_filter, v_filter, g_filter)
+                and_(c_filter, v_filter, g_filter, s_filter)
             ).group_by(
                 sq.c.sku, cat_expr, CategoryMapping.designed_for
             ).order_by(sort_expr)

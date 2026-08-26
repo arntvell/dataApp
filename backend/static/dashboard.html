@@ -473,19 +473,30 @@
                             <!-- Options populated by JS -->
                         </select>
                     </div>
-                    <!-- Category Filter -->
+                    <!-- Search -->
+                    <div class="flex items-center gap-2">
+                        <input id="productSearch" oninput="onProductSearchInput()" placeholder="Search style / SKU…"
+                            class="px-3 py-1.5 text-sm border rounded-lg bg-white w-48">
+                    </div>
+                    <!-- Category Filter (multi-select) -->
                     <div class="flex items-center gap-2">
                         <label class="text-sm text-gray-600">Category:</label>
-                        <select id="productCategorySelect" onchange="onProductFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
-                            <!-- Options populated by JS -->
-                        </select>
+                        <div class="relative">
+                            <button type="button" id="btn-productCategory" onclick="toggleMultiPanel('productCategory')" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32 text-left flex items-center justify-between gap-2">
+                                <span id="lbl-productCategory">All</span><span class="text-gray-400">▾</span>
+                            </button>
+                            <div id="panel-productCategory" class="hidden absolute right-0 z-40 mt-1 w-56 max-h-72 overflow-auto bg-white border rounded-lg shadow-lg p-1 text-sm"></div>
+                        </div>
                     </div>
-                    <!-- Vendor Filter -->
+                    <!-- Vendor Filter (multi-select) -->
                     <div class="flex items-center gap-2">
                         <label class="text-sm text-gray-600">Vendor:</label>
-                        <select id="productVendorSelect" onchange="onProductFilterChange()" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32">
-                            <!-- Options populated by JS -->
-                        </select>
+                        <div class="relative">
+                            <button type="button" id="btn-productVendor" onclick="toggleMultiPanel('productVendor')" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32 text-left flex items-center justify-between gap-2">
+                                <span id="lbl-productVendor">All</span><span class="text-gray-400">▾</span>
+                            </button>
+                            <div id="panel-productVendor" class="hidden absolute right-0 z-40 mt-1 w-56 max-h-72 overflow-auto bg-white border rounded-lg shadow-lg p-1 text-sm"></div>
+                        </div>
                     </div>
                     <!-- Designed For Filter -->
                     <div class="flex items-center gap-2">
@@ -1261,14 +1272,18 @@
         }
 
         // Fetch top products
-        async function fetchProducts(startDate, endDate, location = 'All', category = 'All', vendor = 'All', designedFor = 'All') {
+        async function fetchProducts(startDate, endDate, location = 'All', category = [], vendor = [], designedFor = 'All', search = '') {
             try {
                 const limitParam = currentProductLimit > 0 ? `&limit=${currentProductLimit}` : '&limit=0';
                 let url = `${API_BASE}/products?start_date=${startDate}&end_date=${endDate}&aggregate_by=parent${limitParam}&sort_by=${currentProductSort}`;
                 if (location && location !== 'All') url += `&location=${encodeURIComponent(location)}`;
-                if (category && category !== 'All') url += `&category=${encodeURIComponent(category)}`;
-                if (vendor && vendor !== 'All') url += `&vendor=${encodeURIComponent(vendor)}`;
+                // category / vendor accept single value (legacy) or an array (multi-select)
+                const catArr = Array.isArray(category) ? category : (category && category !== 'All' ? [category] : []);
+                if (catArr.length) url += `&category=${encodeURIComponent(catArr.join(','))}`;
+                const venArr = Array.isArray(vendor) ? vendor : (vendor && vendor !== 'All' ? [vendor] : []);
+                if (venArr.length) url += `&vendor=${encodeURIComponent(venArr.join(','))}`;
                 if (designedFor && designedFor !== 'All') url += `&designed_for=${encodeURIComponent(designedFor)}`;
+                if (search) url += `&search=${encodeURIComponent(search)}`;
                 const response = await fetch(url);
                 return await response.json();
             } catch (error) {
@@ -1338,18 +1353,63 @@
         function populateDropdown(selectId, options, selectedValue = 'All') {
             const select = document.getElementById(selectId);
             if (!select) return;
-            select.innerHTML = options.map(opt => 
+            select.innerHTML = options.map(opt =>
                 `<option value="${opt}" ${opt === selectedValue ? 'selected' : ''}>${opt}</option>`
             ).join('');
         }
+
+        // ---------- Checkbox multi-select (Top Products vendor / category) ----------
+        const multiSel = {};  // key -> { label, options:[], selected:Set, onChange }
+        function initMultiSelect(key, label, options, onChange) {
+            multiSel[key] = { label, options, selected: new Set(), onChange };
+            renderMultiPanel(key);
+            updateMultiLabel(key);
+        }
+        function renderMultiPanel(key) {
+            const st = multiSel[key]; if (!st) return;
+            const panel = document.getElementById('panel-' + key);
+            panel.innerHTML =
+                `<label class="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 rounded cursor-pointer font-medium border-b mb-1">
+                    <input type="checkbox" ${st.selected.size === 0 ? 'checked' : ''} onchange="multiSelectAll('${key}')"> All
+                </label>` +
+                st.options.map(o => `<label class="flex items-center gap-2 px-2 py-1 hover:bg-gray-50 rounded cursor-pointer">
+                    <input type="checkbox" value="${escAttr(o)}" ${st.selected.has(o) ? 'checked' : ''} onchange="multiToggle('${key}', this.value, this.checked)"> ${o}
+                </label>`).join('');
+        }
+        function updateMultiLabel(key) {
+            const st = multiSel[key]; const n = st.selected.size;
+            document.getElementById('lbl-' + key).textContent =
+                n === 0 ? 'All' : (n === 1 ? [...st.selected][0] : `${n} selected`);
+        }
+        function multiToggle(key, val, checked) {
+            const st = multiSel[key];
+            if (checked) st.selected.add(val); else st.selected.delete(val);
+            updateMultiLabel(key); st.onChange();
+        }
+        function multiSelectAll(key) {
+            multiSel[key].selected.clear();
+            renderMultiPanel(key); updateMultiLabel(key); multiSel[key].onChange();
+        }
+        function toggleMultiPanel(key) {
+            const p = document.getElementById('panel-' + key);
+            const show = p.classList.contains('hidden');
+            document.querySelectorAll('[id^="panel-product"]').forEach(x => x.classList.add('hidden'));
+            if (show) { renderMultiPanel(key); p.classList.remove('hidden'); }
+        }
+        document.addEventListener('click', e => {
+            if (!e.target.closest('.relative')) document.querySelectorAll('[id^="panel-product"]').forEach(x => x.classList.add('hidden'));
+        });
+        let _prodSearchTimer = null;
+        function onProductSearchInput() { clearTimeout(_prodSearchTimer); _prodSearchTimer = setTimeout(onProductFilterChange, 350); }
 
         // Get filter values for products
         function getProductFilters() {
             return {
                 location: document.getElementById('productLocationSelect')?.value || 'All',
-                category: document.getElementById('productCategorySelect')?.value || 'All',
-                vendor: document.getElementById('productVendorSelect')?.value || 'All',
+                category: [...(multiSel.productCategory?.selected || [])],   // [] = All
+                vendor: [...(multiSel.productVendor?.selected || [])],       // [] = All
                 designedFor: document.getElementById('productDesignedForSelect')?.value || 'All',
+                search: (document.getElementById('productSearch')?.value || '').trim(),
             };
         }
 
@@ -1368,8 +1428,8 @@
             const filters = getProductFilters();
             const { lyStart, lyEnd } = getLYDates();
             const [currentProducts, lyProducts] = await Promise.all([
-                fetchProducts(currentStartDate, currentEndDate, filters.location, filters.category, filters.vendor, filters.designedFor),
-                fetchProducts(lyStart, lyEnd, filters.location, filters.category, filters.vendor, filters.designedFor),
+                fetchProducts(currentStartDate, currentEndDate, filters.location, filters.category, filters.vendor, filters.designedFor, filters.search),
+                fetchProducts(lyStart, lyEnd, filters.location, filters.category, filters.vendor, filters.designedFor, filters.search),
             ]);
             updateProductsSideBySide(currentProducts, lyProducts, currentStartDate, currentEndDate, lyStart, lyEnd);
         }
@@ -2187,8 +2247,8 @@
 
             // Product filters
             populateDropdown('productLocationSelect', locationsList);
-            populateDropdown('productCategorySelect', categoriesList);
-            populateDropdown('productVendorSelect', vendorsList);
+            initMultiSelect('productCategory', 'Category', categoriesList.filter(x => x !== 'All'), onProductFilterChange);
+            initMultiSelect('productVendor', 'Vendor', vendorsList.filter(x => x !== 'All'), onProductFilterChange);
 
             // Category filters
             populateDropdown('categoryLocationSelect', locationsList);
@@ -2211,8 +2271,8 @@
             const [summary, staff, currentProducts, lyProducts, categories, syncStatus] = await Promise.all([
                 fetchSummary(),
                 fetchStaff(currentStaffFilter),
-                fetchProducts(currentStartDate, currentEndDate, productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor),
-                fetchProducts(lyStart, lyEnd, productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor),
+                fetchProducts(currentStartDate, currentEndDate, productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor, productFilters.search),
+                fetchProducts(lyStart, lyEnd, productFilters.location, productFilters.category, productFilters.vendor, productFilters.designedFor, productFilters.search),
                 fetchCategories(categoryFilters.location, categoryFilters.vendor, categoryCompareTo, currentCategoryGroup),
                 fetchSyncStatus()
             ]);

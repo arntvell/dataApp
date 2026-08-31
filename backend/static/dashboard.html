@@ -1030,6 +1030,9 @@
                         <span class="text-gray-300">|</span>
                         <label class="text-xs text-gray-500">Consolidate to<br><select id="soStore" class="border rounded px-2 py-1 text-sm"></select></label>
                         <button onclick="setStyleOverride('consolidate')" class="text-sm px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700" title="Move all of this style's stock into one store">Move all →</button>
+                        <span class="text-gray-300">|</span>
+                        <label class="text-xs text-gray-500">Exclude brand<br><select id="soBrand" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <button onclick="excludeBrand()" class="text-sm px-3 py-1.5 border rounded hover:bg-gray-100" title="Leave an entire brand out of the allocation plan">Exclude brand</button>
                     </div>
 
                     <div id="allocActiveOverrides" class="mb-2"></div>
@@ -4376,6 +4379,15 @@
             const brands = [...new Set(styles.map(s => s.brand))].filter(Boolean).sort();
             document.getElementById('allocMatrixBrand').innerHTML =
                 '<option value="">All brands</option>' + brands.map(b => `<option>${escAttr(b)}</option>`).join('');
+            document.getElementById('soBrand').innerHTML =
+                '<option value="">Pick brand…</option>' + brands.map(b => `<option>${escAttr(b)}</option>`).join('');
+        }
+
+        async function excludeBrand() {
+            const b = document.getElementById('soBrand').value;
+            if (!b) { alert('Pick a brand.'); return; }
+            await _postOverride({ kind: 'brand_exclude', parent_sku: b });   // brand stored in parent_sku slot
+            loadAllocPlan();
         }
 
         function onManualStyle() {
@@ -4423,11 +4435,15 @@
             const el = document.getElementById('allocActiveOverrides');
             if (!ovs.length) { el.innerHTML = ''; return; }
             const nameOf = p => { const s = (saleStockData.styles || []).find(x => x.parent_sku === p); return s ? s.name : p; };
-            const label = o => o.kind === 'consolidate' ? `move all → ${_shortStoreJs(o.to_loc)}` : o.kind;
-            const cls = o => o.kind === 'exclude' ? 'bg-gray-200 text-gray-700' : o.kind === 'force' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-            el.innerHTML = '<span class="text-xs text-gray-400 mr-1">Style overrides:</span>' + ovs.map(o =>
+            const title = o => o.kind === 'brand_exclude' ? `Brand: ${o.parent_sku}` : escAttr(nameOf(o.parent_sku));
+            const label = o => o.kind === 'consolidate' ? `move all → ${_shortStoreJs(o.to_loc)}`
+                : o.kind === 'brand_exclude' ? 'brand excluded' : o.kind;
+            const cls = o => o.kind === 'exclude' ? 'bg-gray-200 text-gray-700'
+                : o.kind === 'force' ? 'bg-green-100 text-green-700'
+                : o.kind === 'brand_exclude' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
+            el.innerHTML = '<span class="text-xs text-gray-400 mr-1">Overrides:</span>' + ovs.map(o =>
                 `<span class="inline-flex items-center gap-1 text-xs rounded px-2 py-0.5 mr-1 mb-1 ${cls(o)}">
-                    ${escAttr(nameOf(o.parent_sku))} · ${label(o)}
+                    ${title(o)} · ${label(o)}
                     <button onclick="clearStyleOverride('${o.kind}','${escAttr(o.parent_sku)}')" class="hover:text-black">✕</button>
                 </span>`).join('');
         }

@@ -1590,15 +1590,20 @@ def _consolidate_moves(style, to_loc, wh, stores=None):
 
 
 def _allocation_moves(data, cg_share, global_w, size_meta, min_move=1, include_rebalance=True,
-                      excluded=None, forced=None, consolidate=None, active_stores=None):
+                      excluded=None, forced=None, consolidate=None, active_stores=None,
+                      excluded_brands=None):
     """Generate size-level transfer moves from the stock report data.
     Returns (moves, skipped) where skipped = [{parent_sku, name, reason}]."""
     stores = active_stores or RETAIL_STORES
     wh = data["warehouse"]
     excluded, forced, consolidate = excluded or set(), forced or set(), consolidate or set()
+    excluded_brands = excluded_brands or set()
     moves, skipped = [], []
     for s in data["styles"]:
         p = s["parent_sku"]
+        if s.get("brand") in excluded_brands:
+            skipped.append({"parent_sku": p, "name": s["name"], "reason": f"brand excluded ({s.get('brand')})"})
+            continue
         if p in consolidate:
             continue                                   # handled by _consolidate_moves
         if p in excluded:
@@ -1699,18 +1704,20 @@ async def allocation_plan(
     consolidate = {o.parent_sku: o.to_loc for o in ovs if o.kind == "consolidate" and o.parent_sku}
     move_ovs = {(o.sku, o.from_loc, o.to_loc): o for o in ovs if o.kind == "move"}
     excluded_stores = {o.to_loc for o in ovs if o.kind == "store_exclude" and o.to_loc}
+    excluded_brands = {o.parent_sku for o in ovs if o.kind == "brand_exclude" and o.parent_sku}
     active_stores = [s for s in RETAIL_STORES if s not in excluded_stores]
 
     moves, skipped = _allocation_moves(
         data, cg_share, global_w, size_meta,
         min_move=min_move, include_rebalance=bool(include_rebalance),
-        excluded=excluded, forced=forced, consolidate=set(consolidate), active_stores=active_stores)
+        excluded=excluded, forced=forced, consolidate=set(consolidate), active_stores=active_stores,
+        excluded_brands=excluded_brands)
 
     # consolidate-to-one-store moves (style-level "move all")
     style_by_parent = {s["parent_sku"]: s for s in data["styles"]}
     for parent, to_loc in consolidate.items():
         s = style_by_parent.get(parent)
-        if s and to_loc and to_loc not in excluded_stores:
+        if s and to_loc and to_loc not in excluded_stores and s.get("brand") not in excluded_brands:
             moves.extend(_consolidate_moves(s, to_loc, wh, stores=active_stores))
 
     # apply per-line move overrides: pin qty / remove (qty 0) / add manual
@@ -1761,6 +1768,7 @@ async def allocation_plan(
     return {"season": _season_dict(season), "stores": RETAIL_STORES,
             "warehouse": wh, "moves": moves, "skipped": skipped,
             "excluded_stores": sorted(excluded_stores),
+            "excluded_brands": sorted(excluded_brands),
             "overrides": [_override_dict(o) for o in ovs], "summary": summary}
 
 

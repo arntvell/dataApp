@@ -130,6 +130,13 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 STORE_USERNAME = os.getenv("STORE_USERNAME", "store")
 STORE_PASSWORD = os.getenv("STORE_PASSWORD", "")
 
+# Machine-to-machine API key for the read-only sales feed. When FEED_API_KEY is set,
+# a request presenting a matching `X-API-Key` header may reach the feed endpoint(s)
+# below (GET only) without a Basic-Auth login — so integrations don't need the admin
+# password. The key grants access to nothing else.
+FEED_API_KEY = os.getenv("FEED_API_KEY", "")
+_FEED_PATHS = {"/api/v1/dashboard/sales-feed"}
+
 # Paths a store-manager login may reach (GET/HEAD only); anything else -> 403.
 _STORE_EXACT = {
     "/store",
@@ -166,6 +173,14 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip auth for health check
         if request.url.path == "/health":
+            return await call_next(request)
+
+        # Machine API key: read-only access to the feed endpoint(s) only.
+        api_key = request.headers.get("X-API-Key")
+        if (FEED_API_KEY and api_key
+                and secrets.compare_digest(api_key.encode("utf-8"), FEED_API_KEY.encode("utf-8"))
+                and request.method in ("GET", "HEAD")
+                and request.url.path in _FEED_PATHS):
             return await call_next(request)
 
         username = password = None

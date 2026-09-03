@@ -444,6 +444,98 @@ def _multi_values(val):
     return parts or None
 
 
+@router.get("/sales-feed")
+async def sales_feed(
+    start_date: date = Query(default=None, description="Period start (inclusive). Defaults to 30 days before end."),
+    end_date: date = Query(default=None, description="Period end (inclusive). Defaults to today."),
+    by_week: int = Query(default=1, description="1 = one row per SKU per ISO week; 0 = one row per SKU for the whole period"),
+    format: str = Query(default="json", description="'json' (default) or 'csv'"),
+    db: Session = Depends(get_db),
+):
+    """Flat sales feed for a period. One row per SKU (optionally per ISO week),
+    aggregated across ALL channels (store + online). Includes style name, parent SKU,
+    vendor and category. Units and revenue are net of returns."""
+    from database.models import ParentSkuMapping
+
+    if end_date is None:
+        end_date = date.today()
+    if start_date is None:
+        start_date = end_date - timedelta(days=30)
+
+    sq = net_line_items_subquery(db, get_date_filter(start_date, end_date))
+    week_expr = func.date_trunc('week', sq.c.order_date)   # Monday of the ISO week
+
+    select_cols = []
+    if by_week:
+        select_cols.append(cast(week_expr, Date).label('week_start'))
+    select_cols += [
+        sq.c.sku.label('sku'),
+        func.min(func.coalesce(ParentSkuMapping.base_product_name, sq.c.product_name)).label('style_name'),
+        func.min(func.coalesce(ParentSkuMapping.parent_sku, sq.c.sku)).label('parent_sku'),
+        func.min(sq.c.vendor).label('vendor'),
+        func.min(func.coalesce(CategoryMapping.standard_category, sq.c.product_category)).label('category'),
+        func.sum(sq.c.quantity).label('units'),
+        func.sum(sq.c.gross_line).label('gross_revenue'),
+        func.sum(sq.c.net_line).label('net_revenue'),
+    ]
+
+    q = db.query(*select_cols).outerjoin(
+        ParentSkuMapping, sq.c.sku == ParentSkuMapping.sku
+    ).outerjoin(
+        CategoryMapping, sq.c.sku == CategoryMapping.sku
+    )
+    if by_week:
+        q = q.group_by(week_expr, sq.c.sku).order_by(week_expr, sq.c.sku)
+    else:
+        q = q.group_by(sq.c.sku).order_by(sq.c.sku)
+
+    rows = q.all()
+
+    def to_item(r):
+        item = {}
+        if by_week:
+            ws = r.week_start
+            item['week_start'] = ws.isoformat() if ws else None
+            if ws:
+                iso = ws.isocalendar()
+                item['week'] = f"{iso[0]}-W{iso[1]:02d}"
+            else:
+                item['week'] = None
+        item.update({
+            'sku': r.sku,
+            'style_name': r.style_name,
+            'parent_sku': r.parent_sku,
+            'vendor': r.vendor,
+            'category': r.category,
+            'units': int(r.units or 0),
+            'gross_revenue': round(float(r.gross_revenue or 0), 2),
+            'net_revenue': round(float(r.net_revenue or 0), 2),
+        })
+        return item
+
+    items = [to_item(r) for r in rows]
+
+    if format == 'csv':
+        buf = io.StringIO()
+        fields = (['week', 'week_start'] if by_week else []) + \
+            ['sku', 'style_name', 'parent_sku', 'vendor', 'category', 'units', 'gross_revenue', 'net_revenue']
+        writer = csv.DictWriter(buf, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(items)
+        buf.seek(0)
+        fname = f"sales_feed_{start_date}_{end_date}{'_weekly' if by_week else ''}.csv"
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                                 headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "by_week": bool(by_week),
+        "row_count": len(items),
+        "rows": items,
+    }
+
+
 @router.get("/products")
 async def get_top_products(
     start_date: date = Query(default=None),

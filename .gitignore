@@ -63,3 +63,6 @@ fitguide_pages_*.csv
 fitguide_pages_*.json
 category_mappings_*.csv
 sitoo_product_categories.json
+
+# Ad-hoc analysis output (local only)
+exports/

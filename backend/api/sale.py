@@ -25,7 +25,7 @@ from database.models import (
     SaleSeason, SalePlanItem, SaleVariantOverride, SaleAllocation,
     SaleTransferOverride,
 )
-from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since
+from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since, _non_merch
 from config import settings
 from connectors.shopify_connector import ShopifyConnector
 import threading
@@ -65,6 +65,13 @@ NOISE_SKU_CONTAINS = (
 
 
 def _is_noise(parent_sku, brand):
+    # Production components and service SKUs. Needed here as well as in the stock
+    # module because product_sync now seeds the read layer from the catalogue, so
+    # parents like "S" (the 95k-unit Buttons style, brand "Livid Men", category
+    # Uncategorized) reach category_mappings for the first time and would otherwise
+    # sail past every brand/prefix rule below.
+    if _non_merch(parent_sku, None):
+        return True
     if (brand or "").strip().upper() in NOISE_BRANDS:
         return True
     p = (parent_sku or "").upper()

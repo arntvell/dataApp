@@ -1844,6 +1844,81 @@ async def reset_overrides(payload: dict = Body(...), db: Session = Depends(get_d
     return {"ok": True}
 
 
+# ---- scoped cleanup -------------------------------------------------------
+# Once a warehouse push has actually been executed, its pinned overrides stop
+# matching any fresh suggestion and the plan re-emits them as "manual" moves
+# forever. Clearing them must NOT touch store<->store rebalancing work, which
+# is a separate, ongoing exercise — hence a scope rather than reset-everything.
+CLEAR_SCOPES = ("wh_pinned", "wh_all")
+
+
+def _wh_override_query(db, season_id, scope):
+    """Override rows a given clear-scope targets. wh_pinned = executed lines
+    (qty > 0); wh_all = those plus the qty-0 'don't send this' rejections."""
+    wh = WAREHOUSE[0]
+    q = db.query(SaleTransferOverride).filter(
+        SaleTransferOverride.season_id == season_id,
+        SaleTransferOverride.kind == "move",
+        SaleTransferOverride.from_loc == wh,
+    )
+    if scope == "wh_pinned":
+        q = q.filter(SaleTransferOverride.qty.isnot(None), SaleTransferOverride.qty > 0)
+    return q
+
+
+def _clear_counts(db, season_id, scope):
+    doomed = _wh_override_query(db, season_id, scope).all()
+    doomed_ids = {o.id for o in doomed}
+    kept = {}
+    for o in db.query(SaleTransferOverride).filter(
+            SaleTransferOverride.season_id == season_id):
+        if o.id in doomed_ids:
+            continue
+        key = o.kind
+        if o.kind == "move":
+            key = "move (warehouse→store)" if (o.from_loc or "") == WAREHOUSE[0] else "move (store→store)"
+        kept[key] = kept.get(key, 0) + 1
+    return {
+        "scope": scope,
+        "warehouse": WAREHOUSE[0],
+        "delete": {
+            "total": len(doomed),
+            "pinned": sum(1 for o in doomed if (o.qty or 0) > 0),
+            "removed_lines": sum(1 for o in doomed if (o.qty or 0) == 0),
+            "units": sum((o.qty or 0) for o in doomed),
+        },
+        "keep": {"total": sum(kept.values()), "by_kind": kept},
+    }
+
+
+@router.get("/overrides/clear-preview")
+async def clear_overrides_preview(
+    season_id: int = Query(...),
+    scope: str = Query("wh_pinned", description="wh_pinned = executed warehouse lines; wh_all = every warehouse→store override"),
+    db: Session = Depends(get_db),
+):
+    """Read-only: exactly what a scoped clear would remove and what it would keep."""
+    if scope not in CLEAR_SCOPES:
+        raise HTTPException(status_code=400, detail=f"scope must be one of {CLEAR_SCOPES}")
+    _season_or_404(db, season_id)
+    return _clear_counts(db, season_id, scope)
+
+
+@router.post("/overrides/clear")
+async def clear_overrides(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Delete only the warehouse→store move overrides for a season, leaving
+    store↔store moves, consolidate and the exclude rules intact."""
+    season_id = payload["season_id"]
+    scope = payload.get("scope", "wh_pinned")
+    if scope not in CLEAR_SCOPES:
+        raise HTTPException(status_code=400, detail=f"scope must be one of {CLEAR_SCOPES}")
+    _season_or_404(db, season_id)
+    counts = _clear_counts(db, season_id, scope)
+    _wh_override_query(db, season_id, scope).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True, **counts}
+
+
 # ============== Shopify tag push (newsletter pre-sale) ==============
 # Adds/removes a product tag on every Shopify product that has a discount in a
 # given sale round — e.g. to gate a "pre-sale" collection to newsletter subscribers.

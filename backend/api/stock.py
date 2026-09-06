@@ -4,6 +4,7 @@ Stock overview, per-product stock, and wholesale revenue from Cin7 data.
 """
 
 import logging
+import re
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
@@ -13,6 +14,7 @@ from database.config import get_db
 from database.models import (
     Cin7Stock, Cin7Sale, Cin7SaleItem, Cin7Invoice, Cin7InvoiceItem,
     SalesOrder, SalesOrderItem, ProductMaster, ParentSkuMapping,
+    RawShopifyProduct,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,40 @@ router = APIRouter(prefix="/dashboard/stock", tags=["Stock"])
 RETAIL_STORES = ["Livid Oslo", "Livid Bergen", "Livid Trondheim", "Livid Stavanger", "Past Løkka"]
 WAREHOUSE = ["Livid Sentrallager"]
 PHYSICAL_LOCATIONS = RETAIL_STORES + WAREHOUSE
+
+# Locations the Allocate tab may draw stock FROM. Sentrallager is the default;
+# the event/overflow locations hold real sellable goods (market and past-season
+# stock lives there) but are invisible to every other planner, so they are opt-in.
+ALLOCATION_SOURCES = WAREHOUSE + [
+    "EVENTSALG", "MIDLERTIDIG LOKASJON", "VINTAGE NETT MELLOMLAGER", "Livid Kontor",
+]
+
+# True non-merchandise: production components, service/dummy SKUs and the returns
+# holding bin. These must never reach an allocation plan whatever the filters say.
+# (parent "S" is the 95k-unit "Buttons" style, which Cin7 leaves Uncategorized.)
+NON_MERCH_PARENTS = {"S", "LIV-PCKUP", "GFTWRP", "LIV-SVD"}
+NON_MERCH_CATEGORIES = {"BUTTON", "WRAPIN", "SAVED"}
+
+# Shopify collection-season tags look like SS20 / FW24 (mirrors api.sale._SEASON_RE)
+_SEASON_TAG_RE = re.compile(r"^(SS|FW|AW|HO|PRE|RESORT)\s?\d{2}$", re.IGNORECASE)
+
+# Markdown tags Shopify carries on anything that has been put on sale, in any of the
+# shapes the store has used over the years: SALE, SALE_FW25, SALESS23_F, PRESALE-SS26.
+_SALE_TAG_RE = re.compile(r"^(PRE)?SALE", re.IGNORECASE)
+
+
+def _non_merch(parent_sku, category_group):
+    """Components / service SKUs / returns bin — never allocatable."""
+    if (parent_sku or "").strip().upper() in NON_MERCH_PARENTS:
+        return True
+    return (category_group or "").strip().upper() in NON_MERCH_CATEGORIES
+
+
+def _csv_param(value):
+    """Comma-separated query param -> list of trimmed non-empty values."""
+    if not value:
+        return []
+    return [v.strip() for v in value.split(",") if v.strip()]
 
 
 def _since(days: int) -> datetime:
@@ -494,21 +530,31 @@ async def central_allocation(
     brand: Optional[str] = Query(None, description="Filter by brand"),
     days: int = Query(365, description="Historical sales window per store"),
     season_id: Optional[int] = Query(None, description="Restrict to a Sale Planner season's on-sale styles"),
+    locations: Optional[str] = Query(None, description="Comma-separated source locations; default Sentrallager"),
+    category: Optional[str] = Query(None, description="Comma-separated category groups, e.g. Vintage,Knitwear"),
+    collection: Optional[str] = Query(None, description="Shopify collection-season tag, e.g. FW25"),
+    sale_tag: Optional[str] = Query(None, description="Shopify sale tag: 'any' for anything marked down, or an exact tag e.g. SALE_FW25"),
+    include_noise: int = Query(0, description="1 = also show sale / imperfect / sample / consignment goods"),
+    min_units: int = Query(0, ge=0, description="Only styles holding at least this many units at source"),
+    max_sold: Optional[int] = Query(None, description="Only styles that sold at most this many units in the window"),
     db: Session = Depends(get_db),
 ):
     """
-    Sellable stock at the central warehouse (Sentrallager), variant/size level,
-    with how much each retail store has sold historically — the basis for allocating
-    central stock out to stores. Grouped by style, sorted by brand then name.
+    Sellable stock at the chosen source location(s), variant/size level, with how much
+    each retail store has sold and currently holds — the basis for allocating stock out
+    to stores. Grouped by style, sorted by brand then name.
 
-    General tool by default (all sellable warehouse stock, sample/B2B/consignment
-    noise filtered out). Pass season_id to narrow to the styles currently on sale in
-    that Sale Planner season (i.e. candidates not explicitly excluded from the sale).
+    Defaults to the central warehouse. Event/overflow locations can be added via
+    `locations`. Production components and service SKUs are always excluded; sale,
+    imperfect and sample goods are excluded unless `include_noise=1`.
     """
     from api.sale import _is_noise  # lazy import — sale.py imports from this module
     from database.models import SalePlanItem
 
-    wh = WAREHOUSE[0]
+    sources = [l for l in _csv_param(locations) if l in ALLOCATION_SOURCES] or [WAREHOUSE[0]]
+    want_cats = {c.upper() for c in _csv_param(category)}
+    want_coll = (collection or "").strip().upper().replace(" ", "")
+    want_sale = (sale_tag or "").strip().upper().replace(" ", "")
     since = _since(days)
 
     # When scoped to a sale, drop styles the user explicitly excluded from that season.
@@ -520,29 +566,46 @@ async def central_allocation(
             )
         }
 
-    # Warehouse variant stock (available > 0), keyed on the raw Cin7 SKU (the
-    # value we export for import back into the systems).
-    wh_avail = {}
-    for sku, av in db.query(
-        Cin7Stock.sku, func.sum(Cin7Stock.available)
-    ).filter(Cin7Stock.location == wh).group_by(Cin7Stock.sku).having(
-        func.sum(Cin7Stock.available) > 0
-    ):
-        wh_avail[sku] = float(av or 0)
+    # How much sellable stock each selectable source holds — powers the location picker.
+    source_options = []
+    src_units = {loc: 0.0 for loc in ALLOCATION_SOURCES}
+    for loc, av in db.query(Cin7Stock.location, func.sum(Cin7Stock.available)).filter(
+        Cin7Stock.location.in_(ALLOCATION_SOURCES), Cin7Stock.available > 0
+    ).group_by(Cin7Stock.location):
+        src_units[loc] = float(av or 0)
+    for loc in ALLOCATION_SOURCES:
+        source_options.append({"location": loc, "units": src_units.get(loc, 0.0),
+                               "is_warehouse": loc in WAREHOUSE})
 
+    # Available stock per variant per source location, keyed on the raw Cin7 SKU
+    # (the value we export for import back into the systems).
+    avail_by_loc = {}
+    wh_avail = {}
+    for sku, loc, av in db.query(
+        Cin7Stock.sku, Cin7Stock.location, func.sum(Cin7Stock.available)
+    ).filter(Cin7Stock.location.in_(sources)).group_by(
+        Cin7Stock.sku, Cin7Stock.location
+    ).having(func.sum(Cin7Stock.available) > 0):
+        v = float(av or 0)
+        avail_by_loc.setdefault(sku, {})[loc] = v
+        wh_avail[sku] = wh_avail.get(sku, 0.0) + v
+
+    empty = {"stores": RETAIL_STORES, "warehouse": sources[0], "sources": sources,
+             "source_options": source_options, "days": days, "brands": [],
+             "categories": [], "collections": [], "sale_tags": [], "styles": [],
+             "total_units": 0}
     if not wh_avail:
-        return {"stores": RETAIL_STORES, "warehouse": wh, "days": days,
-                "brands": [], "styles": [], "total_units": 0}
+        return empty
 
     ups = list({s.upper().strip() for s in wh_avail})
 
     # Product info (only known products — drops components/services not in the SSOT)
     pm = {}
-    for sku, parent, brnd, name, img in db.query(
+    for sku, parent, brnd, name, img, cat in db.query(
         ProductMaster.sku, ProductMaster.parent_sku, ProductMaster.sold_as_vendor,
-        ProductMaster.product_name, ProductMaster.image_url
+        ProductMaster.product_name, ProductMaster.image_url, ProductMaster.category_group
     ).filter(ProductMaster.sku.in_(ups)):
-        pm[sku] = (parent or sku, brnd, name, img)
+        pm[sku] = (parent or sku, brnd, name, img, cat)
 
     # Size per variant
     size_of = {}
@@ -550,6 +613,19 @@ async def central_allocation(
         _pm_sku(ParentSkuMapping.sku).in_(ups)
     ):
         size_of[s.upper().strip()] = size
+
+    # Collection-season tags per parent, from the Shopify product tags
+    season_tags, sale_tag_map = {}, {}
+    for parent, tags in db.query(ProductMaster.parent_sku, RawShopifyProduct.tags).join(
+        RawShopifyProduct, ProductMaster.sku == _pm_sku(RawShopifyProduct.sku)
+    ).filter(ProductMaster.sku.in_(ups), ProductMaster.parent_sku.isnot(None),
+             RawShopifyProduct.tags.isnot(None)):
+        for t in (tags or "").split(","):
+            t = t.strip()
+            if _SEASON_TAG_RE.match(t):
+                season_tags.setdefault(parent, set()).add(t.upper().replace(" ", ""))
+            if _SALE_TAG_RE.match(t):
+                sale_tag_map.setdefault(parent, set()).add(t.upper().replace(" ", ""))
 
     # Per-store historical units sold (retail stores only)
     sold = {}
@@ -573,45 +649,74 @@ async def central_allocation(
 
     ql = q.lower().strip() if q else None
     styles = {}
-    brands = set()
-    total_units = 0.0
+    brands, categories, collections, sale_tags = set(), set(), set(), set()
     for sku, avail in wh_avail.items():
         u = sku.upper().strip()
         info = pm.get(u)
         if not info:
             continue  # not a known sellable product
-        parent, brnd, name, img = info
-        brnd = brnd or "—"
-        if _is_noise(parent, brnd):
-            continue  # samples / B2B / consignment / storage — not sellable retail stock
+        parent, brnd, name, img, cat = info
+        brnd = brnd or "\u2014"
+        if _non_merch(parent, cat):
+            continue  # buttons / pickup / gift wrap / returns bin — never allocatable
+        if not include_noise and _is_noise(parent, brnd):
+            continue  # samples / B2B / consignment / sale + imperfect goods
         if season_id is not None and parent in excluded_parents:
             continue  # user pulled this style out of the sale
+
+        # facets describe everything selectable under the current source + noise setting
         brands.add(brnd)
+        if cat:
+            categories.add(cat)
+        tags = season_tags.get(parent) or set()
+        collections.update(tags)
+        stags = sale_tag_map.get(parent) or set()
+        sale_tags.update(stags)
+
         if brand and brnd != brand:
+            continue
+        if want_cats and (cat or "").upper() not in want_cats:
+            continue
+        if want_coll and want_coll not in tags:
+            continue
+        if want_sale == "ANY":
+            if not stags:
+                continue          # never marked down in Shopify
+        elif want_sale and want_sale not in stags:
             continue
         if ql and ql not in (name or "").lower() and ql not in sku.lower():
             continue
+
         st = styles.get(parent)
         if st is None:
             st = {"parent_sku": parent, "brand": brnd, "name": name or parent,
-                  "image_url": img, "wh_total": 0.0, "sizes": []}
+                  "image_url": img, "category": cat, "collections": sorted(tags),
+                  "sale_tags": sorted(stags),
+                  "wh_total": 0.0, "sold_total": 0, "sizes": []}
             styles[parent] = st
         s_by_store = {s: sold.get(u, {}).get(s, 0) for s in RETAIL_STORES}
         stk_by_store = {s: store_stock.get(u, {}).get(s, 0) for s in RETAIL_STORES}
         st["sizes"].append({
-            "sku": sku, "size": size_of.get(u) or "—", "wh_avail": avail,
+            "sku": sku, "size": size_of.get(u) or "\u2014", "wh_avail": avail,
+            "by_location": avail_by_loc.get(sku, {}),
             "sold": s_by_store, "sold_total": sum(s_by_store.values()),
             "stock": stk_by_store,
         })
         st["wh_total"] += avail
-        total_units += avail
+        st["sold_total"] += sum(s_by_store.values())
 
-    out = sorted(styles.values(), key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
+    out = [st for st in styles.values()
+           if st["wh_total"] >= min_units and (max_sold is None or st["sold_total"] <= max_sold)]
+    out.sort(key=lambda r: ((r["brand"] or "").lower(), (r["name"] or "").lower()))
     for st in out:
         st["sizes"].sort(key=lambda z: str(z["size"]))
 
     return {
-        "stores": RETAIL_STORES, "warehouse": wh, "days": days,
+        "stores": RETAIL_STORES, "warehouse": sources[0], "sources": sources,
+        "source_options": source_options, "days": days,
         "brands": sorted(brands, key=lambda b: b.lower()),
-        "styles": out, "total_units": total_units,
+        "categories": sorted(categories, key=lambda c: c.lower()),
+        "collections": sorted(collections),
+        "sale_tags": sorted(sale_tags),
+        "styles": out, "total_units": sum(st["wh_total"] for st in out),
     }

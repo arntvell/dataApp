@@ -1066,6 +1066,17 @@
                 </div>
                 <p class="text-xs text-gray-400 mb-3">Sellable stock at Sentrallager, by size. Under each store: <span class="text-gray-500">units sold</span> <span class="text-gray-300">/</span> <span class="text-indigo-500">currently in that store</span>. Type how many to send, or hit <span class="text-blue-600">⇄ Auto-split</span> to fill by unmet demand. Then export the CSV for Cin7.</p>
                 <div class="flex flex-wrap items-center gap-3">
+                    <div class="flex items-center gap-2">
+                        <label class="text-sm text-gray-600">Category:</label>
+                        <div class="relative">
+                            <button type="button" id="btn-allocCategory" onclick="toggleMultiPanel('allocCategory')" class="px-3 py-1.5 text-sm border rounded-lg bg-white min-w-32 text-left flex items-center justify-between gap-2">
+                                <span id="lbl-allocCategory">All</span><span class="text-gray-400">▾</span>
+                            </button>
+                            <div id="panel-allocCategory" class="hidden absolute left-0 z-40 mt-1 w-56 max-h-72 overflow-auto bg-white border rounded-lg shadow-lg p-1 text-sm"></div>
+                        </div>
+                    </div>
+                    <select id="allocCollection" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Shopify collection-season tag"><option value="">All collections</option></select>
+                    <select id="allocSaleTag" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Products carrying a Shopify sale tag (SALE, SALE_FW25, PRESALE-SS26 …)"><option value="">Sale tag: any/none</option><option value="any">Any sale tag</option></select>
                     <select id="allocSeason" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Limit to styles on sale in a Sale Planner season"><option value="">All stock</option></select>
                     <select id="allocBrand" onchange="loadAllocation()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"><option value="">All brands</option></select>
                     <input id="allocSearch" oninput="onAllocSearchInput()" placeholder="Search name / SKU…" class="px-2 py-1.5 border rounded-lg text-sm flex-1 min-w-40">
@@ -1075,12 +1086,20 @@
                         <option value="365" selected>Sold: last 12 months</option>
                         <option value="1095">Sold: last 3 years</option>
                     </select>
+                    <input id="allocMinUnits" type="number" min="0" placeholder="Min units" onchange="loadAllocation()" title="Only styles holding at least this many units at the selected sources" class="px-2 py-1.5 border rounded-lg text-sm w-28">
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600" title="Salgsvare, Imperfect, samples and consignment are hidden by default"><input type="checkbox" id="allocIncludeNoise" onchange="loadAllocation()"> Include sale / imperfect goods</label>
                     <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="allocOnlyPlanned" onchange="renderAllocation()"> Only allocated</label>
+                </div>
+                <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 pt-3 border-t">
+                    <span class="text-sm text-gray-600">Take stock from:</span>
+                    <div id="allocSources" class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-700"></div>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t">
                     <span class="text-xs text-gray-500" id="allocSummary"></span>
                     <span class="flex-1"></span>
                     <button onclick="autoSplitAllShown()" class="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100" title="Auto-split every style currently shown across stores by unmet demand">⇄ Auto-split all shown</button>
+                    <select id="allocSendAllStore" class="text-xs px-2 py-1 border rounded bg-white" title="Send every unit of every shown style to one store"></select>
+                    <button onclick="sendAllShownToStore()" class="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100" title="Put every available unit of every shown style into the selected store">→ Send all shown</button>
                     <button onclick="clearAllocPlan()" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">Clear plan</button>
                     <button onclick="exportAllocationCsv()" class="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">Export CSV</button>
                 </div>
@@ -1396,7 +1415,7 @@
         function toggleMultiPanel(key) {
             const p = document.getElementById('panel-' + key);
             const show = p.classList.contains('hidden');
-            document.querySelectorAll('[id^="panel-product"]').forEach(x => x.classList.add('hidden'));
+            document.querySelectorAll('[id^="panel-"]').forEach(x => x.classList.add('hidden'));
             if (show) { renderMultiPanel(key); p.classList.remove('hidden'); }
         }
         document.addEventListener('click', e => {
@@ -3326,6 +3345,34 @@
 
         function onAllocSearchInput() { clearTimeout(_allocSearchTimer); _allocSearchTimer = setTimeout(loadAllocation, 350); }
 
+        // ---------- Source locations (which stock pools we allocate FROM) ----------
+        let allocSourceOpts = [];
+        const ALLOC_SRC_KEY = 'livid_alloc_sources_v1';
+        let allocSourceSel = (function () {
+            try { const a = JSON.parse(localStorage.getItem(ALLOC_SRC_KEY)); if (Array.isArray(a) && a.length) return new Set(a); } catch (e) {}
+            return new Set(['Livid Sentrallager']);
+        })();
+        function saveAllocSources() { try { localStorage.setItem(ALLOC_SRC_KEY, JSON.stringify([...allocSourceSel])); } catch (e) {} }
+        function renderAllocSources(opts) {
+            const host = document.getElementById('allocSources');
+            if (!host || !opts) return;
+            allocSourceOpts = opts;
+            host.innerHTML = opts.map((o, i) => `
+                <label class="flex items-center gap-1.5 cursor-pointer" title="${Math.round(o.units)} units on hand">
+                    <input type="checkbox" ${allocSourceSel.has(o.location) ? 'checked' : ''} onchange="toggleAllocSource(${i}, this.checked)">
+                    ${o.location}${o.is_warehouse ? ' \u{1F3ED}' : ''}
+                    <span class="text-gray-400">${Math.round(o.units).toLocaleString()}</span>
+                </label>`).join('');
+        }
+        function toggleAllocSource(idx, on) {
+            const loc = (allocSourceOpts[idx] || {}).location;
+            if (!loc) return;
+            if (on) allocSourceSel.add(loc); else allocSourceSel.delete(loc);
+            if (!allocSourceSel.size) allocSourceSel.add('Livid Sentrallager');
+            saveAllocSources();
+            loadAllocation();
+        }
+
         async function ensureAllocSeasons() {
             const sel = document.getElementById('allocSeason');
             if (sel.dataset.filled === '1') return;
@@ -3345,11 +3392,22 @@
             const season = document.getElementById('allocSeason').value;
             const q = document.getElementById('allocSearch').value.trim();
             const days = document.getElementById('allocDays').value;
+            const cats = [...(multiSel.allocCategory ? multiSel.allocCategory.selected : [])];
+            const coll = document.getElementById('allocCollection').value;
+            const saleTag = document.getElementById('allocSaleTag').value;
+            const minUnits = document.getElementById('allocMinUnits').value;
+            const incNoise = document.getElementById('allocIncludeNoise').checked;
             const params = new URLSearchParams();
             if (brand) params.set('brand', brand);
             if (season) params.set('season_id', season);
             if (q) params.set('q', q);
             params.set('days', days);
+            params.set('locations', [...allocSourceSel].join(','));
+            if (cats.length) params.set('category', cats.join(','));
+            if (coll) params.set('collection', coll);
+            if (saleTag) params.set('sale_tag', saleTag);
+            if (minUnits) params.set('min_units', minUnits);
+            if (incNoise) params.set('include_noise', '1');
             try {
                 const r = await fetch(`${API_BASE}/stock/central-allocation?` + params.toString());
                 allocData = await r.json();
@@ -3364,11 +3422,39 @@
                 bsel.value = brand;
                 bsel.dataset.filled = '1';
             }
+            renderAllocSources(allocData.source_options);
+            if (!multiSel.allocCategory) {
+                initMultiSelect('allocCategory', 'Category', allocData.categories || [], loadAllocation);
+            } else if ((allocData.categories || []).length) {
+                multiSel.allocCategory.options = allocData.categories;
+            }
+            const csel = document.getElementById('allocCollection');
+            if (csel.dataset.filled !== '1' && (allocData.collections || []).length) {
+                csel.innerHTML = '<option value="">All collections</option>' +
+                    allocData.collections.map(c => `<option value="${c}">${c}</option>`).join('');
+                csel.value = coll;
+                csel.dataset.filled = '1';
+            }
+            const tsel = document.getElementById('allocSaleTag');
+            if (tsel.dataset.filled !== '1' && (allocData.sale_tags || []).length) {
+                tsel.innerHTML = '<option value="">Sale tag: any/none</option>' +
+                    '<option value="any">Any sale tag</option>' +
+                    allocData.sale_tags.map(t => `<option value="${t}">${t}</option>`).join('');
+                tsel.value = saleTag;
+                tsel.dataset.filled = '1';
+            }
+            const ssel = document.getElementById('allocSendAllStore');
+            if (ssel.dataset.filled !== '1' && (allocData.stores || []).length) {
+                ssel.innerHTML = allocData.stores.map(st => `<option value="${st}">${st}</option>`).join('');
+                ssel.dataset.filled = '1';
+            }
+            const srcLabel = (allocData.sources || []).length > 1
+                ? `${allocData.sources.length} locations` : (allocData.sources || [])[0];
             document.getElementById('allocMeta').textContent =
-                `${allocData.warehouse} · ${Math.round(allocData.total_units)} units`;
+                `${srcLabel} · ${Math.round(allocData.total_units)} units`;
             (allocData.styles || []).forEach(st => st.sizes.forEach(z => {
                 allocSizeBySku[z.sku] = z;
-                allocSkuInfo[z.sku] = { name: st.name, size: z.size };
+                allocSkuInfo[z.sku] = { name: st.name, size: z.size, by_location: z.by_location || {} };
             }));
             saveAllocInfo();
             renderAllocation();
@@ -3591,6 +3677,26 @@
             renderAllocation();
         }
 
+        // Put every available unit of every shown style into one store — the
+        // "ship this whole batch to Oslo" case. Draws down all selected sources.
+        function sendAllShownToStore() {
+            const store = document.getElementById('allocSendAllStore').value;
+            if (!store || !allocGroups || !allocGroups.length) return;
+            let styles = 0, units = 0;
+            allocGroups.forEach(g => g.styles.forEach(st => {
+                styles++;
+                st.sizes.forEach(z => { units += Math.round(z.wh_avail); });
+            }));
+            if (!units) { alert('Nothing available in the current view.'); return; }
+            if (!confirm(`Send all ${units} available units of ${styles} shown styles to ${store}?\n\nThis overwrites current allocations for those styles.`)) return;
+            allocGroups.forEach(g => g.styles.forEach(st => st.sizes.forEach(z => {
+                const qty = Math.round(z.wh_avail);
+                if (qty > 0) allocPlan[z.sku] = { [store]: qty }; else delete allocPlan[z.sku];
+            })));
+            saveAllocPlan();
+            renderAllocation();
+        }
+
         function updateAllocSummary() {
             let lines = 0, units = 0, skus = 0;
             for (const sku in allocPlan) {
@@ -3622,13 +3728,34 @@
         }
         function todayStr() { return new Date().toISOString().slice(0, 10).replace(/-/g, ''); }
 
+        // Split an allocated quantity across the source pools that actually hold the
+        // stock, largest pool first, so each CSV line is a real from->to transfer.
+        function _sourceLinesFor(sku, qty) {
+            const byLoc = (allocSkuInfo[sku] || {}).by_location || {};
+            const locs = Object.keys(byLoc).sort((a, b) => byLoc[b] - byLoc[a]);
+            if (!locs.length) return [['', qty]];
+            const out = [];
+            let left = qty;
+            for (const l of locs) {
+                if (left <= 0) break;
+                const take = Math.min(left, Math.round(byLoc[l]));
+                if (take > 0) { out.push([l, take]); left -= take; }
+            }
+            if (left > 0) out.push([locs[0], left]);  // asked for more than we hold
+            return out;
+        }
+
         function exportAllocationCsv() {
-            const rows = [['Variant SKU', 'Style', 'Quantity', 'Location']];
+            const rows = [['Variant SKU', 'Style', 'Quantity', 'Location', 'From Location']];
             Object.keys(allocPlan).sort().forEach(sku => {
                 const info = allocSkuInfo[sku] || {};
                 const qs = allocPlan[sku];
                 Object.keys(qs).forEach(store => {
-                    if (qs[store] > 0) rows.push([sku, info.name || '', qs[store], store]);
+                    if (qs[store] > 0) {
+                        _sourceLinesFor(sku, qs[store]).forEach(([from, n]) => {
+                            rows.push([sku, info.name || '', n, store, from]);
+                        });
+                    }
                 });
             });
             if (rows.length === 1) { alert('Nothing allocated yet — enter quantities first.'); return; }

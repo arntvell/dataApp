@@ -512,17 +512,12 @@
                 return;
             }
             const today = new Date().toISOString().slice(0, 10);
-            const flatCell = i => {
-                if (i.flat_ids && i.flat_ids.length) {
-                    return `<img src="${API_BASE}/drops/flats/${i.flat_ids[0]}/image" alt="${escAttr(i.style)}"
-                              loading="lazy" class="w-14 h-14 object-contain bg-gray-50 rounded border">`;
-                }
-                const cls = i.flat_status === 'Have flat' ? 'bg-green-50 text-green-700 border-green-200'
-                    : i.flat_status === 'Other colourway only' ? 'bg-amber-50 text-amber-700 border-amber-200'
-                    : 'bg-gray-50 text-gray-400 border-gray-200';
-                return `<div class="w-14 h-14 rounded border flex items-center justify-center text-[10px] text-center leading-tight px-1 ${cls}"
-                          title="${escAttr(i.flat_status || 'No flat')}">${escAttr(i.flat_status || 'No flat')}</div>`;
-            };
+            // No uploaded image -> leave the cell blank. The sheet's flat status is
+            // production admin, not something a store manager needs to read.
+            const flatCell = i => (i.flat_ids && i.flat_ids.length)
+                ? `<img src="${API_BASE}/drops/flats/${i.flat_ids[0]}/image" alt="${escAttr(i.style)}"
+                     loading="lazy" class="w-14 h-14 object-contain bg-gray-50 rounded border">`
+                : '<div class="w-14 h-14"></div>';
             const rowHtml = i => {
                 const late = i.warehouse_date && i.warehouse_date > today && i.drop_date && i.warehouse_date > i.drop_date;
                 return `<tr class="border-b hover:bg-gray-50">

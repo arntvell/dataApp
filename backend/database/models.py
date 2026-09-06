@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, ForeignKey, Text, Index, UniqueConstraint, Date, JSON
+from sqlalchemy import Column, Integer, String, DateTime, Float, Boolean, ForeignKey, Text, Index, UniqueConstraint, Date, JSON, LargeBinary
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .config import Base
@@ -642,3 +642,60 @@ class AllocationPlan(Base):
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+
+# ============== DROP PLAN ==============
+
+class DropPlanItem(Base):
+    """One style in a seasonal drop plan. Mirrors the '3-Drop Plan' sheet, plus
+    `sent` — whether the goods have gone out to the stores — which the sheet
+    doesn't track and the store view is built around."""
+    __tablename__ = "drop_plan_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    drop_name = Column(String, nullable=False, index=True)   # "Drop 1"
+    drop_date = Column(Date, nullable=True, index=True)      # Monday of the go-live week
+    drop_label = Column(String, nullable=True)               # "w/c 14 Sep" as written
+    supplier = Column(String, nullable=True, index=True)
+    style = Column(String, nullable=False, index=True)
+    qty = Column(Integer, nullable=True)
+    warehouse_date = Column(Date, nullable=True, index=True)
+    warehouse_label = Column(String, nullable=True)          # "26. Jun" as written
+    plan_status = Column(String, nullable=True)              # Mottatt / Usikker dato / ...
+    flat_status = Column(String, nullable=True)              # Have flat / No flat / Other colourway only
+    photographed = Column(Boolean, nullable=True)
+    status = Column(String, nullable=True, index=True)       # Work to do / Ready / Cancelled
+    outstanding = Column(Text, nullable=True)
+    shoot_session = Column(String, nullable=True)
+    missing_web_images = Column(String, nullable=True)
+    flat_files = Column(Text, nullable=True)                 # filenames from the sheet
+    note = Column(Text, nullable=True)
+    kommentar = Column(Text, nullable=True)
+
+    sent = Column(Boolean, default=False, nullable=False, index=True)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("drop_name", "style", name="uq_drop_plan_drop_style"),
+    )
+
+
+class DropFlat(Base):
+    """A flat image for a drop style. Stored in the database on purpose: the
+    container filesystem is ephemeral, so anything written to disk is lost on the
+    next deploy. item_id is nullable so an upload that matches no style can still
+    be kept and assigned by hand."""
+    __tablename__ = "drop_flats"
+
+    id = Column(Integer, primary_key=True, index=True)
+    item_id = Column(Integer, ForeignKey("drop_plan_items.id", ondelete="SET NULL"),
+                     nullable=True, index=True)
+    filename = Column(String, nullable=False, index=True)
+    content_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    data = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

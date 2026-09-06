@@ -15,6 +15,7 @@ from api.dashboard import router as dashboard_router
 from api.budget import router as budget_router
 from api.stock import router as stock_router
 from api.sale import router as sale_router
+from api.drops import router as drops_router
 from config import settings
 
 # Configure logging
@@ -227,6 +228,7 @@ app.include_router(dashboard_router, prefix="/api/v1")
 app.include_router(budget_router, prefix="/api/v1")
 app.include_router(stock_router, prefix="/api/v1")
 app.include_router(sale_router, prefix="/api/v1")
+app.include_router(drops_router, prefix="/api/v1")
 
 # Serve static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")

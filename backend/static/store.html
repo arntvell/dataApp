@@ -26,6 +26,7 @@
                 <button id="tb-top" onclick="showStoreTab('top')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Top products</button>
                 <button id="tb-cat" onclick="showStoreTab('cat')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Categories</button>
                 <button id="tb-alloc" onclick="showStoreTab('alloc')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Incoming</button>
+                <button id="tb-drops" onclick="showStoreTab('drops')" class="px-4 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100">Drops</button>
             </div>
         </div>
     </div>
@@ -193,6 +194,20 @@
         </div>
 
         <!-- Incoming / outgoing sale allocation for one store (read-only) -->
+        <!-- DROPS module — what lands when, per drop -->
+        <div id="tab-drops" class="hidden">
+            <div class="flex flex-wrap gap-2 items-center mb-3">
+                <div id="dropFilterBar" class="flex flex-wrap gap-2 items-center"></div>
+                <span class="flex-1"></span>
+                <label class="flex items-center gap-1.5 text-sm text-gray-600 whitespace-nowrap"><input type="checkbox" id="dropsUnsentOnly" onchange="renderDrops()" class="w-4 h-4 rounded"> Not sent yet</label>
+                <input id="dropsSearch" oninput="renderDrops()" placeholder="Search style or supplier…" class="px-3 py-1.5 border rounded-lg text-sm w-full sm:w-64">
+            </div>
+            <div id="dropsBody" class="card !p-0 overflow-hidden">
+                <div class="py-10 text-center text-gray-400">Loading…</div>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">Every style in the season's drops. <b>Warehouse date</b> is when the goods reach Sentrallager; <b>drop date</b> is when the style goes live. <b>Sent</b> means the goods have gone out to the stores.</p>
+        </div>
+
         <div id="tab-alloc" class="hidden">
             <div class="flex flex-wrap gap-2 items-center mb-3">
                 <label class="text-sm text-gray-600">Store:
@@ -428,7 +443,7 @@
         }
 
         let storeStockLoaded = false;
-        const STORE_TABS = ['sale', 'stock', 'top', 'cat', 'alloc'];
+        const STORE_TABS = ['sale', 'stock', 'top', 'cat', 'alloc', 'drops'];
         function showStoreTab(t) {
             STORE_TABS.forEach(x => {
                 document.getElementById('tab-' + x).classList.toggle('hidden', x !== t);
@@ -439,6 +454,112 @@
             if (t === 'stock' && !storeStockLoaded) { storeStockLoaded = true; loadStockTab(); }
             if (t === 'top' || t === 'cat') { apActive = t; ensureApLists().then(() => setApPreset(apPreset)); }
             if (t === 'alloc' && !storeAllocLoaded) { storeAllocLoaded = true; initStoreAlloc(); }
+            if (t === 'drops' && !dropsLoaded) { dropsLoaded = true; loadDrops(); }
+        }
+
+        // ============== DROPS — what lands when, per drop ==============
+        let dropsLoaded = false, dropsData = null, dropsFilter = '';
+
+        async function loadDrops() {
+            const body = document.getElementById('dropsBody');
+            body.innerHTML = '<div class="py-10 text-center text-gray-400">Loading drops…</div>';
+            try {
+                const [items, meta] = await Promise.all([
+                    fetch(`${API_BASE}/drops`).then(r => r.json()),
+                    fetch(`${API_BASE}/drops/meta`).then(r => r.json()),
+                ]);
+                dropsData = { items: items.items || [], meta };
+            } catch (e) {
+                body.innerHTML = '<div class="py-10 text-center text-red-400">Could not load the drop plan.</div>';
+                return;
+            }
+            renderDropFilterBar();
+            renderDrops();
+        }
+
+        function renderDropFilterBar() {
+            const bar = document.getElementById('dropFilterBar');
+            const drops = (dropsData.meta.drops || []).filter(d => d.drop_name !== 'Cancelled');
+            const total = drops.reduce((a, d) => a + d.count, 0);
+            const btn = (val, label, sub) => {
+                const on = dropsFilter === val;
+                return `<button onclick="setDropFilter('${val.replace(/'/g, "\\'")}')"
+                    class="px-3 py-1.5 text-sm rounded-lg ${on ? 'bg-blue-600 text-white font-medium' : 'bg-white border text-gray-700 hover:bg-gray-50'}">
+                    ${label}${sub ? `<span class="${on ? 'text-blue-100' : 'text-gray-400'}"> · ${sub}</span>` : ''}</button>`;
+            };
+            bar.innerHTML = btn('', 'All drops', total)
+                + drops.map(d => btn(d.drop_name, d.drop_name, `${d.count}${d.drop_date ? ' · ' + fmtDropDate(d.drop_date) : ''}`)).join('');
+        }
+        function setDropFilter(v) { dropsFilter = v; renderDropFilterBar(); renderDrops(); }
+
+        function fmtDropDate(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso + 'T00:00:00');
+            return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+        }
+
+        function renderDrops() {
+            if (!dropsData) return;
+            const body = document.getElementById('dropsBody');
+            const q = (document.getElementById('dropsSearch').value || '').trim().toLowerCase();
+            const unsentOnly = document.getElementById('dropsUnsentOnly').checked;
+            let rows = dropsData.items.filter(i =>
+                (!dropsFilter || i.drop_name === dropsFilter)
+                && (!unsentOnly || !i.sent)
+                && (!q || `${i.style} ${i.supplier || ''}`.toLowerCase().includes(q)));
+            if (!rows.length) {
+                body.innerHTML = '<div class="py-10 text-center text-gray-400">Nothing matches that filter.</div>';
+                return;
+            }
+            const today = new Date().toISOString().slice(0, 10);
+            const flatCell = i => {
+                if (i.flat_ids && i.flat_ids.length) {
+                    return `<img src="${API_BASE}/drops/flats/${i.flat_ids[0]}/image" alt="${escAttr(i.style)}"
+                              loading="lazy" class="w-14 h-14 object-contain bg-gray-50 rounded border">`;
+                }
+                const cls = i.flat_status === 'Have flat' ? 'bg-green-50 text-green-700 border-green-200'
+                    : i.flat_status === 'Other colourway only' ? 'bg-amber-50 text-amber-700 border-amber-200'
+                    : 'bg-gray-50 text-gray-400 border-gray-200';
+                return `<div class="w-14 h-14 rounded border flex items-center justify-center text-[10px] text-center leading-tight px-1 ${cls}"
+                          title="${escAttr(i.flat_status || 'No flat')}">${escAttr(i.flat_status || 'No flat')}</div>`;
+            };
+            const rowHtml = i => {
+                const late = i.warehouse_date && i.warehouse_date > today && i.drop_date && i.warehouse_date > i.drop_date;
+                return `<tr class="border-b hover:bg-gray-50">
+                    <td class="py-2 px-3">${flatCell(i)}</td>
+                    <td class="py-2 px-3">
+                        <div class="font-medium text-gray-900">${escAttr(i.style)}</div>
+                        <div class="text-xs text-gray-400">${escAttr(i.supplier || '')}${i.qty ? ' · ' + i.qty + ' pcs' : ''}</div>
+                    </td>
+                    <td class="py-2 px-3 whitespace-nowrap ${late ? 'text-red-600 font-medium' : 'text-gray-700'}"
+                        title="${escAttr(i.plan_status || '')}">
+                        ${fmtDropDate(i.warehouse_date)}
+                        ${i.plan_status ? `<div class="text-xs text-gray-400">${escAttr(i.plan_status)}</div>` : ''}
+                    </td>
+                    <td class="py-2 px-3 whitespace-nowrap text-gray-700">
+                        ${fmtDropDate(i.drop_date)}
+                        <div class="text-xs text-gray-400">${escAttr(i.drop_name)}</div>
+                    </td>
+                    <td class="py-2 px-3 text-center">
+                        ${i.sent
+                            ? '<span class="inline-block px-2 py-0.5 text-xs rounded bg-green-100 text-green-700 font-medium">Sent</span>'
+                            : '<span class="inline-block px-2 py-0.5 text-xs rounded bg-gray-100 text-gray-500">Not sent</span>'}
+                    </td>
+                </tr>`;
+            };
+            const sentCount = rows.filter(r => r.sent).length;
+            body.innerHTML = `
+                <div class="px-3 py-2 text-xs text-gray-500 border-b bg-gray-50">${rows.length} styles · ${sentCount} sent</div>
+                <div class="overflow-x-auto"><table class="w-full text-sm">
+                    <thead><tr class="text-[11px] text-gray-500 uppercase border-b bg-gray-50">
+                        <th class="text-left py-2 px-3 font-medium">Flat</th>
+                        <th class="text-left py-2 px-3 font-medium">Style</th>
+                        <th class="text-left py-2 px-3 font-medium">Warehouse date</th>
+                        <th class="text-left py-2 px-3 font-medium">Drop date</th>
+                        <th class="text-center py-2 px-3 font-medium">Sent</th>
+                    </tr></thead>
+                    <tbody>${rows.map(rowHtml).join('')}</tbody>
+                </table></div>`;
         }
 
         // ============== Incoming / outgoing allocation (read-only) ==============

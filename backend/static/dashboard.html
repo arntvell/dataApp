@@ -181,6 +181,10 @@
                 class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
                 Allocate
             </button>
+            <button onclick="showTab('drops')" id="tab-btn-drops"
+                class="px-5 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px transition whitespace-nowrap">
+                Drops
+            </button>
         </div>
 
         <!-- TAB: Sales -->
@@ -1142,6 +1146,58 @@
             </div>
 
         </div> <!-- end tab-allocate -->
+
+        <div id="tab-drops" class="hidden">
+
+            <div class="card mb-4">
+                <div class="flex flex-wrap items-center gap-3 mb-2">
+                    <h2 class="text-xl font-semibold">Drop plan</h2>
+                    <span class="text-sm text-gray-400" id="dropAdminMeta"></span>
+                </div>
+                <p class="text-xs text-gray-400 mb-3">Edit dates, styles and status here; store managers see the read-only version at <b>/store → Drops</b>. Importing re-reads the spreadsheet and upserts on drop + style — <b>Sent</b> is tracked here and is never overwritten by an import.</p>
+
+                <div class="flex flex-wrap items-center gap-3">
+                    <select id="dropAdminDrop" onchange="renderDropAdmin()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"><option value="">All drops</option></select>
+                    <select id="dropAdminStatus" onchange="renderDropAdmin()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"><option value="">All statuses</option></select>
+                    <select id="dropAdminSupplier" onchange="renderDropAdmin()" class="px-2 py-1.5 border rounded-lg text-sm bg-white"><option value="">All suppliers</option></select>
+                    <input id="dropAdminSearch" oninput="renderDropAdmin()" placeholder="Search style / supplier…" class="px-2 py-1.5 border rounded-lg text-sm flex-1 min-w-40">
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="dropAdminUnsent" onchange="renderDropAdmin()"> Not sent</label>
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="dropAdminCancelled" onchange="loadDropAdmin()"> Show cancelled</label>
+                </div>
+
+                <div class="flex flex-wrap items-end gap-4 mt-3 pt-3 border-t">
+                    <div>
+                        <label class="text-xs text-gray-500 block mb-1">Import spreadsheet (.xlsx)</label>
+                        <div class="flex items-center gap-2">
+                            <input type="file" id="dropImportFile" accept=".xlsx" class="text-xs">
+                            <input id="dropImportSheet" value="3-Drop Plan" class="px-2 py-1 border rounded text-xs w-28" title="Sheet name">
+                            <input id="dropImportYear" type="number" value="2026" class="px-2 py-1 border rounded text-xs w-20" title="Year for day/month dates">
+                            <label class="text-xs text-gray-500 flex items-center gap-1" title="Delete rows the sheet no longer contains"><input type="checkbox" id="dropImportReplace"> replace</label>
+                            <button onclick="importDropPlan()" class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">Import</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-500 block mb-1">Upload flats (matched by filename)</label>
+                        <div class="flex items-center gap-2">
+                            <input type="file" id="dropFlatFiles" accept="image/*" multiple class="text-xs">
+                            <button onclick="uploadDropFlats()" class="text-xs px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700">Upload flats</button>
+                        </div>
+                    </div>
+                    <span class="flex-1"></span>
+                    <div class="flex items-center gap-2">
+                        <button onclick="bulkDropSent(true)" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50" title="Mark every row currently shown as sent">Mark shown sent</button>
+                        <button onclick="bulkDropSent(false)" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50">Mark shown not sent</button>
+                    </div>
+                </div>
+                <div id="dropImportResult" class="text-xs mt-2"></div>
+                <div id="dropUnassignedFlats" class="mt-2"></div>
+            </div>
+
+            <div class="card mb-8">
+                <div id="dropAdminBody"><div class="py-6 text-center text-gray-400">Loading…</div></div>
+            </div>
+
+        </div> <!-- end tab-drops -->
 
         <!-- Sync Status -->
         <div class="mt-8 text-center text-sm text-gray-400" id="syncStatus">
@@ -3209,7 +3265,7 @@
 
         let currentTab = 'sales';
 
-        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner', 'sale-stock', 'allocate'];
+        const ALL_TABS = ['sales', 'top-products', 'categories', 'brands', 'budget', 'staff', 'stock', 'sale-planner', 'sale-stock', 'allocate', 'drops'];
 
         function showTab(tab) {
             currentTab = tab;
@@ -3249,6 +3305,7 @@
                 initSalePlanner();
             }
 
+            if (tab === 'drops' && !dropAdminLoaded) { dropAdminLoaded = true; loadDropAdmin(); }
             // Lazy-load allocate tab on first visit
             if (tab === 'allocate' && !allocLoaded) {
                 allocLoaded = true;
@@ -3380,6 +3437,196 @@
         function cssId(sku) { return ('a' + sku).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
         function onAllocSearchInput() { clearTimeout(_allocSearchTimer); _allocSearchTimer = setTimeout(loadAllocation, 350); }
+
+        // ============== DROPS admin ==============
+        let dropAdminLoaded = false, dropAdminData = null, dropAdminMeta = null;
+
+        async function loadDropAdmin() {
+            const body = document.getElementById('dropAdminBody');
+            body.innerHTML = '<div class="py-6 text-center text-gray-400">Loading drop plan…</div>';
+            const inc = document.getElementById('dropAdminCancelled').checked ? 1 : 0;
+            try {
+                const [items, meta] = await Promise.all([
+                    fetch(`${API_BASE}/drops?include_cancelled=${inc}`).then(r => r.json()),
+                    fetch(`${API_BASE}/drops/meta`).then(r => r.json()),
+                ]);
+                dropAdminData = items.items || [];
+                dropAdminMeta = meta;
+            } catch (e) {
+                body.innerHTML = '<div class="py-6 text-center text-red-400">Could not load the drop plan.</div>';
+                return;
+            }
+            _fillSel('dropAdminDrop', 'All drops', (dropAdminMeta.drops || []).map(d => d.drop_name));
+            _fillSel('dropAdminStatus', 'All statuses', dropAdminMeta.statuses || []);
+            _fillSel('dropAdminSupplier', 'All suppliers', dropAdminMeta.suppliers || []);
+            document.getElementById('dropAdminMeta').textContent =
+                `${dropAdminMeta.total} styles · ${(dropAdminMeta.drops || []).map(d => `${d.drop_name} ${d.count}`).join(' · ')}`;
+            renderUnassignedFlats();
+            renderDropAdmin();
+        }
+        function _fillSel(id, allLabel, values) {
+            const el = document.getElementById(id);
+            if (el.dataset.filled === '1') return;
+            const cur = el.value;
+            el.innerHTML = `<option value="">${allLabel}</option>` +
+                values.map(v => `<option value="${escAttr(v)}">${v}</option>`).join('');
+            el.value = cur;
+            el.dataset.filled = '1';
+        }
+
+        function _dropAdminRows() {
+            const drop = document.getElementById('dropAdminDrop').value;
+            const status = document.getElementById('dropAdminStatus').value;
+            const sup = document.getElementById('dropAdminSupplier').value;
+            const q = (document.getElementById('dropAdminSearch').value || '').trim().toLowerCase();
+            const unsent = document.getElementById('dropAdminUnsent').checked;
+            return (dropAdminData || []).filter(i =>
+                (!drop || i.drop_name === drop) && (!status || i.status === status)
+                && (!sup || i.supplier === sup) && (!unsent || !i.sent)
+                && (!q || `${i.style} ${i.supplier || ''}`.toLowerCase().includes(q)));
+        }
+
+        const DROP_PLAN_STATUSES = ['Mottatt', 'Under transport', 'Forsinket', 'Usikker dato'];
+        const DROP_FLAT_STATUSES = ['Have flat', 'Other colourway only', 'No flat'];
+        const DROP_STATUSES = ['Ready', 'Work to do', 'Cancelled'];
+
+        function renderDropAdmin() {
+            const body = document.getElementById('dropAdminBody');
+            if (!dropAdminData) return;
+            const rows = _dropAdminRows();
+            if (!rows.length) { body.innerHTML = '<div class="py-6 text-center text-gray-400">Nothing matches that filter.</div>'; return; }
+            const sel = (id, field, val, opts) => `<select onchange="saveDropField(${id},'${field}',this.value)" class="border rounded px-1 py-0.5 text-xs bg-white">
+                <option value=""${!val ? ' selected' : ''}>—</option>
+                ${opts.map(o => `<option${o === val ? ' selected' : ''}>${o}</option>`).join('')}</select>`;
+            const flatThumb = i => i.flat_ids && i.flat_ids.length
+                ? `<img src="${API_BASE}/drops/flats/${i.flat_ids[0]}/image" class="w-10 h-10 object-contain bg-gray-50 rounded border" loading="lazy" title="${escAttr(i.flat_files || '')}">`
+                : `<div class="w-10 h-10 rounded border bg-gray-50 text-[9px] text-gray-400 flex items-center justify-center text-center leading-tight px-0.5">no img</div>`;
+            body.innerHTML = `
+                <div class="text-xs text-gray-500 mb-2">${rows.length} of ${dropAdminData.length} styles shown · edits save immediately</div>
+                <div class="overflow-x-auto max-h-[70vh]"><table class="w-full text-sm">
+                <thead><tr class="text-[11px] text-gray-500 uppercase border-b bg-gray-50 sticky top-0 z-10">
+                    <th class="text-left py-2 px-2 font-medium">Flat</th>
+                    <th class="text-left py-2 px-2 font-medium">Drop</th>
+                    <th class="text-left py-2 px-2 font-medium">Style</th>
+                    <th class="text-left py-2 px-2 font-medium">Supplier</th>
+                    <th class="text-right py-2 px-2 font-medium">Qty</th>
+                    <th class="text-left py-2 px-2 font-medium">Warehouse date</th>
+                    <th class="text-left py-2 px-2 font-medium">Drop date</th>
+                    <th class="text-left py-2 px-2 font-medium">Plan status</th>
+                    <th class="text-left py-2 px-2 font-medium">Flat status</th>
+                    <th class="text-left py-2 px-2 font-medium">Status</th>
+                    <th class="text-center py-2 px-2 font-medium">Sent</th>
+                </tr></thead><tbody>
+                ${rows.map(i => `<tr class="border-b hover:bg-gray-50 ${i.status === 'Cancelled' ? 'opacity-50' : ''}">
+                    <td class="py-1 px-2">${flatThumb(i)}</td>
+                    <td class="py-1 px-2"><input value="${escAttr(i.drop_name)}" onchange="saveDropField(${i.id},'drop_name',this.value)" class="border rounded px-1 py-0.5 text-xs w-20"></td>
+                    <td class="py-1 px-2"><input value="${escAttr(i.style)}" onchange="saveDropField(${i.id},'style',this.value)" class="border rounded px-1 py-0.5 text-xs w-48"></td>
+                    <td class="py-1 px-2"><input value="${escAttr(i.supplier || '')}" onchange="saveDropField(${i.id},'supplier',this.value)" class="border rounded px-1 py-0.5 text-xs w-24"></td>
+                    <td class="py-1 px-2 text-right"><input type="number" value="${i.qty ?? ''}" onchange="saveDropField(${i.id},'qty',this.value)" class="border rounded px-1 py-0.5 text-xs w-16 text-right"></td>
+                    <td class="py-1 px-2"><input type="date" value="${i.warehouse_date || ''}" onchange="saveDropField(${i.id},'warehouse_date',this.value)" class="border rounded px-1 py-0.5 text-xs"></td>
+                    <td class="py-1 px-2"><input type="date" value="${i.drop_date || ''}" onchange="saveDropField(${i.id},'drop_date',this.value)" class="border rounded px-1 py-0.5 text-xs"></td>
+                    <td class="py-1 px-2">${sel(i.id, 'plan_status', i.plan_status, DROP_PLAN_STATUSES)}</td>
+                    <td class="py-1 px-2">${sel(i.id, 'flat_status', i.flat_status, DROP_FLAT_STATUSES)}</td>
+                    <td class="py-1 px-2">${sel(i.id, 'status', i.status, DROP_STATUSES)}</td>
+                    <td class="py-1 px-2 text-center"><input type="checkbox" ${i.sent ? 'checked' : ''} onchange="saveDropField(${i.id},'sent',this.checked)"></td>
+                </tr>`).join('')}
+                </tbody></table></div>`;
+        }
+
+        async function saveDropField(id, field, value) {
+            const payload = {};
+            payload[field] = value;
+            try {
+                const r = await fetch(`${API_BASE}/drops/${id}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await r.json();
+                if (!r.ok) { alert(d.detail || 'Could not save.'); return; }
+                const i = (dropAdminData || []).find(x => x.id === id);
+                if (i) Object.assign(i, d.item);
+            } catch (e) { alert('Could not save that change.'); }
+        }
+
+        async function bulkDropSent(sent) {
+            const rows = _dropAdminRows();
+            if (!rows.length) return;
+            if (!confirm(`Mark ${rows.length} shown styles as ${sent ? 'SENT' : 'NOT sent'}?`)) return;
+            await fetch(`${API_BASE}/drops/bulk-sent`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: rows.map(r => r.id), sent })
+            });
+            loadDropAdmin();
+        }
+
+        async function importDropPlan() {
+            const f = document.getElementById('dropImportFile').files[0];
+            const out = document.getElementById('dropImportResult');
+            if (!f) { alert('Pick the .xlsx file first.'); return; }
+            const fd = new FormData();
+            fd.append('file', f);
+            fd.append('sheet', document.getElementById('dropImportSheet').value || '3-Drop Plan');
+            fd.append('year', document.getElementById('dropImportYear').value || '2026');
+            fd.append('replace', document.getElementById('dropImportReplace').checked ? '1' : '0');
+            out.textContent = 'Importing…'; out.className = 'text-xs mt-2 text-gray-500';
+            try {
+                const r = await fetch(`${API_BASE}/drops/import`, { method: 'POST', body: fd });
+                const d = await r.json();
+                if (!r.ok) { out.textContent = d.detail || 'Import failed.'; out.className = 'text-xs mt-2 text-red-600'; return; }
+                out.textContent = `Imported: ${d.created} new, ${d.updated} updated${d.removed ? ', ' + d.removed + ' removed' : ''}${d.flats_linked ? ', ' + d.flats_linked + ' flats linked' : ''} · ${d.total} styles total.`;
+                out.className = 'text-xs mt-2 text-green-700';
+                loadDropAdmin();
+            } catch (e) { out.textContent = 'Import failed.'; out.className = 'text-xs mt-2 text-red-600'; }
+        }
+
+        async function uploadDropFlats() {
+            const files = document.getElementById('dropFlatFiles').files;
+            const out = document.getElementById('dropImportResult');
+            if (!files || !files.length) { alert('Pick one or more image files first.'); return; }
+            const fd = new FormData();
+            for (const f of files) fd.append('files', f);
+            out.textContent = `Uploading ${files.length} flats…`; out.className = 'text-xs mt-2 text-gray-500';
+            try {
+                const r = await fetch(`${API_BASE}/drops/flats`, { method: 'POST', body: fd });
+                const d = await r.json();
+                if (!r.ok) { out.textContent = d.detail || 'Upload failed.'; out.className = 'text-xs mt-2 text-red-600'; return; }
+                const skipped = (d.skipped || []).length;
+                out.textContent = `${d.matched} matched to a style, ${d.unmatched} unmatched${skipped ? ', ' + skipped + ' skipped' : ''}.`;
+                out.className = 'text-xs mt-2 ' + (d.unmatched || skipped ? 'text-amber-700' : 'text-green-700');
+                loadDropAdmin();
+            } catch (e) { out.textContent = 'Upload failed.'; out.className = 'text-xs mt-2 text-red-600'; }
+        }
+
+        async function renderUnassignedFlats() {
+            const el = document.getElementById('dropUnassignedFlats');
+            if (!dropAdminMeta || !dropAdminMeta.unassigned_flats) { el.innerHTML = ''; return; }
+            let flats = [];
+            try { flats = (await (await fetch(`${API_BASE}/drops/flats?unassigned_only=1`)).json()).flats || []; }
+            catch (e) { return; }
+            const opts = (dropAdminData || []).map(i => `<option value="${i.id}">${escAttr(i.style)} · ${escAttr(i.drop_name)}</option>`).join('');
+            el.innerHTML = `<div class="border rounded-lg p-2 bg-amber-50">
+                <div class="text-xs font-medium text-amber-800 mb-1">${flats.length} uploaded flat${flats.length === 1 ? '' : 's'} matched no style — assign or delete:</div>
+                <div class="flex flex-wrap gap-2">${flats.map(f => `
+                    <span class="inline-flex items-center gap-1 bg-white border rounded px-2 py-1 text-xs">
+                        <img src="${API_BASE}/drops/flats/${f.id}/image" class="w-8 h-8 object-contain rounded" loading="lazy">
+                        ${escAttr(f.filename)}
+                        <select onchange="assignDropFlat(${f.id}, this.value)" class="border rounded px-1 py-0.5 text-xs"><option value="">assign to…</option>${opts}</select>
+                        <button onclick="deleteDropFlat(${f.id})" class="text-red-500 hover:text-red-700">✕</button>
+                    </span>`).join('')}</div></div>`;
+        }
+        async function assignDropFlat(flatId, itemId) {
+            if (!itemId) return;
+            await fetch(`${API_BASE}/drops/flats/${flatId}/assign`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ item_id: parseInt(itemId) })
+            });
+            loadDropAdmin();
+        }
+        async function deleteDropFlat(flatId) {
+            if (!confirm('Delete this uploaded flat?')) return;
+            await fetch(`${API_BASE}/drops/flats/${flatId}/delete`, { method: 'POST' });
+            loadDropAdmin();
+        }
 
         // ---------- Saved plans (server-side, shared) ----------
         // The browser holds the working draft so typing stays instant; Save pushes it

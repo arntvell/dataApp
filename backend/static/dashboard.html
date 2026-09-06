@@ -3601,7 +3601,7 @@
                             <span class="text-xs text-gray-400">${g.styles.length} styles · ${units} units</span>
                         </button>
                         <button onclick="autoSplitBrand(${gi})" class="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100" title="Auto-split every ${g.brand} style across stores">⇄ all</button>
-                        <button onclick="resetBrand(${gi})" class="text-xs px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200" title="Clear ${g.brand} allocations">Reset</button>
+                        <button onclick="resetAllocBrand(${gi})" class="text-xs px-2 py-0.5 bg-gray-100 rounded hover:bg-gray-200" title="Clear ${g.brand} allocations">Reset</button>
                     </div>
                     <div id="allocBrandBody-${gi}" class="hidden"></div>
                 </div>`;
@@ -3767,7 +3767,9 @@
             saveAllocPlan();
             updateAllocSummary();
         }
-        function resetBrand(gi) {
+        // Distinct from the Brands tab's resetBrand() breadcrumb handler, which this
+        // used to shadow — clicking "All Brands" there threw on allocGroups[undefined].
+        function resetAllocBrand(gi) {
             const g = allocGroups[gi];
             if (!confirm(`Clear allocations for all ${g.brand} styles?`)) return;
             g.styles.forEach((st, si) => { st.sizes.forEach(z => { delete allocPlan[z.sku]; _syncSizeInputs(z); }); updateStyleBadge(gi, si); });
@@ -3997,11 +3999,11 @@
                         </tr></thead><tbody>${sizeRows}</tbody></table></div>
                     <div class="mb-3"><div class="text-sm font-medium mb-1">Suggested moves</div>${sugg}</div>
                     <div class="flex flex-wrap items-end gap-2 border-t pt-3">
-                        <div><label class="text-xs text-gray-500 block">Size</label><select id="mvSize" class="border rounded px-2 py-1 text-sm">${sizeOpts}</select></div>
-                        <div><label class="text-xs text-gray-500 block">From</label><select id="mvFrom" class="border rounded px-2 py-1 text-sm">${locOpts}</select></div>
-                        <div><label class="text-xs text-gray-500 block">To</label><select id="mvTo" class="border rounded px-2 py-1 text-sm">${locOpts}</select></div>
-                        <div><label class="text-xs text-gray-500 block">Qty</label><input id="mvQty" type="number" min="1" value="1" class="border rounded px-2 py-1 text-sm w-20"></div>
-                        <button onclick="addManualMove('${escAttr(d.name)}')" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm">Add to plan</button>
+                        <div><label class="text-xs text-gray-500 block">Size</label><select id="stkMvSize" class="border rounded px-2 py-1 text-sm">${sizeOpts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">From</label><select id="stkMvFrom" class="border rounded px-2 py-1 text-sm">${locOpts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">To</label><select id="stkMvTo" class="border rounded px-2 py-1 text-sm">${locOpts}</select></div>
+                        <div><label class="text-xs text-gray-500 block">Qty</label><input id="stkMvQty" type="number" min="1" value="1" class="border rounded px-2 py-1 text-sm w-20"></div>
+                        <button onclick="addStockMoveToPlan('${escAttr(d.name)}')" class="px-3 py-1.5 bg-blue-600 text-white rounded text-sm">Add to plan</button>
                     </div>`;
             } catch (e) { panel.innerHTML = '<div class="text-gray-400 text-sm">Failed to load product.</div>'; }
         }
@@ -4011,14 +4013,20 @@
             transferPlanItems.push({ name, sku, from, to, qty });
             renderTransferPlan();
         }
-        function addManualMove(baseName) {
-            const sel = document.getElementById('mvSize');
+        // Stock tab's own transfer plan. Named apart from the Sale Stock override
+        // form's addManualMove(): both used to be called addManualMove and share the
+        // mv* ids, so the later definition won and this one never ran.
+        function addStockMoveToPlan(baseName) {
+            const sel = document.getElementById('stkMvSize');
             const sku = sel.value;
             const size = sel.options[sel.selectedIndex]?.dataset.size || '';
-            addToPlan(`${baseName} (${size})`, sku,
-                document.getElementById('mvFrom').value,
-                document.getElementById('mvTo').value,
-                parseInt(document.getElementById('mvQty').value) || 0);
+            const from = document.getElementById('stkMvFrom').value;
+            const to = document.getElementById('stkMvTo').value;
+            const qty = parseInt(document.getElementById('stkMvQty').value) || 0;
+            if (!sku || !from || !to) { alert('Pick a size, a from and a to location.'); return; }
+            if (from === to) { alert('From and To must differ.'); return; }
+            if (qty < 1) { alert('Quantity must be at least 1.'); return; }
+            addToPlan(`${baseName} (${size})`, sku, from, to, qty);
         }
         function removeFromPlan(i) { transferPlanItems.splice(i, 1); renderTransferPlan(); }
         function renderTransferPlan() {

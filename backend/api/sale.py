@@ -246,7 +246,7 @@ async def restructure_rounds(season_id: int, payload: dict = Body(...), db: Sess
 
 # ---------- candidate aggregation (shared by /candidates and exports) ----------
 
-def _aggregate_styles(db):
+def _aggregate_styles(db, since=None, until=None):
     """Per parent SKU: attrs, on-hand (physical), sold (velocity window), age signals."""
     stock = dict(db.query(
         ProductMaster.parent_sku, func.sum(Cin7Stock.on_hand)
@@ -256,13 +256,18 @@ def _aggregate_styles(db):
         Cin7Stock.location.in_(PHYSICAL_LOCATIONS), ProductMaster.parent_sku.isnot(None)
     ).group_by(ProductMaster.parent_sku).all())
 
-    since = _since(VELOCITY_DAYS)
+    # Velocity window. Defaults to the last VELOCITY_DAYS so every existing caller
+    # is unchanged; the stock report passes an explicit range.
+    since = since or _since(VELOCITY_DAYS)
+    win = [SalesOrder.order_date >= since]
+    if until is not None:
+        win.append(SalesOrder.order_date <= until)
     sold = dict(db.query(
         ProductMaster.parent_sku, func.sum(SalesOrderItem.quantity)
     ).select_from(SalesOrderItem).join(
         SalesOrder, SalesOrderItem.order_id == SalesOrder.id
     ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
-        SalesOrder.order_date >= since, ProductMaster.parent_sku.isnot(None)
+        *win, ProductMaster.parent_sku.isnot(None)
     ).group_by(ProductMaster.parent_sku).all())
 
     # sold last 30 days per parent
@@ -285,7 +290,7 @@ def _aggregate_styles(db):
     ).select_from(SalesOrderItem).join(
         SalesOrder, SalesOrderItem.order_id == SalesOrder.id
     ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
-        SalesOrder.order_date >= since, ProductMaster.parent_sku.isnot(None)
+        *win, ProductMaster.parent_sku.isnot(None)
     ).group_by(ProductMaster.parent_sku):
         split[p] = (int(disc_u or 0), int(full_u or 0))
 
@@ -1348,16 +1353,42 @@ def _variant_size(sku, parent, size_map):
     return sku
 
 
-def _stock_report_data(db, season):
+def _parse_window(days, from_date, to_date):
+    """(since, until) from either a day count or an explicit YYYY-MM-DD range."""
+    until = None
+    if to_date:
+        try:
+            until = datetime.combine(date.fromisoformat(to_date), datetime.max.time())
+        except ValueError:
+            raise HTTPException(400, "to_date must be YYYY-MM-DD")
+    if from_date:
+        try:
+            since = datetime.combine(date.fromisoformat(from_date), datetime.min.time())
+        except ValueError:
+            raise HTTPException(400, "from_date must be YYYY-MM-DD")
+    else:
+        since = _since(days)
+    if until is not None and until < since:
+        raise HTTPException(400, "to_date must be on or after from_date")
+    return since, until
+
+
+def _stock_report_data(db, season, since=None, until=None):
     """Core data for the Sale Stock report / allocation engine: every INCLUDED, in-stock
     style with each size's on-hand + available per store & warehouse, plus style-level
-    performance and per-store 365d demand. Returns {stores, warehouse, styles}."""
+    performance and per-store demand over the sales window (default: last
+    VELOCITY_DAYS, which is what the allocation engine always uses).
+    Returns {stores, warehouse, styles}."""
     season_id = season.id
+    since = since or _since(VELOCITY_DAYS)
+    win = [SalesOrder.order_date >= since]
+    if until is not None:
+        win.append(SalesOrder.order_date <= until)
     included_parents = {
         p for (p,) in db.query(SalePlanItem.parent_sku).filter(
             SalePlanItem.season_id == season_id, SalePlanItem.included.is_(True))
     }
-    styles = _aggregate_styles(db)
+    styles = _aggregate_styles(db, since=since, until=until)
     styles = {p: st for p, st in styles.items()
               if p in included_parents and st["on_hand"] > 0}
     wh = WAREHOUSE[0]
@@ -1387,7 +1418,6 @@ def _stock_report_data(db, season):
             size_map[sku] = size
 
     # per-variant velocity over the same window as style-level `sold`
-    since = _since(VELOCITY_DAYS)
     all_skus = [s for p in var_loc for s in var_loc[p]]
     vsold = {}
     if all_skus:
@@ -1396,11 +1426,11 @@ def _stock_report_data(db, season):
         ).select_from(SalesOrderItem).join(
             SalesOrder, SalesOrderItem.order_id == SalesOrder.id
         ).filter(
-            _pm_sku(SalesOrderItem.sku).in_(all_skus), SalesOrder.order_date >= since
+            _pm_sku(SalesOrderItem.sku).in_(all_skus), *win
         ).group_by(_pm_sku(SalesOrderItem.sku)):
             vsold[sku] = int(qty or 0)
 
-    # per-style, per-STORE units sold (365d) — the demand/history signal for allocation
+    # per-style, per-STORE units sold over the window — the demand/history signal
     store_sold = {}   # parent -> {store: units}
     for parent, loc, q in db.query(
         ProductMaster.parent_sku, SalesOrder.location, func.sum(SalesOrderItem.quantity)
@@ -1408,7 +1438,7 @@ def _stock_report_data(db, season):
         SalesOrder, SalesOrderItem.order_id == SalesOrder.id
     ).join(ProductMaster, ProductMaster.sku == _pm_sku(SalesOrderItem.sku)).filter(
         ProductMaster.parent_sku.in_(parents),
-        SalesOrder.order_date >= since,
+        *win,
         SalesOrder.location.in_(RETAIL_STORES),
     ).group_by(ProductMaster.parent_sku, SalesOrder.location):
         store_sold.setdefault(parent, {})[loc] = int(q or 0)
@@ -1459,18 +1489,27 @@ def _stock_report_data(db, season):
             "variants": variants,
         })
     out.sort(key=lambda r: (r["brand"], r["name"]))
-    return {"stores": RETAIL_STORES, "warehouse": wh, "styles": out}
+    return {"stores": RETAIL_STORES, "warehouse": wh, "styles": out,
+            "window": {"from": since.date().isoformat(),
+                       "to": (until.date().isoformat() if until is not None else date.today().isoformat())}}
 
 
 @router.get("/stock-report")
-async def stock_report(season_id: int = Query(...), db: Session = Depends(get_db)):
+async def stock_report(
+    season_id: int = Query(...),
+    days: int = Query(VELOCITY_DAYS, ge=1, le=3650, description="Sales window in days, ignored if from_date is given"),
+    from_date: Optional[str] = Query(None, description="Sales window start, YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="Sales window end, YYYY-MM-DD (inclusive)"),
+    db: Session = Depends(get_db),
+):
     """Allocation stock report: every INCLUDED, in-stock style in the sale, with each
     size's on-hand + available split across the retail stores and the warehouse, plus
     style-level performance (sell-through, 365d/30d velocity, discounted/full split).
     Only styles explicitly marked `included` are returned — and only those with stock.
     Net-revenue / realized-markdown per style come from the /performance endpoint."""
     season = _season_or_404(db, season_id)
-    data = _stock_report_data(db, season)
+    since, until = _parse_window(days, from_date, to_date)
+    data = _stock_report_data(db, season, since=since, until=until)
     return {"season": _season_dict(season), **data}
 
 
@@ -1596,6 +1635,26 @@ def _consolidate_moves(style, to_loc, wh, stores=None):
     return moves
 
 
+def _style_store_moves(style, from_loc, to_loc):
+    """Move every size of ONE style out of ONE store into another. Deliberately
+    per-style rather than whole-store: emptying a store outright would wreck its
+    coverage, and the point of rebalancing is that every store carries something."""
+    moves = []
+    for v in style["variants"]:
+        av = int(((v["store_stock"].get(from_loc)) or {}).get("available", 0))
+        if av >= 1:
+            moves.append({
+                "type": "rebalance", "from": from_loc, "to": to_loc,
+                "parent_sku": style["parent_sku"], "sku": v["sku"], "size": v["size"],
+                "brand": style["brand"], "name": style["name"], "qty": av,
+                "dest_sold": int(style["store_sold"].get(to_loc, 0)),
+                "src_sold": int(style["store_sold"].get(from_loc, 0)),
+                "basis": "style_store_move", "origin": "style_store_move",
+                "reason": f"move this style's whole {_short_store(from_loc)} stock to {_short_store(to_loc)}",
+            })
+    return moves
+
+
 def _allocation_moves(data, cg_share, global_w, size_meta, min_move=1, include_rebalance=True,
                       excluded=None, forced=None, consolidate=None, active_stores=None,
                       excluded_brands=None):
@@ -1709,6 +1768,9 @@ async def allocation_plan(
     excluded = {o.parent_sku for o in ovs if o.kind == "exclude" and o.parent_sku}
     forced = {o.parent_sku for o in ovs if o.kind == "force" and o.parent_sku}
     consolidate = {o.parent_sku: o.to_loc for o in ovs if o.kind == "consolidate" and o.parent_sku}
+    # per-style "move all of this style from store A to store B"
+    style_moves = {o.parent_sku: (o.from_loc, o.to_loc) for o in ovs
+                   if o.kind == "style_store_move" and o.parent_sku and o.from_loc and o.to_loc}
     move_ovs = {(o.sku, o.from_loc, o.to_loc): o for o in ovs if o.kind == "move"}
     excluded_stores = {o.to_loc for o in ovs if o.kind == "store_exclude" and o.to_loc}
     excluded_brands = {o.parent_sku for o in ovs if o.kind == "brand_exclude" and o.parent_sku}
@@ -1717,11 +1779,24 @@ async def allocation_plan(
     moves, skipped = _allocation_moves(
         data, cg_share, global_w, size_meta,
         min_move=min_move, include_rebalance=bool(include_rebalance),
-        excluded=excluded, forced=forced, consolidate=set(consolidate), active_stores=active_stores,
-        excluded_brands=excluded_brands)
+        excluded=excluded, forced=forced,
+        consolidate=set(consolidate) | set(style_moves),   # both are user-directed
+        active_stores=active_stores, excluded_brands=excluded_brands)
+
+    style_by_parent = {s["parent_sku"]: s for s in data["styles"]}
+
+    # per-style store -> store moves
+    for parent, (frm, to_loc) in style_moves.items():
+        st = style_by_parent.get(parent)
+        if not st or not frm or not to_loc or frm == to_loc:
+            continue
+        if frm in excluded_stores or to_loc in excluded_stores:
+            continue
+        if st.get("brand") in excluded_brands:
+            continue
+        moves.extend(_style_store_moves(st, frm, to_loc))
 
     # consolidate-to-one-store moves (style-level "move all")
-    style_by_parent = {s["parent_sku"]: s for s in data["styles"]}
     for parent, to_loc in consolidate.items():
         s = style_by_parent.get(parent)
         if s and to_loc and to_loc not in excluded_stores and s.get("brand") not in excluded_brands:

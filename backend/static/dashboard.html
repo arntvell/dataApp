@@ -967,6 +967,20 @@
                         <option value="sold">Sort: Units sold 365d ↓</option>
                         <option value="net_revenue">Sort: Net revenue ↓</option>
                     </select>
+                    <select id="saleStockWindow" onchange="onSaleStockWindowChange()" class="border rounded-lg px-2 py-1.5 text-sm bg-amber-50 font-medium" title="Sales window for the Sold / sell-through / per-store figures">
+                        <option value="365" selected>Sold: last 12 months</option>
+                        <option value="180">Sold: last 180 days</option>
+                        <option value="90">Sold: last 90 days</option>
+                        <option value="30">Sold: last 30 days</option>
+                        <option value="custom">Sold: custom range…</option>
+                    </select>
+                    <span id="saleStockCustomRange" class="hidden items-center gap-1 text-sm">
+                        <input id="saleStockFrom" type="date" class="border rounded-lg px-2 py-1 text-sm">
+                        <span class="text-gray-400">→</span>
+                        <input id="saleStockTo" type="date" class="border rounded-lg px-2 py-1 text-sm">
+                        <button onclick="loadSaleStockReport()" class="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">Apply</button>
+                    </span>
+                    <span id="saleStockWindowLabel" class="text-xs text-gray-400"></span>
                     <button onclick="toggleAllSaleStock(true)" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Expand all</button>
                     <button onclick="toggleAllSaleStock(false)" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Collapse all</button>
                 </div>
@@ -1032,6 +1046,10 @@
                         <label class="text-xs text-gray-500">Consolidate to<br><select id="soStore" class="border rounded px-2 py-1 text-sm"></select></label>
                         <button onclick="setStyleOverride('consolidate')" class="text-sm px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700" title="Move all of this style's stock into one store">Move all →</button>
                         <span class="text-gray-300">|</span>
+                        <label class="text-xs text-gray-500">Move all from<br><select id="soFrom" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <label class="text-xs text-gray-500">to<br><select id="soTo" class="border rounded px-2 py-1 text-sm"></select></label>
+                        <button onclick="setStyleStoreMove()" class="text-sm px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700" title="Move this style's entire stock out of one store into another. Per style, so a store is never emptied outright.">Move style →</button>
+                        <span class="text-gray-300">|</span>
                         <label class="text-xs text-gray-500">Exclude brand<br><select id="soBrand" class="border rounded px-2 py-1 text-sm"></select></label>
                         <button onclick="excludeBrand()" class="text-sm px-3 py-1.5 border rounded hover:bg-gray-100" title="Leave an entire brand out of the allocation plan">Exclude brand</button>
                     </div>
@@ -1047,6 +1065,9 @@
                         <select id="allocMatrixBrand" onchange="renderAllocMatrix()" class="border rounded-lg px-2 py-1.5 text-sm"><option value="">All brands</option></select>
                         <input id="allocMatrixSearch" oninput="renderAllocMatrix()" placeholder="Search style / SKU…" class="border rounded-lg px-3 py-1.5 text-sm w-52">
                         <label class="text-sm text-gray-600 flex items-center gap-1" title="Only styles that have stock in the warehouse to send out"><input type="checkbox" id="allocWhOnly" onchange="renderAllocMatrix()"> WH stock only</label>
+                        <select id="allocStoreStock" onchange="renderAllocMatrix()" class="border rounded-lg px-2 py-1.5 text-sm" title="Only styles that currently have stock in this store — the ones you can move out when rebalancing">
+                            <option value="">Has stock in: any store</option>
+                        </select>
                         <span id="allocMatrixHint" class="text-xs text-gray-400"></span>
                     </div>
 
@@ -4341,6 +4362,42 @@
             }
         }
 
+        // ---------- Stock report sales window ----------
+        // Report-only: the allocation engine always weights on its own 365d window so
+        // an in-progress plan can't shift because someone changed the view here.
+        function _saleStockWindowParams() {
+            const w = document.getElementById('saleStockWindow');
+            if (w && w.value === 'custom') {
+                const f = document.getElementById('saleStockFrom').value;
+                const t = document.getElementById('saleStockTo').value;
+                const q = [];
+                if (f) q.push('from_date=' + f);
+                if (t) q.push('to_date=' + t);
+                if (q.length) return q.join('&');
+            }
+            return 'days=' + ((w && w.value !== 'custom') ? w.value : '365');
+        }
+        function onSaleStockWindowChange() {
+            const w = document.getElementById('saleStockWindow').value;
+            const box = document.getElementById('saleStockCustomRange');
+            if (w === 'custom') {
+                box.classList.remove('hidden'); box.classList.add('inline-flex');
+                if (!document.getElementById('saleStockFrom').value) {
+                    const to = new Date(); const from = new Date(Date.now() - 90 * 864e5);
+                    document.getElementById('saleStockTo').value = to.toISOString().slice(0, 10);
+                    document.getElementById('saleStockFrom').value = from.toISOString().slice(0, 10);
+                }
+                return;   // wait for Apply so we don't fire on every keystroke
+            }
+            box.classList.add('hidden'); box.classList.remove('inline-flex');
+            loadSaleStockReport();
+        }
+        function updateSaleStockWindowLabel() {
+            const el = document.getElementById('saleStockWindowLabel');
+            const w = saleStockData && saleStockData.window;
+            if (el) el.textContent = w ? `sold figures: ${w.from} → ${w.to}` : '';
+        }
+
         function onSaleStockSeasonChange() {
             saleStockSeason = parseInt(document.getElementById('saleStockSeason').value);
             allocPlanLoaded = false; allocPlanData = null;   // rebuild plan for the new season on demand
@@ -4355,10 +4412,11 @@
             try {
                 // Stock report (new) + performance (existing) — merge net revenue / markdown by style.
                 const [rep, perf] = await Promise.all([
-                    fetch(`${API_BASE}/sale/stock-report?season_id=${saleStockSeason}`).then(r => r.json()),
+                    fetch(`${API_BASE}/sale/stock-report?season_id=${saleStockSeason}&${_saleStockWindowParams()}`).then(r => r.json()),
                     fetch(`${API_BASE}/sale/performance?season_id=${saleStockSeason}`).then(r => r.json()).catch(() => null),
                 ]);
                 saleStockData = rep;
+                updateSaleStockWindowLabel();
                 saleStockPerf = {};
                 (perf && perf.styles || []).forEach(s => {
                     saleStockPerf[s.parent_sku] = {
@@ -4617,11 +4675,38 @@
             document.getElementById('mvFrom').innerHTML = storeOpts + `<option value="${escAttr(wh)}">WH</option>`;
             document.getElementById('mvTo').innerHTML = storeOpts;
             document.getElementById('soStore').innerHTML = storeOpts;
+            document.getElementById('soFrom').innerHTML = storeOpts;
+            document.getElementById('soTo').innerHTML = storeOpts;
+            const ss = document.getElementById('allocStoreStock');
+            if (ss.dataset.filled !== '1') {
+                ss.innerHTML = '<option value="">Has stock in: any store</option>' +
+                    stores.map(x => `<option value="${escAttr(x)}">Has stock in: ${_shortStoreJs(x)}</option>`).join('');
+                ss.dataset.filled = '1';
+            }
             const brands = [...new Set(styles.map(s => s.brand))].filter(Boolean).sort();
             document.getElementById('allocMatrixBrand').innerHTML =
                 '<option value="">All brands</option>' + brands.map(b => `<option>${escAttr(b)}</option>`).join('');
             document.getElementById('soBrand').innerHTML =
                 '<option value="">Pick brand…</option>' + brands.map(b => `<option>${escAttr(b)}</option>`).join('');
+        }
+
+        // Move ONE style's whole stock from one store to another. Deliberately per
+        // style: emptying a store outright would wreck its coverage, and rebalancing
+        // is about every store carrying something.
+        async function setStyleStoreMove() {
+            const parent = document.getElementById('soStyle').value.trim();
+            const from = document.getElementById('soFrom').value;
+            const to = document.getElementById('soTo').value;
+            if (!parent) { alert('Pick a style first.'); return; }
+            if (!from || !to || from === to) { alert('From and To must be different stores.'); return; }
+            const st = (saleStockData.styles || []).find(x => x.parent_sku === parent);
+            const have = st ? (((st.store_totals || {})[from] || {}).available || 0) : 0;
+            if (st && have <= 0) {
+                alert(`${st.name} has nothing available in ${_shortStoreJs(from)} — nothing to move.`);
+                return;
+            }
+            await _postOverride({ kind: 'style_store_move', parent_sku: parent, from_loc: from, to_loc: to });
+            loadAllocPlan();
         }
 
         async function excludeBrand() {
@@ -4678,6 +4763,7 @@
             const nameOf = p => { const s = (saleStockData.styles || []).find(x => x.parent_sku === p); return s ? s.name : p; };
             const title = o => o.kind === 'brand_exclude' ? `Brand: ${o.parent_sku}` : escAttr(nameOf(o.parent_sku));
             const label = o => o.kind === 'consolidate' ? `move all → ${_shortStoreJs(o.to_loc)}`
+                : o.kind === 'style_store_move' ? `move all ${_shortStoreJs(o.from_loc)} → ${_shortStoreJs(o.to_loc)}`
                 : o.kind === 'brand_exclude' ? 'brand excluded' : o.kind;
             const cls = o => o.kind === 'exclude' ? 'bg-gray-200 text-gray-700'
                 : o.kind === 'force' ? 'bg-green-100 text-green-700'
@@ -4766,10 +4852,12 @@
             const brand = document.getElementById('allocMatrixBrand').value;
             const q = (document.getElementById('allocMatrixSearch').value || '').trim().toLowerCase();
             const whOnly = document.getElementById('allocWhOnly').checked;
+            const inStore = document.getElementById('allocStoreStock').value;
             let styles = ((saleStockData && saleStockData.styles) || []).filter(s =>
                 (!brand || s.brand === brand)
                 && (!q || `${s.name} ${s.brand} ${s.parent_sku}`.toLowerCase().includes(q))
-                && (!whOnly || ((s.warehouse_total || {}).available || 0) > 0));
+                && (!whOnly || ((s.warehouse_total || {}).available || 0) > 0)
+                && (!inStore || (((s.store_totals || {})[inStore] || {}).available || 0) > 0));
             styles = [...styles].sort((a, b) => (a.brand || '').localeCompare(b.brand || '') || (a.name || '').localeCompare(b.name || ''));
             const hints = {
                 wh: 'Cells = units to send from the warehouse to each store. Expand a style to edit per size.',

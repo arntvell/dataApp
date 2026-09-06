@@ -1065,8 +1065,9 @@
                         <select id="allocMatrixBrand" onchange="renderAllocMatrix()" class="border rounded-lg px-2 py-1.5 text-sm"><option value="">All brands</option></select>
                         <input id="allocMatrixSearch" oninput="renderAllocMatrix()" placeholder="Search style / SKU…" class="border rounded-lg px-3 py-1.5 text-sm w-52">
                         <label class="text-sm text-gray-600 flex items-center gap-1" title="Only styles that have stock in the warehouse to send out"><input type="checkbox" id="allocWhOnly" onchange="renderAllocMatrix()"> WH stock only</label>
-                        <select id="allocStoreStock" onchange="renderAllocMatrix()" class="border rounded-lg px-2 py-1.5 text-sm" title="Only styles that currently have stock in this store — the ones you can move out when rebalancing">
-                            <option value="">Has stock in: any store</option>
+                        <select id="allocStoreStock" onchange="renderAllocMatrix()" class="border rounded-lg px-2 py-1.5 text-sm" title="Narrow to what is actually movable between stores. Warehouse-only styles can't be rebalanced.">
+                            <option value="">Store stock: all styles</option>
+                            <option value="__stores__">In stores only (hide warehouse-only)</option>
                         </select>
                         <span id="allocMatrixHint" class="text-xs text-gray-400"></span>
                     </div>
@@ -4679,8 +4680,9 @@
             document.getElementById('soTo').innerHTML = storeOpts;
             const ss = document.getElementById('allocStoreStock');
             if (ss.dataset.filled !== '1') {
-                ss.innerHTML = '<option value="">Has stock in: any store</option>' +
-                    stores.map(x => `<option value="${escAttr(x)}">Has stock in: ${_shortStoreJs(x)}</option>`).join('');
+                ss.innerHTML = '<option value="">Store stock: all styles</option>'
+                    + '<option value="__stores__">In stores only (hide warehouse-only)</option>'
+                    + stores.map(x => `<option value="${escAttr(x)}">Has stock in: ${_shortStoreJs(x)}</option>`).join('');
                 ss.dataset.filled = '1';
             }
             const brands = [...new Set(styles.map(s => s.brand))].filter(Boolean).sort();
@@ -4857,14 +4859,18 @@
                 (!brand || s.brand === brand)
                 && (!q || `${s.name} ${s.brand} ${s.parent_sku}`.toLowerCase().includes(q))
                 && (!whOnly || ((s.warehouse_total || {}).available || 0) > 0)
-                && (!inStore || (((s.store_totals || {})[inStore] || {}).available || 0) > 0));
+                && _allocStoreStockOk(s, inStore, stores));
             styles = [...styles].sort((a, b) => (a.brand || '').localeCompare(b.brand || '') || (a.name || '').localeCompare(b.name || ''));
             const hints = {
                 wh: 'Cells = units to send from the warehouse to each store. Expand a style to edit per size.',
                 rebalance: 'Net +/− per store from store-to-store moves. Expand a style to add or remove transfers.',
                 all: 'Combined net +/− per store across every move (read-only overview).'
             };
-            document.getElementById('allocMatrixHint').textContent = hints[matrixMode] || '';
+            const shownCount = styles.length;
+            const totalCount = ((saleStockData && saleStockData.styles) || []).length;
+            document.getElementById('allocMatrixHint').textContent =
+                (shownCount < totalCount ? `${shownCount} of ${totalCount} styles · ` : `${totalCount} styles · `)
+                + (hints[matrixMode] || '');
             if (!styles.length) { body.innerHTML = '<div class="py-6 text-center text-gray-400">No sale styles match your filter.</div>'; return; }
             const th = 'sticky top-0 z-20 bg-gray-50 px-2 py-1 text-right font-medium';
             const storeCols = stores.map(s => `<th class="${th} ${ex.has(s) ? 'text-gray-300 line-through' : ''}">${_shortStoreJs(s)}</th>`).join('');
@@ -4877,6 +4883,16 @@
             </tr></thead>`;
             const rows = styles.map(s => matrixStyleRow(s, stores, ex, wh)).join('');
             body.innerHTML = `<div class="overflow-auto max-h-[75vh] border rounded-lg"><table class="w-full text-sm">${header}<tbody>${rows}</tbody></table></div>`;
+        }
+
+        // Store-stock filter. "__stores__" keeps only styles a store can actually give
+        // up — warehouse-only styles are not rebalanceable, and they are the bulk of the
+        // sale list (798 of 1007 on the current season).
+        function _allocStoreStockOk(s, inStore, stores) {
+            if (!inStore) return true;
+            const t = s.store_totals || {};
+            if (inStore === '__stores__') return stores.some(x => ((t[x] || {}).available || 0) > 0);
+            return ((t[inStore] || {}).available || 0) > 0;
         }
 
         function matrixStyleRow(s, stores, ex, wh) {

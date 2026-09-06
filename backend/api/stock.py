@@ -5,7 +5,7 @@ Stock overview, per-product stock, and wholesale revenue from Cin7 data.
 
 import logging
 import re
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Body, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from typing import Optional
@@ -14,7 +14,7 @@ from database.config import get_db
 from database.models import (
     Cin7Stock, Cin7Sale, Cin7SaleItem, Cin7Invoice, Cin7InvoiceItem,
     SalesOrder, SalesOrderItem, ProductMaster, ParentSkuMapping,
-    RawShopifyProduct,
+    RawShopifyProduct, AllocationPlan,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,42 @@ _SEASON_TAG_RE = re.compile(r"^(SS|FW|AW|HO|PRE|RESORT)\s?\d{2}$", re.IGNORECASE
 # Markdown tags Shopify carries on anything that has been put on sale, in any of the
 # shapes the store has used over the years: SALE, SALE_FW25, SALESS23_F, PRESALE-SS26.
 _SALE_TAG_RE = re.compile(r"^(PRE)?SALE", re.IGNORECASE)
+
+
+# Size tokens, mirroring pipelines.product_sync._extract_parent. parent_sku_mappings
+# is seeded from SALES history, so a SKU that never sold has no size_code — which is
+# most of the Imperfect range. Derive it from the SKU instead of showing a dash.
+_SIZE_TOKEN = r"\d{4}|XXS|XS|S|M|L|XL|XXL|2XL|3XL|OS|\d{1,2}"
+_SIZE_EXACT_RE = re.compile(rf"^({_SIZE_TOKEN})$", re.IGNORECASE)
+_SIZE_TAIL_RE = re.compile(rf"^(.+)-({_SIZE_TOKEN})$", re.IGNORECASE)
+
+# Seconds/imperfect stock is a parallel range: IMP-LIV-<rest> mirrors LIV-<rest>.
+IMPERFECT_PREFIX = "IMP-"
+# "Barnes Japan Black 32/32*" / "Barnes Fade Bone, 3232*" -> "Barnes Japan Black"
+_NAME_SIZE_TAIL_RE = re.compile(r"[\s,]*(\d{2}\s*/\s*\d{2}|\d{4})\s*\*?\s*$")
+
+
+def _derive_size(sku, parent_sku):
+    """Size for a variant whose parent_sku_mappings row is missing or sizeless."""
+    if not sku:
+        return None
+    v = sku.strip()
+    p = (parent_sku or "").strip()
+    if p and len(v) > len(p) + 1 and v.upper().startswith(p.upper() + "-"):
+        cand = v[len(p) + 1:]
+        if _SIZE_EXACT_RE.match(cand):
+            return cand.upper()
+    m = _SIZE_TAIL_RE.match(v)
+    return m.group(2).upper() if m else None
+
+
+def _is_imperfect(parent_sku):
+    return (parent_sku or "").upper().startswith(IMPERFECT_PREFIX)
+
+
+def _clean_style_name(name):
+    """Drop the per-variant size an Imperfect product name carries."""
+    return _NAME_SIZE_TAIL_RE.sub("", (name or "").strip()).strip(" ,*") or (name or "")
 
 
 def _non_merch(parent_sku, category_group):
@@ -691,19 +727,35 @@ async def central_allocation(
         if st is None:
             st = {"parent_sku": parent, "brand": brnd, "name": name or parent,
                   "image_url": img, "category": cat, "collections": sorted(tags),
-                  "sale_tags": sorted(stags),
+                  "sale_tags": sorted(stags), "imperfect": _is_imperfect(parent),
                   "wh_total": 0.0, "sold_total": 0, "sizes": []}
             styles[parent] = st
         s_by_store = {s: sold.get(u, {}).get(s, 0) for s in RETAIL_STORES}
         stk_by_store = {s: store_stock.get(u, {}).get(s, 0) for s in RETAIL_STORES}
         st["sizes"].append({
-            "sku": sku, "size": size_of.get(u) or "\u2014", "wh_avail": avail,
+            "sku": sku, "size": size_of.get(u) or _derive_size(sku, parent) or "\u2014",
+            "wh_avail": avail,
             "by_location": avail_by_loc.get(sku, {}),
             "sold": s_by_store, "sold_total": sum(s_by_store.values()),
             "stock": stk_by_store,
         })
         st["wh_total"] += avail
         st["sold_total"] += sum(s_by_store.values())
+
+    # Imperfect variants each carry their own size in product_name ("Barnes Japan
+    # Black 32/32*"), so the style would be named after whichever variant was seen
+    # first. Borrow the first-quality style's name instead: IMP-LIV-X mirrors LIV-X.
+    imp_parents = [p for p in styles if _is_imperfect(p)]
+    if imp_parents:
+        twins = {p: p[len(IMPERFECT_PREFIX):] for p in imp_parents}
+        twin_names = {}
+        for par, nm in db.query(
+            ProductMaster.parent_sku, func.min(ProductMaster.product_name)
+        ).filter(ProductMaster.parent_sku.in_(list(twins.values()))).group_by(ProductMaster.parent_sku):
+            twin_names[par] = nm
+        for p in imp_parents:
+            base = twin_names.get(twins[p]) or _clean_style_name(styles[p]["name"])
+            styles[p]["name"] = f"{base} \u2014 Imperfect"
 
     out = [st for st in styles.values()
            if st["wh_total"] >= min_units and (max_sold is None or st["sold_total"] <= max_sold)]
@@ -720,3 +772,75 @@ async def central_allocation(
         "sale_tags": sorted(sale_tags),
         "styles": out, "total_units": sum(st["wh_total"] for st in out),
     }
+
+
+# ============== SAVED ALLOCATION PLANS ==============
+# The Allocate tab keeps a working draft in the browser (fast, no round-trip per
+# keystroke). Saving pushes it here so a plan survives a different machine, a
+# cleared cache, or a colleague picking the work up.
+
+def _plan_summary(p: AllocationPlan):
+    plan = p.plan or {}
+    units = sum(int(q or 0) for byloc in plan.values() for q in byloc.values())
+    lines = sum(len(byloc) for byloc in plan.values())
+    return {
+        "id": p.id, "name": p.name, "note": p.note,
+        "skus": len(plan), "lines": lines, "units": units,
+        "sources": p.sources or [],
+        "updated_at": (p.updated_at or p.created_at).isoformat() if (p.updated_at or p.created_at) else None,
+    }
+
+
+@router.get("/allocation-plans")
+async def list_allocation_plans(db: Session = Depends(get_db)):
+    """Every saved plan, newest touched first."""
+    plans = db.query(AllocationPlan).all()
+    out = [_plan_summary(p) for p in plans]
+    out.sort(key=lambda r: r["updated_at"] or "", reverse=True)
+    return {"plans": out}
+
+
+@router.get("/allocation-plan")
+async def get_allocation_plan(name: str = Query(...), db: Session = Depends(get_db)):
+    p = db.query(AllocationPlan).filter(AllocationPlan.name == name).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="No saved plan by that name")
+    return {**_plan_summary(p), "plan": p.plan or {}, "sku_info": p.sku_info or {}}
+
+
+@router.put("/allocation-plan")
+async def save_allocation_plan(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Create or overwrite a named plan. Body: {name, plan, sku_info?, sources?, note?}."""
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    plan = payload.get("plan")
+    if not isinstance(plan, dict):
+        raise HTTPException(status_code=400, detail="plan must be an object of {sku: {location: qty}}")
+    # keep only positive integer quantities — a zero is an erased cell, not a line
+    clean = {}
+    for sku, byloc in plan.items():
+        if not isinstance(byloc, dict):
+            continue
+        keep = {loc: int(q) for loc, q in byloc.items() if str(q).strip() not in ("", "None") and int(q) > 0}
+        if keep:
+            clean[sku] = keep
+    p = db.query(AllocationPlan).filter(AllocationPlan.name == name).first()
+    if not p:
+        p = AllocationPlan(name=name)
+        db.add(p)
+    p.plan = clean
+    p.sku_info = payload.get("sku_info") or {}
+    p.sources = payload.get("sources") or []
+    p.note = payload.get("note")
+    db.commit()
+    db.refresh(p)
+    return {"ok": True, **_plan_summary(p)}
+
+
+@router.post("/allocation-plan/delete")
+async def delete_allocation_plan(payload: dict = Body(...), db: Session = Depends(get_db)):
+    name = (payload.get("name") or "").strip()
+    n = db.query(AllocationPlan).filter(AllocationPlan.name == name).delete()
+    db.commit()
+    return {"ok": True, "deleted": n}

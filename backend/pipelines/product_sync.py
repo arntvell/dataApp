@@ -268,10 +268,15 @@ class ProductSyncPipeline:
                 "designed_for, sold_as_vendor, category_source FROM product_master")).fetchall()}
 
             # target SKUs the dashboard can join on (exact casing preserved)
+            # Seed from the CATALOGUE as well as sales history. Keyed on sales-side
+            # casing where that exists; product_master supplies everything that has
+            # never sold (most of the Imperfect range), which otherwise ends up with
+            # no parent/size row at all and renders sizeless in the planners.
             target = [r[0] for r in conn.execute(text(
                 "SELECT DISTINCT sku FROM sales_order_items WHERE sku IS NOT NULL AND sku<>'' "
                 "UNION SELECT DISTINCT sku FROM category_mappings WHERE sku IS NOT NULL "
-                "UNION SELECT DISTINCT sku FROM parent_sku_mappings WHERE sku IS NOT NULL")).fetchall()]
+                "UNION SELECT DISTINCT sku FROM parent_sku_mappings WHERE sku IS NOT NULL "
+                "UNION SELECT DISTINCT sku FROM product_master WHERE sku IS NOT NULL AND sku<>''")).fetchall()]
 
             cat_rows, par_rows, matched = [], [], 0
             size_info = getattr(self, "_size_info", {})

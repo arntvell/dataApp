@@ -1011,7 +1011,8 @@
                         <button onclick="toggleAllocSub('allocManualForm')" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">＋ Add manual move</button>
                         <button onclick="toggleAllocSub('allocStylePanel')" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Style overrides</button>
                         <span class="flex-1"></span>
-                        <button onclick="resetAllOverrides()" class="text-xs px-2 py-1 border rounded text-red-500 hover:bg-red-50">Reset all overrides</button>
+                        <button onclick="clearWarehouseOverrides()" class="text-xs px-2 py-1 border rounded text-amber-600 hover:bg-amber-50" title="Drop the pinned warehouse→store lines from a reallocation you have already executed. Store↔store rebalancing is left alone.">Clear executed warehouse moves</button>
+                        <button onclick="resetAllOverrides()" class="text-xs px-2 py-1 border rounded text-red-500 hover:bg-red-50" title="Deletes EVERY override for this season, rebalancing included">Reset all overrides</button>
                     </div>
 
                     <div id="allocManualForm" class="hidden border rounded-lg p-3 mb-2 bg-gray-50 flex flex-wrap items-end gap-2">
@@ -1095,11 +1096,20 @@
                     <div id="allocSources" class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-700"></div>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t">
-                    <span class="text-xs text-gray-500" id="allocSummary"></span>
+                    <span class="text-xs text-gray-500" id="allocStyleSummary"></span>
                     <span class="flex-1"></span>
                     <button onclick="autoSplitAllShown()" class="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100" title="Auto-split every style currently shown across stores by unmet demand">⇄ Auto-split all shown</button>
                     <select id="allocSendAllStore" class="text-xs px-2 py-1 border rounded bg-white" title="Send every unit of every shown style to one store"></select>
                     <button onclick="sendAllShownToStore()" class="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded hover:bg-amber-100" title="Put every available unit of every shown style into the selected store">→ Send all shown</button>
+                    <span class="text-xs text-gray-300">|</span>
+                    <select id="allocPlanSelect" onchange="onAllocPlanSelect()" class="text-xs px-2 py-1 border rounded bg-white" title="Saved plans live on the server and are visible to everyone">
+                        <option value="">Unsaved draft</option>
+                    </select>
+                    <button onclick="saveAllocPlanToServer()" class="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100" title="Save this plan to the server">Save</button>
+                    <button onclick="saveAllocPlanAsNew()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50" title="Save as a new named plan">Save as…</button>
+                    <button onclick="deleteAllocPlanFromServer()" class="text-xs px-2 py-1 border rounded text-red-500 hover:bg-red-50" title="Delete the selected saved plan">Delete</button>
+                    <span id="allocPlanState" class="text-xs text-gray-400"></span>
+                    <span class="text-xs text-gray-300">|</span>
                     <button onclick="clearAllocPlan()" class="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200">Clear plan</button>
                     <button onclick="exportAllocationCsv()" class="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-medium">Export CSV</button>
                 </div>
@@ -3339,11 +3349,105 @@
             try { allocSkuInfo = JSON.parse(localStorage.getItem(ALLOC_INFO_KEY)) || {}; } catch (e) { allocSkuInfo = {}; }
         }
         loadAllocState();
-        function saveAllocPlan() { try { localStorage.setItem(ALLOC_PLAN_KEY, JSON.stringify(allocPlan)); } catch (e) {} }
+        function saveAllocPlan() {
+            try { localStorage.setItem(ALLOC_PLAN_KEY, JSON.stringify(allocPlan)); } catch (e) {}
+            allocPlanDirty = true;
+            updateAllocPlanState();
+        }
         function saveAllocInfo() { try { localStorage.setItem(ALLOC_INFO_KEY, JSON.stringify(allocSkuInfo)); } catch (e) {} }
         function cssId(sku) { return ('a' + sku).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
         function onAllocSearchInput() { clearTimeout(_allocSearchTimer); _allocSearchTimer = setTimeout(loadAllocation, 350); }
+
+        // ---------- Saved plans (server-side, shared) ----------
+        // The browser holds the working draft so typing stays instant; Save pushes it
+        // to the server so the plan survives another machine or a cleared cache.
+        let allocPlanDirty = false;
+        const ALLOC_SAVED_KEY = 'livid_alloc_saved_name_v1';
+        let allocSavedName = (function () {
+            try { return localStorage.getItem(ALLOC_SAVED_KEY) || ''; } catch (e) { return ''; }
+        })();
+        function setAllocSavedName(n) {
+            allocSavedName = n || '';
+            try { n ? localStorage.setItem(ALLOC_SAVED_KEY, n) : localStorage.removeItem(ALLOC_SAVED_KEY); } catch (e) {}
+        }
+        function updateAllocPlanState() {
+            const el = document.getElementById('allocPlanState');
+            if (!el) return;
+            if (!allocSavedName) { el.textContent = allocPlanDirty ? 'draft — not saved' : ''; el.className = 'text-xs text-amber-600'; return; }
+            el.textContent = allocPlanDirty ? `“${allocSavedName}” — unsaved changes` : `“${allocSavedName}” saved`;
+            el.className = allocPlanDirty ? 'text-xs text-amber-600' : 'text-xs text-green-600';
+        }
+        async function refreshAllocPlanList() {
+            const sel = document.getElementById('allocPlanSelect');
+            if (!sel) return;
+            try {
+                const d = await (await fetch(`${API_BASE}/stock/allocation-plans`)).json();
+                sel.innerHTML = '<option value="">Unsaved draft</option>' +
+                    (d.plans || []).map(p =>
+                        `<option value="${escAttr(p.name)}">${escAttr(p.name)} · ${p.units}u</option>`).join('');
+                sel.value = allocSavedName || '';
+                if (allocSavedName && sel.value !== allocSavedName) { setAllocSavedName(''); sel.value = ''; }
+            } catch (e) { /* leave the draft option only */ }
+            updateAllocPlanState();
+        }
+        async function onAllocPlanSelect() {
+            const name = document.getElementById('allocPlanSelect').value;
+            if (!name) { setAllocSavedName(''); updateAllocPlanState(); return; }
+            if (allocPlanDirty && !confirm('Load "' + name + '"? Your unsaved draft will be replaced.')) {
+                document.getElementById('allocPlanSelect').value = allocSavedName || '';
+                return;
+            }
+            try {
+                const d = await (await fetch(`${API_BASE}/stock/allocation-plan?name=${encodeURIComponent(name)}`)).json();
+                if (d.detail) { alert(d.detail); return; }
+                allocPlan = d.plan || {};
+                Object.assign(allocSkuInfo, d.sku_info || {});
+                try { localStorage.setItem(ALLOC_PLAN_KEY, JSON.stringify(allocPlan)); } catch (e) {}
+                saveAllocInfo();
+                setAllocSavedName(name);
+                allocPlanDirty = false;
+                renderAllocation();
+                updateAllocPlanState();
+            } catch (e) { alert('Could not load that plan.'); }
+        }
+        async function _putAllocPlan(name) {
+            const info = {};
+            Object.keys(allocPlan).forEach(sku => { if (allocSkuInfo[sku]) info[sku] = allocSkuInfo[sku]; });
+            const r = await fetch(`${API_BASE}/stock/allocation-plan`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, plan: allocPlan, sku_info: info, sources: [...allocSourceSel] })
+            });
+            const d = await r.json();
+            if (!r.ok) { alert(d.detail || 'Save failed.'); return false; }
+            setAllocSavedName(name);
+            allocPlanDirty = false;
+            await refreshAllocPlanList();
+            return true;
+        }
+        async function saveAllocPlanToServer() {
+            if (!Object.keys(allocPlan).length) { alert('Nothing allocated yet — enter quantities first.'); return; }
+            const name = allocSavedName || prompt('Name this plan:', 'Allocation ' + todayStr());
+            if (!name) return;
+            if (await _putAllocPlan(name.trim())) updateAllocPlanState();
+        }
+        async function saveAllocPlanAsNew() {
+            if (!Object.keys(allocPlan).length) { alert('Nothing allocated yet — enter quantities first.'); return; }
+            const name = prompt('Save as a new plan named:', (allocSavedName ? allocSavedName + ' copy' : 'Allocation ' + todayStr()));
+            if (!name) return;
+            if (await _putAllocPlan(name.trim())) updateAllocPlanState();
+        }
+        async function deleteAllocPlanFromServer() {
+            const name = document.getElementById('allocPlanSelect').value;
+            if (!name) { alert('Pick a saved plan to delete.'); return; }
+            if (!confirm(`Delete the saved plan “${name}”? This removes it for everyone.\n\nYour current working draft stays in this browser.`)) return;
+            await fetch(`${API_BASE}/stock/allocation-plan/delete`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            if (allocSavedName === name) { setAllocSavedName(''); allocPlanDirty = true; }
+            await refreshAllocPlanList();
+        }
 
         // ---------- Source locations (which stock pools we allocate FROM) ----------
         let allocSourceOpts = [];
@@ -3423,6 +3527,7 @@
                 bsel.dataset.filled = '1';
             }
             renderAllocSources(allocData.source_options);
+            refreshAllocPlanList();
             if (!multiSel.allocCategory) {
                 initMultiSelect('allocCategory', 'Category', allocData.categories || [], loadAllocation);
             } else if ((allocData.categories || []).length) {
@@ -3523,6 +3628,7 @@
                         <span class="font-medium flex-1 truncate">${st.name}</span>
                         <span class="text-xs text-gray-400">${st.wh_total} in lager</span>
                         <span class="text-xs text-gray-400 hidden sm:inline">· sold ${soldTotal}</span>
+                        ${st.imperfect ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-medium" title="Seconds — a separate range from the first-quality style">2nd</span>' : ''}
                         <span id="allocPlanBadge-${gi}-${si}" class="text-xs"></span>
                     </button>
                     <div id="allocStyleBody-${gi}-${si}" class="hidden"></div>
@@ -3706,7 +3812,7 @@
                 units += Object.values(allocPlan[sku]).reduce((a, b) => a + b, 0);
             }
             const shown = allocGroups ? allocGroups.reduce((a, g) => a + g.styles.length, 0) : 0;
-            document.getElementById('allocSummary').textContent =
+            document.getElementById('allocStyleSummary').textContent =
                 `${shown} styles shown · plan: ${units} units across ${skus} SKUs → ${lines} store lines`;
         }
 
@@ -4948,6 +5054,35 @@
                 body: JSON.stringify({ season_id: saleStockSeason, kind, parent_sku: parent }) });
             loadAllocPlan();
         }
+        // Once a warehouse push has been executed its pinned overrides no longer match
+        // any fresh suggestion, so the plan keeps re-emitting them as "manual" moves.
+        // This clears only those, leaving store<->store rebalancing work untouched.
+        async function clearWarehouseOverrides() {
+            if (!saleStockSeason) return;
+            let p;
+            try {
+                p = await (await fetch(`${API_BASE}/sale/overrides/clear-preview?season_id=${saleStockSeason}&scope=wh_pinned`)).json();
+            } catch (e) { alert('Could not read the current override state.'); return; }
+            if (!p || !p.delete || !p.delete.total) {
+                alert('Nothing to clear — this season has no pinned warehouse→store overrides.');
+                return;
+            }
+            const kept = Object.entries(p.keep.by_kind)
+                .sort((a, b) => b[1] - a[1])
+                .map(([k, n]) => `   • ${n} × ${k}`).join('\n');
+            const ok = confirm(
+                `Clear the executed warehouse reallocation?\n\n` +
+                `WILL REMOVE ${p.delete.total} pinned lines out of ${p.warehouse} (${p.delete.units} units).\n\n` +
+                `WILL KEEP ${p.keep.total} overrides:\n${kept}\n\n` +
+                `Your store↔store rebalancing is not touched.`);
+            if (!ok) return;
+            await fetch(`${API_BASE}/sale/overrides/clear`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ season_id: saleStockSeason, scope: 'wh_pinned' })
+            });
+            loadAllocPlan();
+        }
+
         async function resetAllOverrides() {
             if (!confirm('Remove ALL overrides for this season?')) return;
             await fetch(`${API_BASE}/sale/overrides/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' },

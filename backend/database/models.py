@@ -623,3 +623,22 @@ class SaleTransferOverride(Base):
     payload = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class AllocationPlan(Base):
+    """A saved warehouse->store allocation plan from the Allocate tab.
+
+    The tab keeps a working draft in the browser; saving pushes it here so the
+    plan survives a different machine, a cleared cache, or a colleague picking
+    it up. One row per named plan; `plan` is {variant_sku: {location: qty}}.
+    """
+    __tablename__ = "allocation_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True, index=True)
+    plan = Column(JSON, nullable=False, default=dict)      # {sku: {store: qty}}
+    sku_info = Column(JSON, nullable=True)                 # {sku: {name, size, by_location}}
+    sources = Column(JSON, nullable=True)                  # source locations it was built from
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), server_default=func.now())

@@ -5093,15 +5093,32 @@
             const out = moves.filter(m => m.from === store).reduce((a, m) => a + m.qty, 0);
             return inn - out;
         }
+        async function reloadSaleStockThenPlan() {
+            await loadSaleStockReport();
+            renderAllocPlan();
+        }
+
         function renderAllocMatrix() {
             const body = document.getElementById('allocBody');
             const stores = allocPlanData.stores || [];
             const ex = new Set(allocPlanData.excluded_stores || []);
             const wh = allocPlanData.warehouse;
-            const brand = document.getElementById('allocMatrixBrand').value;
-            const q = (document.getElementById('allocMatrixSearch').value || '').trim().toLowerCase();
-            const whOnly = document.getElementById('allocWhOnly').checked;
-            const inStore = document.getElementById('allocStoreStock').value;
+            // The matrix is driven by the stock report, not the plan. If that request
+            // failed the table would silently render empty, which looks exactly like
+            // "the filters stopped working" — so say what actually happened.
+            if (!saleStockData || !(saleStockData.styles || []).length) {
+                body.innerHTML = `<div class="py-6 text-center text-gray-500">
+                    The stock report hasn't loaded, so there is nothing to show here.
+                    <button onclick="reloadSaleStockThenPlan()" class="ml-2 px-2 py-1 text-sm bg-blue-600 text-white rounded">Reload stock report</button>
+                    </div>`;
+                return;
+            }
+            const _v = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+            const _c = id => { const el = document.getElementById(id); return el ? el.checked : false; };
+            const brand = _v('allocMatrixBrand');
+            const q = (_v('allocMatrixSearch') || '').trim().toLowerCase();
+            const whOnly = _c('allocWhOnly');
+            const inStore = _v('allocStoreStock');
             let styles = ((saleStockData && saleStockData.styles) || []).filter(s =>
                 (!brand || s.brand === brand)
                 && (!q || `${s.name} ${s.brand} ${s.parent_sku}`.toLowerCase().includes(q))

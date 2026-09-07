@@ -1753,6 +1753,7 @@ async def allocation_plan(
     season_id: int = Query(...),
     min_move: int = Query(1, ge=1),
     include_rebalance: int = Query(1),
+    include_styles: int = Query(0, description="Return the stock snapshot the plan was built from, so the UI can't disagree with the engine"),
     db: Session = Depends(get_db),
 ):
     """Performance-weighted, size-level transfer suggestions for a sale season."""
@@ -1774,6 +1775,11 @@ async def allocation_plan(
     move_ovs = {(o.sku, o.from_loc, o.to_loc): o for o in ovs if o.kind == "move"}
     excluded_stores = {o.to_loc for o in ovs if o.kind == "store_exclude" and o.to_loc}
     excluded_brands = {o.parent_sku for o in ovs if o.kind == "brand_exclude" and o.parent_sku}
+    # A locked plan stops proposing anything new: only moves the user directed
+    # survive. Stock keeps moving underneath (hourly Cin7 sync), so without this
+    # a finished plan quietly grows fresh warehouse pushes between visits.
+    lock = next((o for o in ovs if o.kind == "plan_lock"), None)
+    locked = bool(lock and (lock.payload or {}).get("locked"))
     active_stores = [s for s in RETAIL_STORES if s not in excluded_stores]
 
     moves, skipped = _allocation_moves(
@@ -1827,6 +1833,12 @@ async def allocation_plan(
     if excluded_stores:
         moves = [m for m in moves if m["from"] not in excluded_stores and m["to"] not in excluded_stores]
 
+    suppressed = 0
+    if locked:
+        before = len(moves)
+        moves = [m for m in moves if m.get("origin") != "suggested"]
+        suppressed = before - len(moves)
+
     by_store = {s: {"in": 0, "out": 0} for s in RETAIL_STORES}
     for m in moves:
         if m["to"] in by_store:
@@ -1846,17 +1858,46 @@ async def allocation_plan(
         "skipped_styles": len(skipped),
         "skip_reasons": skip_reasons,
         "override_count": len(ovs),
+        "suppressed_suggestions": suppressed,
     }
-    return {"season": _season_dict(season), "stores": RETAIL_STORES,
-            "warehouse": wh, "moves": moves, "skipped": skipped,
-            "excluded_stores": sorted(excluded_stores),
-            "excluded_brands": sorted(excluded_brands),
-            "overrides": [_override_dict(o) for o in ovs], "summary": summary}
+    out = {"season": _season_dict(season), "stores": RETAIL_STORES,
+           "warehouse": wh, "moves": moves, "skipped": skipped,
+           "excluded_stores": sorted(excluded_stores),
+           "excluded_brands": sorted(excluded_brands),
+           "locked": locked,
+           "locked_at": (lock.payload or {}).get("locked_at") if lock else None,
+           "overrides": [_override_dict(o) for o in ovs], "summary": summary}
+    if include_styles:
+        # Exactly what the engine weighed, so the matrix can't drift from it —
+        # notably not affected by the stock report's own sales-window picker.
+        out["styles"] = data["styles"]
+        out["style_window_days"] = VELOCITY_DAYS
+    return out
 
 
 def _override_dict(o):
     return {"id": o.id, "kind": o.kind, "parent_sku": o.parent_sku, "sku": o.sku,
             "from_loc": o.from_loc, "to_loc": o.to_loc, "qty": o.qty, "payload": o.payload}
+
+
+@router.post("/plan-lock")
+async def set_plan_lock(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Freeze / unfreeze a season's allocation plan. While frozen the engine
+    proposes nothing new — only the moves you pinned, added, consolidated or
+    directed survive — and the response reports how many suggestions are being
+    withheld so nothing changes without you seeing it."""
+    season_id = payload["season_id"]
+    want = bool(payload.get("locked"))
+    _season_or_404(db, season_id)
+    o = db.query(SaleTransferOverride).filter(
+        SaleTransferOverride.season_id == season_id,
+        SaleTransferOverride.kind == "plan_lock").first()
+    if not o:
+        o = SaleTransferOverride(season_id=season_id, kind="plan_lock")
+        db.add(o)
+    o.payload = {"locked": want, "locked_at": datetime.now().isoformat(timespec="seconds") if want else None}
+    db.commit()
+    return {"ok": True, "locked": want, "locked_at": o.payload.get("locked_at")}
 
 
 @router.get("/overrides")
@@ -1954,8 +1995,8 @@ def _clear_counts(db, season_id, scope):
     kept = {}
     for o in db.query(SaleTransferOverride).filter(
             SaleTransferOverride.season_id == season_id):
-        if o.id in doomed_ids:
-            continue
+        if o.id in doomed_ids or o.kind == "plan_lock":
+            continue          # a mode, not a per-style override
         key = o.kind
         if o.kind == "move":
             key = "move (warehouse→store)" if (o.from_loc or "") == WAREHOUSE[0] else "move (store→store)"

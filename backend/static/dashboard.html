@@ -1017,10 +1017,12 @@
                             <option value="rebalance">Rebalance only</option>
                         </select>
                         <button onclick="loadAllocPlan()" class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700">Generate plan</button>
+                        <button id="allocLockBtn" onclick="toggleAllocLock()" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50" title="Freeze the plan so the engine stops proposing new moves as stock shifts">Lock plan</button>
                         <span class="flex-1"></span>
                         <button onclick="exportAllocCsv()" id="allocCsvBtn" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 hidden">Export transfer CSV</button>
                         <button onclick="exportAllocImportCsv()" id="allocImportBtn" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50 hidden">Export import CSV</button>
                     </div>
+                    <div id="allocLockBanner" class="mb-3"></div>
                     <div id="allocSummary" class="mb-3"></div>
                     <div id="allocStoreExcludeBar" class="flex flex-wrap items-center gap-2 mb-3 text-xs"></div>
 
@@ -4901,7 +4903,7 @@
             const reb = document.getElementById('allocRebalance').checked ? 1 : 0;
             try {
                 allocPlanData = await (await fetch(
-                    `${API_BASE}/sale/allocation-plan?season_id=${saleStockSeason}&min_move=${minMove}&include_rebalance=${reb}`)).json();
+                    `${API_BASE}/sale/allocation-plan?season_id=${saleStockSeason}&min_move=${minMove}&include_rebalance=${reb}&include_styles=1`)).json();
                 const dests = [...new Set(allocPlanData.moves.map(m => m.to))];
                 document.getElementById('allocDestFilter').innerHTML = '<option value="">All destinations</option>'
                     + dests.map(d => `<option value="${escAttr(d)}">${d}</option>`).join('');
@@ -4916,7 +4918,7 @@
         function populateAllocPickers() {
             const stores = (allocPlanData && allocPlanData.stores) || [];
             const wh = allocPlanData && allocPlanData.warehouse;
-            const styles = (saleStockData && saleStockData.styles) || [];
+            const styles = _allocStyles();
             document.getElementById('allocStyleList').innerHTML =
                 styles.map(s => `<option value="${escAttr(s.parent_sku)}">${escAttr(s.name)} · ${escAttr(s.brand)}</option>`).join('');
             const storeOpts = stores.map(s => `<option value="${escAttr(s)}">${_shortStoreJs(s)}</option>`).join('');
@@ -4948,7 +4950,7 @@
             const to = document.getElementById('soTo').value;
             if (!parent) { alert('Pick a style first.'); return; }
             if (!from || !to || from === to) { alert('From and To must be different stores.'); return; }
-            const st = (saleStockData.styles || []).find(x => x.parent_sku === parent);
+            const st = _allocStyles().find(x => x.parent_sku === parent);
             const have = st ? (((st.store_totals || {})[from] || {}).available || 0) : 0;
             if (st && have <= 0) {
                 alert(`${st.name} has nothing available in ${_shortStoreJs(from)} — nothing to move.`);
@@ -4967,10 +4969,19 @@
 
         function onManualStyle() {
             const parent = document.getElementById('mvStyle').value;
-            const s = (saleStockData.styles || []).find(x => x.parent_sku === parent);
+            const s = _allocStyles().find(x => x.parent_sku === parent);
             document.getElementById('mvSize').innerHTML = s
                 ? (s.variants || []).map(v => `<option value="${escAttr(v.sku)}">${escAttr(v.size)}</option>`).join('')
                 : '';
+        }
+
+        // The allocation view reads the stock snapshot the PLAN was built from, not
+        // the stock report's — the report follows its own sales-window picker, the
+        // engine always weighs 365 days, and mixing the two made the matrix show
+        // numbers that disagreed with the plan.
+        function _allocStyles() {
+            if (allocPlanData && allocPlanData.styles) return allocPlanData.styles;
+            return (saleStockData && saleStockData.styles) || [];
         }
 
         function renderAllocSummary() {
@@ -5006,10 +5017,11 @@
         }
 
         function renderActiveOverrides() {
-            const ovs = (allocPlanData.overrides || []).filter(o => o.kind !== 'move');
+            // plan_lock is a mode, not a per-style override — it has its own banner
+            const ovs = (allocPlanData.overrides || []).filter(o => o.kind !== 'move' && o.kind !== 'plan_lock');
             const el = document.getElementById('allocActiveOverrides');
             if (!ovs.length) { el.innerHTML = ''; return; }
-            const nameOf = p => { const s = (saleStockData.styles || []).find(x => x.parent_sku === p); return s ? s.name : p; };
+            const nameOf = p => { const s = _allocStyles().find(x => x.parent_sku === p); return s ? s.name : p; };
             const title = o => o.kind === 'brand_exclude' ? `Brand: ${o.parent_sku}` : escAttr(nameOf(o.parent_sku));
             const label = o => o.kind === 'consolidate' ? `move all → ${_shortStoreJs(o.to_loc)}`
                 : o.kind === 'style_store_move' ? `move all ${_shortStoreJs(o.from_loc)} → ${_shortStoreJs(o.to_loc)}`
@@ -5066,8 +5078,48 @@
             renderAllocMatrix();
         }
 
+        // ---------- Plan lock ----------
+        // Stock keeps moving under the plan (Cin7 syncs hourly), so an unlocked plan
+        // grows fresh warehouse pushes between visits. Locking keeps only the moves
+        // the user directed and reports what is being withheld.
+        async function toggleAllocLock() {
+            if (!allocPlanData || !saleStockSeason) return;
+            const want = !allocPlanData.locked;
+            if (want && !confirm('Lock this allocation plan?\n\nThe engine will stop proposing new moves. Everything you have pinned, added or directed stays. New suggestions are counted but withheld until you unlock.')) return;
+            await fetch(`${API_BASE}/sale/plan-lock`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ season_id: saleStockSeason, locked: want })
+            });
+            loadAllocPlan();
+        }
+
+        function renderAllocLock() {
+            const btn = document.getElementById('allocLockBtn');
+            const banner = document.getElementById('allocLockBanner');
+            if (!btn || !banner || !allocPlanData) return;
+            const locked = !!allocPlanData.locked;
+            const held = (allocPlanData.summary || {}).suppressed_suggestions || 0;
+            btn.textContent = locked ? 'Unlock plan' : 'Lock plan';
+            btn.className = 'text-xs px-3 py-1.5 rounded ' + (locked
+                ? 'bg-amber-500 text-white hover:bg-amber-600 font-medium'
+                : 'border hover:bg-gray-50');
+            if (!locked) {
+                banner.innerHTML = '';
+                return;
+            }
+            const when = allocPlanData.locked_at ? allocPlanData.locked_at.replace('T', ' ') : '';
+            banner.innerHTML = `<div class="border border-amber-300 bg-amber-50 rounded-lg px-3 py-2 text-sm text-amber-900 flex flex-wrap items-center gap-2">
+                <span class="font-medium">Plan locked${when ? ' · ' + when : ''}.</span>
+                <span>${held
+                    ? `${held} new suggestion${held === 1 ? '' : 's'} withheld — the plan will not change on its own.`
+                    : 'No new suggestions since you locked it.'}</span>
+                ${held ? '<button onclick="toggleAllocLock()" class="ml-1 px-2 py-0.5 text-xs bg-white border border-amber-400 rounded hover:bg-amber-100">Unlock to review</button>' : ''}
+            </div>`;
+        }
+
         function renderAllocPlan() {
             if (!allocPlanData) { document.getElementById('allocBody').innerHTML = ''; return; }
+            renderAllocLock();
             renderAllocSummary();
             renderActiveOverrides();
             renderStoreExcludeBar();
@@ -5106,7 +5158,7 @@
             // The matrix is driven by the stock report, not the plan. If that request
             // failed the table would silently render empty, which looks exactly like
             // "the filters stopped working" — so say what actually happened.
-            if (!saleStockData || !(saleStockData.styles || []).length) {
+            if (!_allocStyles().length) {
                 body.innerHTML = `<div class="py-6 text-center text-gray-500">
                     The stock report hasn't loaded, so there is nothing to show here.
                     <button onclick="reloadSaleStockThenPlan()" class="ml-2 px-2 py-1 text-sm bg-blue-600 text-white rounded">Reload stock report</button>
@@ -5119,7 +5171,7 @@
             const q = (_v('allocMatrixSearch') || '').trim().toLowerCase();
             const whOnly = _c('allocWhOnly');
             const inStore = _v('allocStoreStock');
-            let styles = ((saleStockData && saleStockData.styles) || []).filter(s =>
+            let styles = _allocStyles().filter(s =>
                 (!brand || s.brand === brand)
                 && (!q || `${s.name} ${s.brand} ${s.parent_sku}`.toLowerCase().includes(q))
                 && (!whOnly || ((s.warehouse_total || {}).available || 0) > 0)
@@ -5131,7 +5183,7 @@
                 all: 'Combined net +/− per store across every move (read-only overview).'
             };
             const shownCount = styles.length;
-            const totalCount = ((saleStockData && saleStockData.styles) || []).length;
+            const totalCount = _allocStyles().length;
             document.getElementById('allocMatrixHint').textContent =
                 (shownCount < totalCount ? `${shownCount} of ${totalCount} styles · ` : `${totalCount} styles · `)
                 + (hints[matrixMode] || '');
@@ -5197,7 +5249,7 @@
             const stores = allocPlanData.stores || [];
             const ex = new Set(allocPlanData.excluded_stores || []);
             const wh = allocPlanData.warehouse;
-            const s = (saleStockData.styles || []).find(x => escAttr(x.parent_sku) === key);
+            const s = _allocStyles().find(x => escAttr(x.parent_sku) === key);
             if (!s) { row.insertAdjacentHTML('afterend', `<tr data-mdetail="${key}"><td colspan="99" class="px-2 py-2 pl-8 text-xs text-gray-400">No size detail.</td></tr>`); return; }
             const html = (s.variants || []).map(v => matrixSizeRow(v, s, stores, ex, wh, key)).join('');
             row.insertAdjacentHTML('afterend', html);

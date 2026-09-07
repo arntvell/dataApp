@@ -211,7 +211,7 @@
             <div id="dropsBody" class="card !p-0 overflow-hidden">
                 <div class="py-10 text-center text-gray-400">Loading…</div>
             </div>
-            <p class="text-xs text-gray-400 mt-2">Every style in the season's drops. <b>Warehouse date</b> is when the goods reach Sentrallager; <b>drop date</b> is when the style goes live. <b>Sent</b> means the goods have gone out to the stores.</p>
+            <p class="text-xs text-gray-400 mt-2">Every style in the season's drops. <b>Warehouse date</b> is when the goods reach Sentrallager; <b>drop date</b> is when the style goes live. <b>Sent</b> means the goods have gone out to the stores. Click a flat to enlarge it.</p>
         </div>
 
         <div id="tab-alloc" class="hidden">
@@ -504,6 +504,49 @@
             return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
         }
 
+        // ---------- Flat viewer ----------
+        let flatViewer = { ids: [], idx: 0, title: '' };
+
+        function openFlatViewer(itemId) {
+            const it = (dropsData && dropsData.items || []).find(x => x.id === itemId);
+            if (!it || !(it.flat_ids || []).length) return;
+            flatViewer = { ids: it.flat_ids, idx: 0, title: it.style };
+            document.getElementById('flatViewerTitle').textContent = it.style
+                + (it.supplier ? ' · ' + it.supplier : '');
+            const el = document.getElementById('flatViewer');
+            el.classList.remove('hidden');
+            el.classList.add('flex');
+            _paintFlatViewer();
+        }
+        function _paintFlatViewer() {
+            const { ids, idx } = flatViewer;
+            document.getElementById('flatViewerImg').src = `${API_BASE}/drops/flats/${ids[idx]}/image`;
+            document.getElementById('flatViewerCount').textContent =
+                ids.length > 1 ? `${idx + 1} of ${ids.length}` : '';
+            const multi = ids.length > 1;
+            document.getElementById('flatViewerPrev').classList.toggle('hidden', !multi);
+            document.getElementById('flatViewerNext').classList.toggle('hidden', !multi);
+        }
+        function stepFlatViewer(d) {
+            const n = flatViewer.ids.length;
+            if (n < 2) return;
+            flatViewer.idx = (flatViewer.idx + d + n) % n;
+            _paintFlatViewer();
+        }
+        function closeFlatViewer() {
+            const el = document.getElementById('flatViewer');
+            el.classList.add('hidden');
+            el.classList.remove('flex');
+            document.getElementById('flatViewerImg').src = '';   // stop holding the bytes
+        }
+        document.addEventListener('keydown', e => {
+            const open = !document.getElementById('flatViewer').classList.contains('hidden');
+            if (!open) return;
+            if (e.key === 'Escape') closeFlatViewer();
+            else if (e.key === 'ArrowLeft') stepFlatViewer(-1);
+            else if (e.key === 'ArrowRight') stepFlatViewer(1);
+        });
+
         function renderDrops() {
             if (!dropsData) return;
             const body = document.getElementById('dropsBody');
@@ -536,7 +579,10 @@
             // production admin, not something a store manager needs to read.
             const flatCell = i => (i.flat_ids && i.flat_ids.length)
                 ? `<img src="${API_BASE}/drops/flats/${i.flat_ids[0]}/image" alt="${escAttr(i.style)}"
-                     loading="lazy" class="w-14 h-14 object-contain bg-gray-50 rounded border">`
+                     loading="lazy" onclick="openFlatViewer(${i.id})"
+                     title="Click to enlarge${i.flat_ids.length > 1 ? ` (${i.flat_ids.length} flats)` : ''}"
+                     class="w-14 h-14 object-contain bg-gray-50 rounded border cursor-zoom-in hover:ring-2 hover:ring-blue-400 transition">
+                   ${i.flat_ids.length > 1 ? `<div class="text-[10px] text-gray-400 text-center mt-0.5">${i.flat_ids.length} flats</div>` : ''}`
                 : '<div class="w-14 h-14"></div>';
             const rowHtml = i => {
                 const late = i.warehouse_date && i.warehouse_date > today && i.drop_date && i.warehouse_date > i.drop_date;
@@ -848,5 +894,24 @@
         }
         document.addEventListener('DOMContentLoaded', initStore);
     </script>
+    <!-- Flat viewer -->
+    <div id="flatViewer" class="hidden fixed inset-0 z-50 bg-black/80 items-center justify-center p-4"
+         onclick="if (event.target === this) closeFlatViewer()">
+        <div class="relative max-w-5xl w-full max-h-full flex flex-col items-center">
+            <div class="flex items-center gap-3 mb-2 text-white text-sm w-full">
+                <span id="flatViewerTitle" class="font-medium truncate"></span>
+                <span id="flatViewerCount" class="text-white/60 text-xs whitespace-nowrap"></span>
+                <span class="flex-1"></span>
+                <button onclick="closeFlatViewer()" class="px-3 py-1 rounded bg-white/10 hover:bg-white/20 text-white">Close ✕</button>
+            </div>
+            <div class="relative flex items-center justify-center w-full" style="max-height:82vh">
+                <button id="flatViewerPrev" onclick="stepFlatViewer(-1)"
+                        class="absolute left-0 -ml-2 px-3 py-6 text-white/70 hover:text-white text-2xl">‹</button>
+                <img id="flatViewerImg" alt="" class="max-h-[82vh] max-w-full object-contain bg-white rounded shadow-2xl">
+                <button id="flatViewerNext" onclick="stepFlatViewer(1)"
+                        class="absolute right-0 -mr-2 px-3 py-6 text-white/70 hover:text-white text-2xl">›</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

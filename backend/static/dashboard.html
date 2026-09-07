@@ -3659,28 +3659,65 @@
             } catch (e) { out.textContent = 'Import failed.'; out.className = 'text-xs mt-2 text-red-600'; }
         }
 
-        async function uploadDropFlats() {
-            const files = document.getElementById('dropFlatFiles').files;
-            const out = document.getElementById('dropImportResult');
-            if (!files || !files.length) { alert('Pick one or more image files first.'); return; }
-            const fd = new FormData();
-            for (const f of files) fd.append('files', f);
-            out.textContent = `Uploading ${files.length} flats…`; out.className = 'text-xs mt-2 text-gray-500';
-            try {
-                const r = await fetch(`${API_BASE}/drops/flats`, { method: 'POST', body: fd });
-                const d = await r.json();
-                if (!r.ok) { out.textContent = d.detail || 'Upload failed.'; out.className = 'text-xs mt-2 text-red-600'; return; }
-                const skipped = d.skipped || [];
-                let msg = `${d.matched} matched to a style, ${d.unmatched} unmatched`;
-                if (skipped.length) {
-                    msg += `, ${skipped.length} SKIPPED — ` +
-                        skipped.map(x => `${x.filename}: ${x.reason}`).join('; ');
+        // Uploaded in batches rather than one request. A folder of print-resolution
+        // flats is easily hundreds of MB, and a single POST that large is the one
+        // thing likely to fail behind a proxy — and would fail all-or-nothing, with
+        // every file buffered in memory server-side. Batching gives partial success
+        // and visible progress.
+        const FLAT_BATCH_FILES = 8, FLAT_BATCH_BYTES = 15 * 1024 * 1024;
+
+        function _flatBatches(files) {
+            const batches = [];
+            let cur = [], bytes = 0;
+            for (const f of files) {
+                if (cur.length && (cur.length >= FLAT_BATCH_FILES || bytes + f.size > FLAT_BATCH_BYTES)) {
+                    batches.push(cur); cur = []; bytes = 0;
                 }
-                out.textContent = msg + '.';
-                out.className = 'text-xs mt-2 ' + (skipped.length ? 'text-red-600'
-                    : d.unmatched ? 'text-amber-700' : 'text-green-700');
-                loadDropAdmin();
-            } catch (e) { out.textContent = 'Upload failed.'; out.className = 'text-xs mt-2 text-red-600'; }
+                cur.push(f); bytes += f.size;          // an oversized single file goes alone
+            }
+            if (cur.length) batches.push(cur);
+            return batches;
+        }
+
+        async function uploadDropFlats() {
+            const input = document.getElementById('dropFlatFiles');
+            const files = [...(input.files || [])];
+            const out = document.getElementById('dropImportResult');
+            if (!files.length) { alert('Pick one or more image files first.'); return; }
+            const batches = _flatBatches(files);
+            const totalMb = (files.reduce((a, f) => a + f.size, 0) / 1048576).toFixed(1);
+            let matched = 0, unmatched = 0, done = 0;
+            const skipped = [], failed = [];
+            for (let i = 0; i < batches.length; i++) {
+                out.className = 'text-xs mt-2 text-gray-500';
+                out.textContent = `Uploading ${files.length} flats (${totalMb} MB) — batch ${i + 1} of ${batches.length}, ${done} done…`;
+                const fd = new FormData();
+                batches[i].forEach(f => fd.append('files', f));
+                try {
+                    const r = await fetch(`${API_BASE}/drops/flats`, { method: 'POST', body: fd });
+                    if (!r.ok) {
+                        let why = `HTTP ${r.status}`;
+                        try { const e = await r.json(); if (e.detail) why = e.detail; } catch (_) {}
+                        failed.push(...batches[i].map(f => `${f.name} (${why})`));
+                    } else {
+                        const d = await r.json();
+                        matched += d.matched; unmatched += d.unmatched;
+                        skipped.push(...(d.skipped || []));
+                    }
+                } catch (e) {
+                    failed.push(...batches[i].map(f => `${f.name} (network error)`));
+                }
+                done += batches[i].length;
+            }
+            let msg = `${matched} matched to a style, ${unmatched} unmatched`;
+            if (skipped.length) msg += `, ${skipped.length} skipped — ` + skipped.map(x => `${x.filename}: ${x.reason}`).join('; ');
+            if (failed.length) msg += `, ${failed.length} FAILED — ` + failed.slice(0, 5).join('; ') + (failed.length > 5 ? ' …' : '');
+            out.textContent = msg + '.';
+            out.className = 'text-xs mt-2 ' + (failed.length ? 'text-red-600'
+                : skipped.length ? 'text-amber-700'
+                : unmatched ? 'text-amber-700' : 'text-green-700');
+            input.value = '';
+            loadDropAdmin();
         }
 
         async function renderUnassignedFlats() {

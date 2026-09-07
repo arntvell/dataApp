@@ -312,7 +312,10 @@ async def bulk_sent(payload: dict = Body(...), db: Session = Depends(get_db)):
 # Print-resolution flats routinely exceed 8MB, which was silently skipping
 # real uploads. 25MB per file; the reason is reported per file either way.
 MAX_FLAT_BYTES = 25 * 1024 * 1024
-ALLOWED_FLAT_TYPES = ("image/jpeg", "image/png", "image/webp", "image/avif", "image/gif")
+# Browsers are inconsistent about content_type (empty for some drags, odd values
+# for .heic/.tif), so accept on extension too and only reject what is clearly not
+# an image — a folder of flats usually has a stray .pdf or .psd in it.
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".heic", ".heif", ".tif", ".tiff", ".bmp")
 
 
 def _norm_name(name):
@@ -351,8 +354,10 @@ async def upload_flats(files: list[UploadFile] = File(...), db: Session = Depend
             skipped.append({"filename": f.filename, "reason": f"larger than {MAX_FLAT_BYTES // 1048576}MB"})
             continue
         ctype = (f.content_type or "").lower()
-        if ctype and not ctype.startswith("image/"):
-            skipped.append({"filename": f.filename, "reason": f"not an image ({ctype})"})
+        looks_image = (f.filename or "").lower().endswith(IMAGE_EXTS)
+        if not ctype.startswith("image/") and not looks_image:
+            skipped.append({"filename": f.filename,
+                            "reason": f"not an image ({ctype or 'unknown type'})"})
             continue
         key = _norm_name(f.filename)
         item_id = by_file.get((f.filename or "").lower()) or by_norm.get(key) or by_style.get(key)

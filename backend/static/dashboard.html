@@ -1191,6 +1191,28 @@
                         <button onclick="bulkDropSent(false)" class="text-xs px-3 py-1.5 border rounded hover:bg-gray-50">Mark shown not sent</button>
                     </div>
                 </div>
+
+                <div class="flex flex-wrap items-end gap-3 mt-3 pt-3 border-t">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium text-gray-700">Bulk edit</span>
+                        <span id="dropSelCount" class="text-xs text-gray-500">0 selected</span>
+                        <button onclick="dropSelectAllShown()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Select all shown</button>
+                        <button onclick="dropSelectNone()" class="text-xs px-2 py-1 border rounded hover:bg-gray-50">Clear</button>
+                    </div>
+                    <label class="text-xs text-gray-500">Status<br><select id="dropBulkStatus" class="px-2 py-1 border rounded text-xs bg-white"><option value="">leave</option><option>Ready</option><option>Work to do</option><option>Cancelled</option></select></label>
+                    <label class="text-xs text-gray-500">Sent<br><select id="dropBulkSent" class="px-2 py-1 border rounded text-xs bg-white"><option value="">leave</option><option value="1">Sent</option><option value="0">Not sent</option></select></label>
+                    <label class="text-xs text-gray-500">Drop date<br><input type="date" id="dropBulkDropDate" class="px-2 py-1 border rounded text-xs"></label>
+                    <label class="text-xs text-gray-500">Warehouse date<br><input type="date" id="dropBulkWhDate" class="px-2 py-1 border rounded text-xs"></label>
+                    <label class="text-xs text-gray-500">Plan status<br><select id="dropBulkPlanStatus" class="px-2 py-1 border rounded text-xs bg-white"><option value="">leave</option><option>Mottatt</option><option>Under transport</option><option>Forsinket</option><option>Usikker dato</option></select></label>
+                    <button onclick="applyDropBulk()" class="text-xs px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700 font-medium">Apply to selected</button>
+                    <span class="flex-1"></span>
+                    <select id="dropAdminSort" onchange="renderDropAdmin()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Sorted within each drop">
+                        <option value="drop_date">Sort: drop date</option>
+                        <option value="warehouse_date">Sort: warehouse date</option>
+                        <option value="style">Sort: style</option>
+                        <option value="sent">Sort: not sent first</option>
+                    </select>
+                </div>
                 <div id="dropImportResult" class="text-xs mt-2"></div>
                 <div id="dropUnassignedFlats" class="mt-2"></div>
             </div>
@@ -3492,10 +3514,64 @@
         const DROP_FLAT_STATUSES = ['Have flat', 'Other colourway only', 'No flat'];
         const DROP_STATUSES = ['Ready', 'Work to do', 'Cancelled'];
 
+        let dropSelected = new Set();
+
+        function _dropSortRows(rows) {
+            const sortBy = (document.getElementById('dropAdminSort') || {}).value || 'drop_date';
+            const nulls = v => v == null || v === '' ? '9999-12-31' : v;
+            const dropKey = i => nulls(i.drop_date) + '|' + (i.drop_name || '');
+            const within = {
+                drop_date: (a, b) => nulls(a.drop_date).localeCompare(nulls(b.drop_date)),
+                warehouse_date: (a, b) => nulls(a.warehouse_date).localeCompare(nulls(b.warehouse_date)),
+                style: (a, b) => (a.style || '').localeCompare(b.style || ''),
+                sent: (a, b) => (a.sent === b.sent ? 0 : a.sent ? 1 : -1),
+            }[sortBy] || (() => 0);
+            return [...rows].sort((a, b) => dropKey(a).localeCompare(dropKey(b)) || within(a, b)
+                || (a.style || '').localeCompare(b.style || ''));
+        }
+        function updateDropSelCount() {
+            const el = document.getElementById('dropSelCount');
+            if (el) el.textContent = `${dropSelected.size} selected`;
+        }
+        function toggleDropSel(id, on) {
+            if (on) dropSelected.add(id); else dropSelected.delete(id);
+            updateDropSelCount();
+        }
+        function dropSelectAllShown() {
+            _dropAdminRows().forEach(r => dropSelected.add(r.id));
+            renderDropAdmin();
+        }
+        function dropSelectNone() { dropSelected.clear(); renderDropAdmin(); }
+
+        async function applyDropBulk() {
+            if (!dropSelected.size) { alert('Select some rows first — use "Select all shown" if you want the whole filtered set.'); return; }
+            const fields = {};
+            const v = id => (document.getElementById(id) || {}).value || '';
+            if (v('dropBulkStatus')) fields.status = v('dropBulkStatus');
+            if (v('dropBulkPlanStatus')) fields.plan_status = v('dropBulkPlanStatus');
+            if (v('dropBulkSent') !== '') fields.sent = v('dropBulkSent') === '1';
+            if (v('dropBulkDropDate')) fields.drop_date = v('dropBulkDropDate');
+            if (v('dropBulkWhDate')) fields.warehouse_date = v('dropBulkWhDate');
+            if (!Object.keys(fields).length) { alert('Nothing to set — pick at least one value above.'); return; }
+            const what = Object.entries(fields).map(([k, val]) => `${k} = ${val}`).join('\n  ');
+            if (!confirm(`Apply to ${dropSelected.size} selected styles?\n\n  ${what}`)) return;
+            const r = await fetch(`${API_BASE}/drops/bulk-update`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: [...dropSelected], fields })
+            });
+            const d = await r.json();
+            if (!r.ok) { alert(d.detail || 'Bulk update failed.'); return; }
+            const out = document.getElementById('dropImportResult');
+            out.textContent = `Updated ${d.updated} styles (${d.fields.join(', ')}).`;
+            out.className = 'text-xs mt-2 text-green-700';
+            loadDropAdmin();
+        }
+
         function renderDropAdmin() {
             const body = document.getElementById('dropAdminBody');
             if (!dropAdminData) return;
-            const rows = _dropAdminRows();
+            const rows = _dropSortRows(_dropAdminRows());
+            updateDropSelCount();
             if (!rows.length) { body.innerHTML = '<div class="py-6 text-center text-gray-400">Nothing matches that filter.</div>'; return; }
             const sel = (id, field, val, opts) => `<select onchange="saveDropField(${id},'${field}',this.value)" class="border rounded px-1 py-0.5 text-xs bg-white">
                 <option value=""${!val ? ' selected' : ''}>—</option>
@@ -3507,6 +3583,7 @@
                 <div class="text-xs text-gray-500 mb-2">${rows.length} of ${dropAdminData.length} styles shown · edits save immediately</div>
                 <div class="overflow-x-auto max-h-[70vh]"><table class="w-full text-sm">
                 <thead><tr class="text-[11px] text-gray-500 uppercase border-b bg-gray-50 sticky top-0 z-10">
+                    <th class="py-2 px-2"></th>
                     <th class="text-left py-2 px-2 font-medium">Flat</th>
                     <th class="text-left py-2 px-2 font-medium">Drop</th>
                     <th class="text-left py-2 px-2 font-medium">Style</th>
@@ -3519,7 +3596,8 @@
                     <th class="text-left py-2 px-2 font-medium">Status</th>
                     <th class="text-center py-2 px-2 font-medium">Sent</th>
                 </tr></thead><tbody>
-                ${rows.map(i => `<tr class="border-b hover:bg-gray-50 ${i.status === 'Cancelled' ? 'opacity-50' : ''}">
+                ${rows.map(i => `<tr class="border-b hover:bg-gray-50 ${i.status === 'Cancelled' ? 'opacity-50' : ''} ${dropSelected.has(i.id) ? 'bg-amber-50' : ''}">
+                    <td class="py-1 px-2"><input type="checkbox" ${dropSelected.has(i.id) ? 'checked' : ''} onchange="toggleDropSel(${i.id}, this.checked)"></td>
                     <td class="py-1 px-2">${flatThumb(i)}</td>
                     <td class="py-1 px-2"><input value="${escAttr(i.drop_name)}" onchange="saveDropField(${i.id},'drop_name',this.value)" class="border rounded px-1 py-0.5 text-xs w-20"></td>
                     <td class="py-1 px-2"><input value="${escAttr(i.style)}" onchange="saveDropField(${i.id},'style',this.value)" class="border rounded px-1 py-0.5 text-xs w-48"></td>
@@ -3592,9 +3670,15 @@
                 const r = await fetch(`${API_BASE}/drops/flats`, { method: 'POST', body: fd });
                 const d = await r.json();
                 if (!r.ok) { out.textContent = d.detail || 'Upload failed.'; out.className = 'text-xs mt-2 text-red-600'; return; }
-                const skipped = (d.skipped || []).length;
-                out.textContent = `${d.matched} matched to a style, ${d.unmatched} unmatched${skipped ? ', ' + skipped + ' skipped' : ''}.`;
-                out.className = 'text-xs mt-2 ' + (d.unmatched || skipped ? 'text-amber-700' : 'text-green-700');
+                const skipped = d.skipped || [];
+                let msg = `${d.matched} matched to a style, ${d.unmatched} unmatched`;
+                if (skipped.length) {
+                    msg += `, ${skipped.length} SKIPPED — ` +
+                        skipped.map(x => `${x.filename}: ${x.reason}`).join('; ');
+                }
+                out.textContent = msg + '.';
+                out.className = 'text-xs mt-2 ' + (skipped.length ? 'text-red-600'
+                    : d.unmatched ? 'text-amber-700' : 'text-green-700');
                 loadDropAdmin();
             } catch (e) { out.textContent = 'Upload failed.'; out.className = 'text-xs mt-2 text-red-600'; }
         }

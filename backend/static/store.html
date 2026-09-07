@@ -199,6 +199,12 @@
             <div class="flex flex-wrap gap-2 items-center mb-3">
                 <div id="dropFilterBar" class="flex flex-wrap gap-2 items-center"></div>
                 <span class="flex-1"></span>
+                <select id="dropsSort" onchange="renderDrops()" class="px-2 py-1.5 border rounded-lg text-sm bg-white" title="Sorted within each drop">
+                    <option value="drop_date">Sort: drop date</option>
+                    <option value="warehouse_date">Sort: warehouse date</option>
+                    <option value="style">Sort: style</option>
+                    <option value="sent">Sort: not sent first</option>
+                </select>
                 <label class="flex items-center gap-1.5 text-sm text-gray-600 whitespace-nowrap"><input type="checkbox" id="dropsUnsentOnly" onchange="renderDrops()" class="w-4 h-4 rounded"> Not sent yet</label>
                 <input id="dropsSearch" oninput="renderDrops()" placeholder="Search style or supplier…" class="px-3 py-1.5 border rounded-lg text-sm w-full sm:w-64">
             </div>
@@ -507,6 +513,20 @@
                 (!dropsFilter || i.drop_name === dropsFilter)
                 && (!unsentOnly || !i.sent)
                 && (!q || `${i.style} ${i.supplier || ''}`.toLowerCase().includes(q)));
+            // Always grouped by drop; the picker orders rows WITHIN each drop.
+            const sortBy = (document.getElementById('dropsSort') || {}).value || 'drop_date';
+            const nulls = v => v == null || v === '' ? '9999-12-31' : v;
+            const dropKey = i => nulls(i.drop_date) + '|' + (i.drop_name || '');
+            const within = {
+                drop_date: (a, b) => nulls(a.drop_date).localeCompare(nulls(b.drop_date)),
+                warehouse_date: (a, b) => nulls(a.warehouse_date).localeCompare(nulls(b.warehouse_date)),
+                style: (a, b) => (a.style || '').localeCompare(b.style || ''),
+                sent: (a, b) => (a.sent === b.sent ? 0 : a.sent ? 1 : -1),
+            }[sortBy] || (() => 0);
+            rows = [...rows].sort((a, b) =>
+                dropKey(a).localeCompare(dropKey(b))
+                || within(a, b)
+                || (a.style || '').localeCompare(b.style || ''));
             if (!rows.length) {
                 body.innerHTML = '<div class="py-10 text-center text-gray-400">Nothing matches that filter.</div>';
                 return;
@@ -526,10 +546,8 @@
                         <div class="font-medium text-gray-900">${escAttr(i.style)}</div>
                         <div class="text-xs text-gray-400">${escAttr(i.supplier || '')}${i.qty ? ' · ' + i.qty + ' pcs' : ''}</div>
                     </td>
-                    <td class="py-2 px-3 whitespace-nowrap ${late ? 'text-red-600 font-medium' : 'text-gray-700'}"
-                        title="${escAttr(i.plan_status || '')}">
+                    <td class="py-2 px-3 whitespace-nowrap ${late ? 'text-red-600 font-medium' : 'text-gray-700'}">
                         ${fmtDropDate(i.warehouse_date)}
-                        ${i.plan_status ? `<div class="text-xs text-gray-400">${escAttr(i.plan_status)}</div>` : ''}
                     </td>
                     <td class="py-2 px-3 whitespace-nowrap text-gray-700">
                         ${fmtDropDate(i.drop_date)}

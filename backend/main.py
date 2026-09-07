@@ -152,8 +152,11 @@ _STORE_EXACT = {
     "/api/v1/dashboard/categories/groups",
     "/api/v1/dashboard/locations/list",
     "/api/v1/dashboard/vendors/list",
+    # Drops module on the store page (read-only)
+    "/api/v1/dashboard/drops",
+    "/api/v1/dashboard/drops/meta",
 }
-_STORE_PREFIX = ("/api/v1/dashboard/stock/",)
+_STORE_PREFIX = ("/api/v1/dashboard/stock/", "/api/v1/dashboard/drops/flats/")
 
 
 def _creds_match(username, password, exp_user, exp_pass):

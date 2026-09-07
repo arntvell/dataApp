@@ -234,6 +234,58 @@ async def delete_drop_item(item_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "deleted": n}
 
 
+BULK_FIELDS = ("status", "sent", "drop_date", "warehouse_date", "drop_name",
+               "plan_status", "flat_status", "supplier", "shoot_session")
+
+
+@router.post("/bulk-update")
+async def bulk_update(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Set the same value on many rows. Body: {ids:[...] | drop:"Drop 1",
+    fields:{status?, sent?, drop_date?, warehouse_date?, ...}}. Only the fields
+    present are written, so one call can set a date without touching status."""
+    fields = payload.get("fields") or {}
+    unknown = [k for k in fields if k not in BULK_FIELDS]
+    if unknown:
+        raise HTTPException(400, f"cannot bulk-set {unknown}; allowed: {list(BULK_FIELDS)}")
+    if not fields:
+        raise HTTPException(400, "no fields given")
+
+    qry = db.query(DropPlanItem)
+    if payload.get("ids"):
+        qry = qry.filter(DropPlanItem.id.in_(payload["ids"]))
+    elif payload.get("drop"):
+        qry = qry.filter(DropPlanItem.drop_name == payload["drop"])
+    else:
+        raise HTTPException(400, "pass ids or drop")
+
+    parsed = {}
+    for key, raw in fields.items():
+        if key in ("drop_date", "warehouse_date"):
+            if _blank(raw):
+                parsed[key] = None
+            else:
+                try:
+                    parsed[key] = date.fromisoformat(str(raw)[:10])
+                except ValueError:
+                    raise HTTPException(400, f"{key} must be YYYY-MM-DD")
+        elif key == "sent":
+            parsed[key] = bool(raw)
+        else:
+            parsed[key] = _txt(raw)
+
+    items = qry.all()
+    for it in items:
+        for key, val in parsed.items():
+            if key == "sent":
+                if bool(it.sent) != val:
+                    it.sent_at = datetime.now() if val else None
+                it.sent = val
+            else:
+                setattr(it, key, val)
+    db.commit()
+    return {"ok": True, "updated": len(items), "fields": list(parsed)}
+
+
 @router.post("/bulk-sent")
 async def bulk_sent(payload: dict = Body(...), db: Session = Depends(get_db)):
     """Mark many rows sent / not sent. Body: {ids: [...], sent: bool} or {drop, sent}."""
@@ -257,7 +309,9 @@ async def bulk_sent(payload: dict = Body(...), db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------- flats
 
-MAX_FLAT_BYTES = 8 * 1024 * 1024
+# Print-resolution flats routinely exceed 8MB, which was silently skipping
+# real uploads. 25MB per file; the reason is reported per file either way.
+MAX_FLAT_BYTES = 25 * 1024 * 1024
 ALLOWED_FLAT_TYPES = ("image/jpeg", "image/png", "image/webp", "image/avif", "image/gif")
 
 

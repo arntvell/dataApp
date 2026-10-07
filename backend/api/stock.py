@@ -129,6 +129,67 @@ def _since(days: int) -> datetime:
     return datetime.combine(date.today() - timedelta(days=days), datetime.min.time())
 
 
+@router.get("/catalogue-gap")
+async def catalogue_gap(db: Session = Depends(get_db)):
+    """How much stock the catalogue cannot describe.
+
+    Loom holds collections before they are produced and, unlike Cin7, is not a
+    catalogue source — so a SKU can carry real stock while product_master has
+    never heard of it. Those SKUs drop out of Allocate and Sale Planner, which
+    both inner-join product_master, with no error to show for it. This reports
+    the size of that blind spot so it can be watched rather than discovered.
+
+    product_sync seeds provisional rows from Loom, so a healthy system reports a
+    gap near zero; anything else means the rebuild has not run since the SKUs
+    appeared.
+    """
+    known = db.query(ProductMaster.sku).subquery()
+    rows = db.query(
+        StockLevel.stock_class,
+        ProductMaster.sku.isnot(None).label("in_catalogue"),
+        func.count(func.distinct(StockLevel.sku)).label("skus"),
+        func.sum(StockLevel.on_hand).label("units"),
+    ).outerjoin(
+        ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)
+    ).group_by(StockLevel.stock_class, ProductMaster.sku.isnot(None)).all()
+
+    by_class, totals = {}, {"in": [0, 0.0], "out": [0, 0.0]}
+    for cls, in_cat, skus, units in rows:
+        d = by_class.setdefault(cls or "unknown", {"in_catalogue": {"skus": 0, "units": 0.0},
+                                                   "missing": {"skus": 0, "units": 0.0}})
+        key = "in_catalogue" if in_cat else "missing"
+        d[key] = {"skus": int(skus or 0), "units": float(units or 0)}
+        bucket = totals["in" if in_cat else "out"]
+        bucket[0] += int(skus or 0)
+        bucket[1] += float(units or 0)
+
+    sample = [
+        {"sku": s, "units": float(u or 0), "stock_class": c,
+         "loom_colorway": cw, "loom_name": nm}
+        for s, u, c, cw, nm in db.query(
+            StockLevel.sku, func.sum(StockLevel.on_hand), StockLevel.stock_class,
+            StockLevel.colorway_sku, StockLevel.product_name,
+        ).outerjoin(ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)).filter(
+            ProductMaster.sku.is_(None)
+        ).group_by(
+            StockLevel.sku, StockLevel.stock_class, StockLevel.colorway_sku, StockLevel.product_name
+        ).order_by(func.sum(StockLevel.on_hand).desc()).limit(20)
+    ]
+
+    total_units = totals["in"][1] + totals["out"][1]
+    return {
+        "in_catalogue": {"skus": totals["in"][0], "units": totals["in"][1]},
+        "missing": {
+            "skus": totals["out"][0],
+            "units": totals["out"][1],
+            "pct_units": round(100.0 * totals["out"][1] / total_units, 1) if total_units else 0.0,
+        },
+        "by_class": by_class,
+        "missing_sample": sample,
+        "product_master_rows": db.query(func.count(ProductMaster.sku)).scalar(),
+    }
+
+
 @router.get("/overview")
 async def get_stock_overview(
     location: str = Query(default=None, description="Filter by warehouse location"),

@@ -340,6 +340,13 @@ class StockLevel(Base):
     colorway_sku = Column(String, nullable=True, index=True)
     style_sku = Column(String, nullable=True, index=True)
 
+    # Descriptive fields Loom carries. Loom holds collections before they are
+    # produced, so these are the only identity a SKU has until Shopify/Sitoo list
+    # it; product_sync mints a provisional product_master row from them.
+    product_name = Column(String, nullable=True)   # Loom colorway_name
+    style_name = Column(String, nullable=True)
+    brand = Column(String, nullable=True)
+
     stock_class = Column(String, nullable=True, index=True)   # see pipelines.loom_stock_sync.classify
     archived = Column(Boolean, default=False)
 
@@ -572,6 +579,7 @@ class ProductMaster(Base):
     in_shopify = Column(Boolean, default=False)
     in_sitoo = Column(Boolean, default=False)
     in_cin7 = Column(Boolean, default=False)
+    in_loom = Column(Boolean, default=False, index=True)
     category_source = Column(String, nullable=True)  # shopify / cin7 / sku_prefix / keyword
     vendor_source = Column(String, nullable=True)
 

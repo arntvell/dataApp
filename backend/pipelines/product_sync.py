@@ -22,6 +22,7 @@ from sqlalchemy import text
 from database.config import SessionLocal, engine
 from database.models import (
     RawShopifyProduct, RawSitooProduct, RawCin7Product, ProductMaster, SyncStatus,
+    StockLevel,
 )
 from connectors.shopify_connector import ShopifyConnector
 from connectors.sitoo_connector import SitooConnector
@@ -49,6 +50,25 @@ def _gender_from_shopify(vendor: str, tags: str):
         return "women"
     if "men" in t:  # 'women' already returned above, so this is safe
         return "men"
+    return None
+
+
+def _gender_from_loom(style_sku: str):
+    """Loom encodes gender in the style code: LIV-M-* / LIV-W-* / LIV-U-*.
+
+    Only a fallback, after Shopify and Cin7. Checked against the catalogue's own
+    designed_for where both are known: LIV-M matched men on 350 of 356 SKUs and
+    LIV-W matched women on 327 of 328, so it is good enough to stop Loom-only
+    womenswear defaulting to "Livid Men" — but not good enough to outrank a
+    source that states the gender outright.
+    """
+    s = (style_sku or "").upper()
+    if s.startswith("LIV-W-"):
+        return "women"
+    if s.startswith("LIV-M-"):
+        return "men"
+    if s.startswith("LIV-U-"):
+        return "unisex"
     return None
 
 
@@ -151,10 +171,27 @@ class ProductSyncPipeline:
             sitoo = {_norm(r.sku): r for r in db.query(RawSitooProduct).all() if _norm(r.sku)}
             cin7 = {_norm(r.sku): r for r in db.query(RawCin7Product).all() if _norm(r.sku)}
 
-            all_keys = set(shop) | set(sitoo) | set(cin7)
+            # Loom holds stock for collections before they are produced, and unlike
+            # Cin7 it is not a catalogue source — so a SKU can have real stock while
+            # Shopify/Sitoo have never heard of it. Those SKUs used to vanish from
+            # Allocate and Sale Planner, which inner-join product_master. Seed them
+            # from the little identity Loom does carry; a real source overwrites it
+            # on the next rebuild. Read from raw.stock_levels rather than calling
+            # Loom again — loom_stock_sync already refreshes it hourly.
+            loom = {}
+            for r in db.query(
+                StockLevel.sku, StockLevel.colorway_sku, StockLevel.style_sku,
+                StockLevel.product_name, StockLevel.style_name, StockLevel.brand,
+            ).distinct(StockLevel.sku):
+                k = _norm(r.sku)
+                if k:
+                    loom.setdefault(k, r)
+
+            all_keys = set(shop) | set(sitoo) | set(cin7) | set(loom)
             rows = []
             for k in all_keys:
                 sp, si, ci = shop.get(k), sitoo.get(k), cin7.get(k)
+                lo = loom.get(k)
 
                 # ----- category (Shopify productType -> Cin7 -> prefix -> keyword) -----
                 category, csource = None, None
@@ -167,7 +204,8 @@ class ProductSyncPipeline:
                     if pc:
                         category, csource = pc, "sku_prefix"
                     else:
-                        name_for_kw = (sp and sp.title) or (ci and ci.name) or (si and si.title)
+                        name_for_kw = ((sp and sp.title) or (ci and ci.name) or (si and si.title)
+                                       or (lo and lo.product_name))
                         nc = get_category_from_name(name_for_kw)
                         if nc:
                             category, csource = nc, "keyword"
@@ -181,10 +219,16 @@ class ProductSyncPipeline:
                     designed_for = _gender_from_shopify(sp.vendor, sp.tags)
                 if not designed_for and ci:
                     designed_for = _gender_from_cin7(ci.category)
+                if not designed_for and lo:
+                    designed_for = _gender_from_loom(lo.style_sku)
 
                 # ----- vendor / brand -----
-                raw_brand = (ci and ci.brand) or (si and si.manufacturer_name) or (sp and _strip_gender(sp.vendor))
-                vsource = "cin7" if (ci and ci.brand) else ("sitoo" if (si and si.manufacturer_name) else ("shopify" if sp and sp.vendor else None))
+                raw_brand = ((ci and ci.brand) or (si and si.manufacturer_name)
+                             or (sp and _strip_gender(sp.vendor)) or (lo and lo.brand))
+                vsource = ("cin7" if (ci and ci.brand)
+                           else "sitoo" if (si and si.manufacturer_name)
+                           else "shopify" if (sp and sp.vendor)
+                           else "loom" if (lo and lo.brand) else None)
                 is_livid = bool((raw_brand and "livid" in raw_brand.lower())
                                 or k.startswith("LIV") or k.startswith("IMP-LIV"))
                 if is_livid:
@@ -218,6 +262,8 @@ class ProductSyncPipeline:
                 # Fall back to Sitoo's (also size-stripped) parent only when the SKU
                 # itself carries no size pattern.
                 base, size_code, size_type = _extract_parent(k)
+                if base == k and lo and lo.colorway_sku:
+                    base = _extract_parent(_norm(lo.colorway_sku))[0]
                 if base == k and si and si.parent_sku:
                     base = _extract_parent(_norm(si.parent_sku))[0]
                 parent_sku = base
@@ -225,7 +271,8 @@ class ProductSyncPipeline:
                 rows.append({
                     "sku": k,
                     "parent_sku": parent_sku,
-                    "product_name": (sp and sp.title) or (ci and ci.name) or (si and si.title),
+                    "product_name": ((sp and sp.title) or (ci and ci.name) or (si and si.title)
+                                     or (lo and lo.product_name) or (lo and lo.style_name)),
                     "standard_category": category,
                     "category_group": category_group,
                     "designed_for": designed_for,
@@ -238,6 +285,7 @@ class ProductSyncPipeline:
                     "in_shopify": sp is not None,
                     "in_sitoo": si is not None,
                     "in_cin7": ci is not None,
+                    "in_loom": lo is not None,
                     "category_source": csource,
                     "vendor_source": vsource,
                     "shopify_product_id": sp and sp.product_id,

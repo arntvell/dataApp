@@ -1373,27 +1373,32 @@ async def trigger_full_sync(
 
 @router.post("/sync-stock")
 async def trigger_stock_sync(background_tasks: BackgroundTasks):
-    """Trigger Cin7 stock + wholesale sync"""
-    from pipelines.stock_sync import StockSyncPipeline
-    import os
+    """Trigger a stock refresh: stock levels from Loom, wholesale + purchases from Cin7.
 
-    pipeline = StockSyncPipeline({
-        'cin7': {
-            'account_id': os.environ.get('CIN7_ACCOUNT_ID'),
-            'api_key': os.environ.get('CIN7_API_KEY')
-        }
-    })
+    Stock levels moved to Loom with the Cin7 offboarding; the wholesale and
+    purchase documents are still Cin7's, so this runs both pipelines.
+    """
+    from pipelines.loom_stock_sync import LoomStockSyncPipeline
+    from pipelines.stock_sync import StockSyncPipeline
+    from config import settings
+
+    cfg = settings.get_connector_configs()
+    loom = LoomStockSyncPipeline(cfg)
+    cin7 = StockSyncPipeline(cfg)
 
     def run():
         try:
-            pipeline.sync_stock_levels()
-            pipeline.sync_wholesale_orders()
-            pipeline.sync_purchase_orders()
+            loom.sync_stock_levels()
         except Exception as e:
-            logger.error(f"Stock sync error: {e}")
+            logger.error(f"Loom stock sync error: {e}")
+        try:
+            cin7.sync_wholesale_orders()
+            cin7.sync_purchase_orders()
+        except Exception as e:
+            logger.error(f"Cin7 wholesale/purchase sync error: {e}")
 
     background_tasks.add_task(run)
-    return {"status": "started", "message": "Cin7 stock sync started."}
+    return {"status": "started", "message": "Loom stock + Cin7 wholesale sync started."}
 
 
 @router.post("/sync-products")

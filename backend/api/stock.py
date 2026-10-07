@@ -7,14 +7,17 @@ import logging
 import re
 from fastapi import APIRouter, Depends, Query, Body, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, true
 from typing import Optional
 from datetime import date, datetime, timedelta
 from database.config import get_db
 from database.models import (
-    Cin7Stock, Cin7Sale, Cin7SaleItem, Cin7Invoice, Cin7InvoiceItem,
+    StockLevel, Cin7Sale, Cin7SaleItem, Cin7Invoice, Cin7InvoiceItem,
     SalesOrder, SalesOrderItem, ProductMaster, ParentSkuMapping,
     RawShopifyProduct, AllocationPlan,
+)
+from pipelines.loom_stock_sync import (
+    CLASS_MERCH, CLASS_IMPERFECT, CLASS_VINTAGE, NON_BUSINESS_CLASSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,12 +30,11 @@ RETAIL_STORES = ["Livid Oslo", "Livid Bergen", "Livid Trondheim", "Livid Stavang
 WAREHOUSE = ["Livid Sentrallager"]
 PHYSICAL_LOCATIONS = RETAIL_STORES + WAREHOUSE
 
-# Locations the Allocate tab may draw stock FROM. Sentrallager is the default;
-# the event/overflow locations hold real sellable goods (market and past-season
-# stock lives there) but are invisible to every other planner, so they are opt-in.
-ALLOCATION_SOURCES = WAREHOUSE + [
-    "EVENTSALG", "MIDLERTIDIG LOKASJON", "VINTAGE NETT MELLOMLAGER", "Livid Kontor",
-]
+# Locations the Allocate tab may draw stock FROM. Loom carries only the six
+# physical locations, so the Cin7-era event/overflow sources (EVENTSALG,
+# MIDLERTIDIG LOKASJON, VINTAGE NETT MELLOMLAGER, Livid Kontor) are gone —
+# their contents survive in Loom at the warehouse and stores.
+ALLOCATION_SOURCES = WAREHOUSE
 
 # True non-merchandise: production components, service/dummy SKUs and the returns
 # holding bin. These must never reach an allocation plan whatever the filters say.
@@ -98,6 +100,31 @@ def _csv_param(value):
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _class_filter(include: Optional[str] = None):
+    """Which stock classes a business view should count.
+
+    Components, service SKUs, holding bins and samples are never business stock
+    (Cin7's button style alone was 95k units). Vintage is real merchandise but a
+    separate line, so it is opt-in: `include=vintage`, or `include=all` for the
+    unfiltered picture.
+    """
+    wanted = {v.lower() for v in _csv_param(include)}
+    if "all" in wanted:
+        return true()
+    allowed = {CLASS_MERCH, CLASS_IMPERFECT}
+    allowed |= {c for c in wanted if c not in NON_BUSINESS_CLASSES}
+    return StockLevel.stock_class.in_(sorted(allowed))
+
+
+def _business_only():
+    """Drop only the never-sellable classes, keeping vintage and imperfect.
+
+    Used by the allocation paths, which have always planned across every sellable
+    line; narrowing those to core merch would change allocation output silently.
+    """
+    return StockLevel.stock_class.notin_(sorted(NON_BUSINESS_CLASSES))
+
+
 def _since(days: int) -> datetime:
     return datetime.combine(date.today() - timedelta(days=days), datetime.min.time())
 
@@ -105,29 +132,31 @@ def _since(days: int) -> datetime:
 @router.get("/overview")
 async def get_stock_overview(
     location: str = Query(default=None, description="Filter by warehouse location"),
+    include: str = Query(default=None, description="Extra stock classes: vintage, sample, … or 'all'"),
     db: Session = Depends(get_db),
 ):
     """
     Stock overview: totals per location.
-    Returns on_hand, allocated, available, on_order aggregated by location.
+    Returns on_hand, allocated, available aggregated by location. Loom carries no
+    purchase-order visibility, so there is no on_order figure any more.
     """
     filters = []
     if location:
-        filters.append(Cin7Stock.location == location)
+        filters.append(StockLevel.location == location)
+    filters.append(_class_filter(include))
 
     data = db.query(
-        Cin7Stock.location,
-        func.sum(Cin7Stock.on_hand).label("on_hand"),
-        func.sum(Cin7Stock.allocated).label("allocated"),
-        func.sum(Cin7Stock.available).label("available"),
-        func.sum(Cin7Stock.on_order).label("on_order"),
-        func.count(Cin7Stock.id).label("sku_count"),
+        StockLevel.location,
+        func.sum(StockLevel.on_hand).label("on_hand"),
+        func.sum(StockLevel.allocated).label("allocated"),
+        func.sum(StockLevel.available).label("available"),
+        func.count(StockLevel.id).label("sku_count"),
     ).filter(
         and_(*filters) if filters else True
     ).group_by(
-        Cin7Stock.location
+        StockLevel.location
     ).order_by(
-        func.sum(Cin7Stock.on_hand).desc()
+        func.sum(StockLevel.on_hand).desc()
     ).all()
 
     return [
@@ -136,7 +165,6 @@ async def get_stock_overview(
             "on_hand": float(row.on_hand or 0),
             "allocated": float(row.allocated or 0),
             "available": float(row.available or 0),
-            "on_order": float(row.on_order or 0),
             "sku_count": row.sku_count,
         }
         for row in data
@@ -148,6 +176,7 @@ async def get_stock_by_product(
     sku: str = Query(default=None, description="Filter by SKU (partial match)"),
     location: str = Query(default=None, description="Filter by location"),
     limit: int = Query(default=50, description="Max results"),
+    include: str = Query(default=None, description="Extra stock classes: vintage, sample, … or 'all'"),
     db: Session = Depends(get_db),
 ):
     """
@@ -155,21 +184,21 @@ async def get_stock_by_product(
     """
     filters = []
     if sku:
-        filters.append(Cin7Stock.sku.ilike(f"%{sku}%"))
+        filters.append(StockLevel.sku.ilike(f"%{sku}%"))
     if location:
-        filters.append(Cin7Stock.location == location)
+        filters.append(StockLevel.location == location)
+    filters.append(_class_filter(include))
 
     data = db.query(
-        Cin7Stock.sku,
-        Cin7Stock.location,
-        Cin7Stock.on_hand,
-        Cin7Stock.allocated,
-        Cin7Stock.available,
-        Cin7Stock.on_order,
+        StockLevel.sku,
+        StockLevel.location,
+        StockLevel.on_hand,
+        StockLevel.allocated,
+        StockLevel.available,
     ).filter(
         and_(*filters) if filters else True
     ).order_by(
-        Cin7Stock.on_hand.desc()
+        StockLevel.on_hand.desc()
     ).limit(limit).all()
 
     return [
@@ -179,7 +208,6 @@ async def get_stock_by_product(
             "on_hand": float(row.on_hand or 0),
             "allocated": float(row.allocated or 0),
             "available": float(row.available or 0),
-            "on_order": float(row.on_order or 0),
         }
         for row in data
     ]
@@ -357,14 +385,15 @@ def _pm_sku(col):
 
 @router.get("/locations-summary")
 async def locations_summary(days: int = Query(30, description="Sales window for velocity/cover"),
+                            include: str = Query(default=None, description="Extra stock classes: vintage, sample, … or 'all'"),
                             db: Session = Depends(get_db)):
     """Per physical location: on-hand, available, units sold in the window, and days of cover."""
     since = _since(days)
 
     stock = {}
     for loc, oh, av in db.query(
-        Cin7Stock.location, func.sum(Cin7Stock.on_hand), func.sum(Cin7Stock.available)
-    ).filter(Cin7Stock.location.in_(PHYSICAL_LOCATIONS)).group_by(Cin7Stock.location):
+        StockLevel.location, func.sum(StockLevel.on_hand), func.sum(StockLevel.available)
+    ).filter(StockLevel.location.in_(PHYSICAL_LOCATIONS), _class_filter(include)).group_by(StockLevel.location):
         stock[loc] = (float(oh or 0), float(av or 0))
 
     sold = {}
@@ -393,7 +422,9 @@ async def locations_summary(days: int = Query(30, description="Sales window for 
 
 
 @router.get("/matrix")
-async def stock_matrix(days: int = Query(30), db: Session = Depends(get_db)):
+async def stock_matrix(days: int = Query(30),
+                       include: str = Query(default=None, description="Extra stock classes: vintage, sample, … or 'all'"),
+                       db: Session = Depends(get_db)):
     """Category-group x location on-hand matrix, plus units sold in the window per group."""
     since = _since(days)
     grp = func.coalesce(ProductMaster.category_group, 'Uncategorized')
@@ -402,10 +433,10 @@ async def stock_matrix(days: int = Query(30), db: Session = Depends(get_db)):
     cells = {}
     groups = {}
     for g, loc, oh in db.query(
-        grp.label('g'), Cin7Stock.location, func.sum(Cin7Stock.on_hand)
-    ).select_from(Cin7Stock).outerjoin(
-        ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)
-    ).filter(Cin7Stock.location.in_(PHYSICAL_LOCATIONS)).group_by(grp, Cin7Stock.location):
+        grp.label('g'), StockLevel.location, func.sum(StockLevel.on_hand)
+    ).select_from(StockLevel).outerjoin(
+        ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)
+    ).filter(StockLevel.location.in_(PHYSICAL_LOCATIONS), _class_filter(include)).group_by(grp, StockLevel.location):
         groups.setdefault(g, {"group": g, "cells": {}, "on_hand": 0, "sold": 0})
         groups[g]["cells"][loc] = float(oh or 0)
         groups[g]["on_hand"] += float(oh or 0)
@@ -426,20 +457,22 @@ async def stock_matrix(days: int = Query(30), db: Session = Depends(get_db)):
 @router.get("/matrix/products")
 async def stock_matrix_products(category_group: str = Query(...),
                                 days: int = Query(30), limit: int = Query(100),
+                                include: str = Query(default=None, description="Extra stock classes: vintage, sample, … or 'all'"),
                                 db: Session = Depends(get_db)):
     """Products (by parent SKU) within a category group: per-location on-hand + sold in window."""
     since = _since(days)
-    parent = func.coalesce(ParentSkuMapping.parent_sku, _pm_sku(Cin7Stock.sku))
+    parent = func.coalesce(ParentSkuMapping.parent_sku, _pm_sku(StockLevel.sku))
     grp = func.coalesce(ProductMaster.category_group, 'Uncategorized')
 
     prods = {}
     for psku, name, loc, oh in db.query(
-        parent.label('p'), func.min(ProductMaster.product_name), Cin7Stock.location, func.sum(Cin7Stock.on_hand)
-    ).select_from(Cin7Stock).outerjoin(
-        ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)
+        parent.label('p'), func.min(ProductMaster.product_name), StockLevel.location, func.sum(StockLevel.on_hand)
+    ).select_from(StockLevel).outerjoin(
+        ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)
     ).outerjoin(
-        ParentSkuMapping, ParentSkuMapping.sku == _pm_sku(Cin7Stock.sku)
-    ).filter(Cin7Stock.location.in_(PHYSICAL_LOCATIONS), grp == category_group).group_by(parent, Cin7Stock.location):
+        ParentSkuMapping, ParentSkuMapping.sku == _pm_sku(StockLevel.sku)
+    ).filter(StockLevel.location.in_(PHYSICAL_LOCATIONS), grp == category_group,
+             _class_filter(include)).group_by(parent, StockLevel.location):
         prods.setdefault(psku, {"parent_sku": psku, "name": name, "cells": {}, "on_hand": 0, "sold": 0})
         prods[psku]["cells"][loc] = float(oh or 0)
         prods[psku]["on_hand"] += float(oh or 0)
@@ -493,10 +526,10 @@ async def product_detail(sku: str = Query(..., description="Parent or variant SK
     # stock per (variant, location)
     stock = {}
     for u, loc, oh, av in db.query(
-        _pm_sku(Cin7Stock.sku), Cin7Stock.location,
-        func.sum(Cin7Stock.on_hand), func.sum(Cin7Stock.available)
-    ).filter(_pm_sku(Cin7Stock.sku).in_(ups), Cin7Stock.location.in_(PHYSICAL_LOCATIONS)).group_by(
-        _pm_sku(Cin7Stock.sku), Cin7Stock.location
+        _pm_sku(StockLevel.sku), StockLevel.location,
+        func.sum(StockLevel.on_hand), func.sum(StockLevel.available)
+    ).filter(_pm_sku(StockLevel.sku).in_(ups), StockLevel.location.in_(PHYSICAL_LOCATIONS)).group_by(
+        _pm_sku(StockLevel.sku), StockLevel.location
     ):
         v = up_to_variant.get(u)
         if v:
@@ -544,18 +577,18 @@ async def product_detail(sku: str = Query(..., description="Parent or variant SK
 async def stock_search(q: str = Query(..., min_length=2), limit: int = Query(20),
                        db: Session = Depends(get_db)):
     """Search products by SKU or name; returns parents with total physical on-hand."""
-    parent = func.coalesce(ParentSkuMapping.parent_sku, _pm_sku(Cin7Stock.sku))
+    parent = func.coalesce(ParentSkuMapping.parent_sku, _pm_sku(StockLevel.sku))
     like = f"%{q}%"
     rows = db.query(
-        parent.label('p'), func.min(ProductMaster.product_name), func.sum(Cin7Stock.on_hand)
-    ).select_from(Cin7Stock).outerjoin(
-        ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)
+        parent.label('p'), func.min(ProductMaster.product_name), func.sum(StockLevel.on_hand)
+    ).select_from(StockLevel).outerjoin(
+        ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)
     ).outerjoin(
-        ParentSkuMapping, ParentSkuMapping.sku == _pm_sku(Cin7Stock.sku)
+        ParentSkuMapping, ParentSkuMapping.sku == _pm_sku(StockLevel.sku)
     ).filter(
-        Cin7Stock.location.in_(PHYSICAL_LOCATIONS),
-        or_(Cin7Stock.sku.ilike(like), ProductMaster.product_name.ilike(like), parent.ilike(like)),
-    ).group_by(parent).order_by(func.sum(Cin7Stock.on_hand).desc()).limit(limit).all()
+        StockLevel.location.in_(PHYSICAL_LOCATIONS), _business_only(),
+        or_(StockLevel.sku.ilike(like), ProductMaster.product_name.ilike(like), parent.ilike(like)),
+    ).group_by(parent).order_by(func.sum(StockLevel.on_hand).desc()).limit(limit).all()
 
     return [{"parent_sku": r[0], "name": r[1] or r[0], "on_hand": float(r[2] or 0)} for r in rows]
 
@@ -605,9 +638,9 @@ async def central_allocation(
     # How much sellable stock each selectable source holds — powers the location picker.
     source_options = []
     src_units = {loc: 0.0 for loc in ALLOCATION_SOURCES}
-    for loc, av in db.query(Cin7Stock.location, func.sum(Cin7Stock.available)).filter(
-        Cin7Stock.location.in_(ALLOCATION_SOURCES), Cin7Stock.available > 0
-    ).group_by(Cin7Stock.location):
+    for loc, av in db.query(StockLevel.location, func.sum(StockLevel.available)).filter(
+        StockLevel.location.in_(ALLOCATION_SOURCES), StockLevel.available > 0, _business_only()
+    ).group_by(StockLevel.location):
         src_units[loc] = float(av or 0)
     for loc in ALLOCATION_SOURCES:
         source_options.append({"location": loc, "units": src_units.get(loc, 0.0),
@@ -618,10 +651,10 @@ async def central_allocation(
     avail_by_loc = {}
     wh_avail = {}
     for sku, loc, av in db.query(
-        Cin7Stock.sku, Cin7Stock.location, func.sum(Cin7Stock.available)
-    ).filter(Cin7Stock.location.in_(sources)).group_by(
-        Cin7Stock.sku, Cin7Stock.location
-    ).having(func.sum(Cin7Stock.available) > 0):
+        StockLevel.sku, StockLevel.location, func.sum(StockLevel.available)
+    ).filter(StockLevel.location.in_(sources), _business_only()).group_by(
+        StockLevel.sku, StockLevel.location
+    ).having(func.sum(StockLevel.available) > 0):
         v = float(av or 0)
         avail_by_loc.setdefault(sku, {})[loc] = v
         wh_avail[sku] = wh_avail.get(sku, 0.0) + v
@@ -677,10 +710,10 @@ async def central_allocation(
     # Per-store current stock on hand (retail stores) — what each store already has
     store_stock = {}
     for u, loc, oh in db.query(
-        _pm_sku(Cin7Stock.sku), Cin7Stock.location, func.sum(Cin7Stock.on_hand)
+        _pm_sku(StockLevel.sku), StockLevel.location, func.sum(StockLevel.on_hand)
     ).filter(
-        _pm_sku(Cin7Stock.sku).in_(ups), Cin7Stock.location.in_(RETAIL_STORES)
-    ).group_by(_pm_sku(Cin7Stock.sku), Cin7Stock.location):
+        _pm_sku(StockLevel.sku).in_(ups), StockLevel.location.in_(RETAIL_STORES)
+    ).group_by(_pm_sku(StockLevel.sku), StockLevel.location):
         store_stock.setdefault(u, {})[loc] = int(oh or 0)
 
     ql = q.lower().strip() if q else None

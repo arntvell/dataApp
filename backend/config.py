@@ -29,9 +29,13 @@ class Settings:
 
     SAMESYSTEM_DEPARTMENTS: Dict[str, str] = json.loads(os.getenv("SAMESYSTEM_DEPARTMENTS", "{}")) if os.getenv("SAMESYSTEM_DEPARTMENTS", "{}").strip().startswith("{") else {}
 
-    # Cin7 Core Configuration
+    # Cin7 Core Configuration (being offboarded — wholesale/purchases only)
     CIN7_ACCOUNT_ID: str = os.getenv("CIN7_ACCOUNT_ID", "")
     CIN7_API_KEY: str = os.getenv("CIN7_API_KEY", "")
+
+    # Loom Configuration (stock levels — replaces Cin7 stock)
+    LOOM_BASE_URL: str = os.getenv("LOOM_BASE_URL", "")
+    LOOM_API_KEY: str = os.getenv("LOOM_API_KEY", "")
 
     # Scheduler
     SCHEDULER_ENABLED: bool = os.getenv("SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
@@ -60,6 +64,10 @@ class Settings:
             "cin7": {
                 "account_id": self.CIN7_ACCOUNT_ID,
                 "api_key": self.CIN7_API_KEY
+            },
+            "loom": {
+                "base_url": self.LOOM_BASE_URL,
+                "api_key": self.LOOM_API_KEY
             }
         }
 

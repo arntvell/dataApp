@@ -60,14 +60,14 @@ def job_product_sync():
         logger.error(f"Scheduled product sync failed: {e}")
 
 
-def job_cin7_stock():
-    """Hourly stock level sync from Cin7"""
-    from pipelines.stock_sync import StockSyncPipeline
+def job_loom_stock():
+    """Hourly stock level sync from Loom (replaces the Cin7 stock job)"""
+    from pipelines.loom_stock_sync import LoomStockSyncPipeline
     try:
-        pipeline = StockSyncPipeline(_get_config())
+        pipeline = LoomStockSyncPipeline(_get_config())
         pipeline.sync_stock_levels()
     except Exception as e:
-        logger.error(f"Scheduled stock sync failed: {e}")
+        logger.error(f"Scheduled Loom stock sync failed: {e}")
 
 
 def job_cin7_wholesale():
@@ -136,10 +136,10 @@ def start_scheduler():
     )
 
     scheduler.add_job(
-        job_cin7_stock,
+        job_loom_stock,
         trigger=IntervalTrigger(hours=1),
-        id="cin7_stock",
-        name="Cin7 stock level sync",
+        id="loom_stock",
+        name="Loom stock level sync",
         replace_existing=True,
     )
 

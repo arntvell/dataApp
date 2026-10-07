@@ -307,8 +307,53 @@ class SameSystemWorktime(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
+class StockLevel(Base):
+    """Stock levels by location (current snapshot), source-neutral.
+
+    Replaces Cin7Stock as the single stock table every module reads. Loaded
+    truncate-and-reload from Loom; `source` records which upstream system owns
+    each figure (pio = warehouse, sitoo = store POS, shopify).
+
+    Loom reports the full variant x location matrix including all-zero rows;
+    the pipeline drops those so counts stay comparable to the Cin7 era.
+    There is no on_order column: Loom carries no purchase-order visibility.
+    """
+    __tablename__ = "stock_levels"
+    __table_args__ = (
+        UniqueConstraint('sku', 'location', name='uq_stock_levels'),
+        Index('ix_stock_levels_class_loc', 'stock_class', 'location'),
+        {'schema': 'raw'}
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    sku = Column(String, nullable=False, index=True)          # Loom variant_sku
+    location = Column(String, nullable=False, index=True)     # display name, matches PHYSICAL_LOCATIONS
+    location_id = Column(String, nullable=True, index=True)   # stable Loom id (names are renameable)
+    source = Column(String, nullable=True)                    # pio / sitoo / shopify
+
+    on_hand = Column(Float, default=0)
+    allocated = Column(Float, default=0)   # Loom `reserved` (warehouse only; 0 elsewhere)
+    available = Column(Float, default=0)   # on_hand - allocated; can be negative
+
+    # Loom's own hierarchy. parent_sku_mappings stays authoritative for grouping;
+    # colorway_sku is the fallback for SKUs that have never sold and so have no row there.
+    colorway_sku = Column(String, nullable=True, index=True)
+    style_sku = Column(String, nullable=True, index=True)
+
+    stock_class = Column(String, nullable=True, index=True)   # see pipelines.loom_stock_sync.classify
+    archived = Column(Boolean, default=False)
+
+    as_of = Column(DateTime(timezone=True), nullable=True)    # Loom `asOf` for the snapshot
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
 class Cin7Stock(Base):
-    """Cin7 Core stock/inventory levels (current snapshot)"""
+    """Cin7 Core stock/inventory levels (current snapshot).
+
+    DEPRECATED: superseded by StockLevel (Loom). Kept while the Cin7 offboarding
+    completes so the old snapshot stays queryable for reconciliation.
+    """
     __tablename__ = "cin7_stock"
     __table_args__ = (
         UniqueConstraint('sku', 'location', name='uq_cin7_stock'),

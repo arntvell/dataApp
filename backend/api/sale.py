@@ -20,12 +20,15 @@ from sqlalchemy.orm import Session
 
 from database.config import get_db
 from database.models import (
-    ProductMaster, ParentSkuMapping, Cin7Stock, RawShopifyProduct,
+    ProductMaster, ParentSkuMapping, StockLevel, RawShopifyProduct,
     SalesOrder, SalesOrderItem,
     SaleSeason, SalePlanItem, SaleVariantOverride, SaleAllocation,
     SaleTransferOverride,
 )
-from api.stock import PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since, _non_merch
+from api.stock import (
+    PHYSICAL_LOCATIONS, RETAIL_STORES, WAREHOUSE, _pm_sku, _since, _non_merch,
+    _business_only,
+)
 from config import settings
 from connectors.shopify_connector import ShopifyConnector
 import threading
@@ -249,11 +252,12 @@ async def restructure_rounds(season_id: int, payload: dict = Body(...), db: Sess
 def _aggregate_styles(db, since=None, until=None):
     """Per parent SKU: attrs, on-hand (physical), sold (velocity window), age signals."""
     stock = dict(db.query(
-        ProductMaster.parent_sku, func.sum(Cin7Stock.on_hand)
-    ).select_from(Cin7Stock).join(
-        ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)
+        ProductMaster.parent_sku, func.sum(StockLevel.on_hand)
+    ).select_from(StockLevel).join(
+        ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)
     ).filter(
-        Cin7Stock.location.in_(PHYSICAL_LOCATIONS), ProductMaster.parent_sku.isnot(None)
+        StockLevel.location.in_(PHYSICAL_LOCATIONS), _business_only(),
+        ProductMaster.parent_sku.isnot(None)
     ).group_by(ProductMaster.parent_sku).all())
 
     # Velocity window. Defaults to the last VELOCITY_DAYS so every existing caller
@@ -435,9 +439,9 @@ async def candidate_variants(
 
     price = dict(db.query(ProductMaster.sku, ProductMaster.price).filter(
         ProductMaster.sku.in_([s.upper().strip() for s in skus])).all())
-    stock = dict(db.query(_pm_sku(Cin7Stock.sku), func.sum(Cin7Stock.on_hand)).filter(
-        _pm_sku(Cin7Stock.sku).in_([s.upper().strip() for s in skus]),
-        Cin7Stock.location.in_(PHYSICAL_LOCATIONS)).group_by(_pm_sku(Cin7Stock.sku)).all())
+    stock = dict(db.query(_pm_sku(StockLevel.sku), func.sum(StockLevel.on_hand)).filter(
+        _pm_sku(StockLevel.sku).in_([s.upper().strip() for s in skus]),
+        StockLevel.location.in_(PHYSICAL_LOCATIONS), _business_only()).group_by(_pm_sku(StockLevel.sku)).all())
     since = _since(VELOCITY_DAYS)
     sold = dict(db.query(SalesOrderItem.sku, func.sum(SalesOrderItem.quantity)).join(
         SalesOrder, SalesOrderItem.order_id == SalesOrder.id).filter(
@@ -589,10 +593,11 @@ async def validation(season_id: int = Query(...), db: Session = Depends(get_db))
 
     stock_ps = {}
     for parent, loc, oh in db.query(
-        ProductMaster.parent_sku, Cin7Stock.location, func.sum(Cin7Stock.on_hand)
-    ).select_from(Cin7Stock).join(ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)).filter(
-        Cin7Stock.location.in_(PHYSICAL_LOCATIONS), ProductMaster.parent_sku.isnot(None)
-    ).group_by(ProductMaster.parent_sku, Cin7Stock.location):
+        ProductMaster.parent_sku, StockLevel.location, func.sum(StockLevel.on_hand)
+    ).select_from(StockLevel).join(ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)).filter(
+        StockLevel.location.in_(PHYSICAL_LOCATIONS), _business_only(),
+        ProductMaster.parent_sku.isnot(None)
+    ).group_by(ProductMaster.parent_sku, StockLevel.location):
         stock_ps.setdefault(parent, {})[loc] = float(oh or 0)
 
     norm_w = _store_weights(db)
@@ -774,10 +779,11 @@ def _sale_export_rows(db, season):
     plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(SalePlanItem.season_id == season.id)}
     stock_ps = {}
     for parent, loc, oh in db.query(
-        ProductMaster.parent_sku, Cin7Stock.location, func.sum(Cin7Stock.on_hand)
-    ).select_from(Cin7Stock).join(ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)).filter(
-        Cin7Stock.location.in_(PHYSICAL_LOCATIONS), ProductMaster.parent_sku.isnot(None)
-    ).group_by(ProductMaster.parent_sku, Cin7Stock.location):
+        ProductMaster.parent_sku, StockLevel.location, func.sum(StockLevel.on_hand)
+    ).select_from(StockLevel).join(ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)).filter(
+        StockLevel.location.in_(PHYSICAL_LOCATIONS), _business_only(),
+        ProductMaster.parent_sku.isnot(None)
+    ).group_by(ProductMaster.parent_sku, StockLevel.location):
         stock_ps.setdefault(parent, {})[loc] = float(oh or 0)
     norm_w = _store_weights(db)
     saved = {}
@@ -1400,14 +1406,14 @@ def _stock_report_data(db, season, since=None, until=None):
     # per-variant, per-location on-hand + available (physical locations only)
     var_loc = {}   # parent -> sku -> location -> {on_hand, available}
     for parent, sku, loc, oh, av in db.query(
-        ProductMaster.parent_sku, ProductMaster.sku, Cin7Stock.location,
-        func.sum(Cin7Stock.on_hand), func.sum(Cin7Stock.available),
-    ).select_from(Cin7Stock).join(
-        ProductMaster, ProductMaster.sku == _pm_sku(Cin7Stock.sku)
+        ProductMaster.parent_sku, ProductMaster.sku, StockLevel.location,
+        func.sum(StockLevel.on_hand), func.sum(StockLevel.available),
+    ).select_from(StockLevel).join(
+        ProductMaster, ProductMaster.sku == _pm_sku(StockLevel.sku)
     ).filter(
-        Cin7Stock.location.in_(PHYSICAL_LOCATIONS),
+        StockLevel.location.in_(PHYSICAL_LOCATIONS), _business_only(),
         ProductMaster.parent_sku.in_(parents),
-    ).group_by(ProductMaster.parent_sku, ProductMaster.sku, Cin7Stock.location):
+    ).group_by(ProductMaster.parent_sku, ProductMaster.sku, StockLevel.location):
         var_loc.setdefault(parent, {}).setdefault(sku, {})[loc] = {
             "on_hand": float(oh or 0), "available": float(av or 0)}
 

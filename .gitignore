@@ -70,3 +70,6 @@ exports/
 # Shopify image export (local only, ~150MB)
 shopify_images/
 seasonal_sale_2026_stock.csv
+
+# Loom discrepancy exports (local only)
+loom_missing_skus.csv

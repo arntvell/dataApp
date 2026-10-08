@@ -894,6 +894,35 @@ def _plan_summary(p: AllocationPlan):
     }
 
 
+@router.post("/sku-info")
+async def sku_info(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Name / brand / category for arbitrary variant SKUs. Body: {"skus": [...]}.
+
+    The Allocate tab learns these from the style rows it renders, so a SKU sitting
+    in a plan whose style is outside the current filter — or restored from a plan
+    saved before those fields existed — has nothing to export. The catalogue knows
+    them regardless of what the browser has seen, so the export fills its gaps here.
+    """
+    skus = payload.get("skus") or []
+    if not isinstance(skus, list):
+        raise HTTPException(status_code=400, detail="skus must be a list")
+    wanted = {str(s).strip() for s in skus if str(s).strip()}
+    if not wanted:
+        return {"info": {}}
+    if len(wanted) > 5000:
+        raise HTTPException(status_code=400, detail="at most 5000 skus per request")
+
+    by_upper = {}
+    for sku, name, brand, cat in db.query(
+        ProductMaster.sku, ProductMaster.product_name,
+        ProductMaster.sold_as_vendor, ProductMaster.category_group,
+    ).filter(ProductMaster.sku.in_({s.upper() for s in wanted})):
+        by_upper[sku] = {"name": name or "", "brand": brand or "", "category": cat or ""}
+
+    # key the answer by the SKU the caller asked with, whatever its casing
+    return {"info": {s: by_upper[s.upper()] for s in wanted if s.upper() in by_upper}}
+
+
 @router.get("/allocation-plans")
 async def list_allocation_plans(db: Session = Depends(get_db)):
     """Every saved plan, newest touched first."""

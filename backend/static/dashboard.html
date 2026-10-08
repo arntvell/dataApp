@@ -4248,7 +4248,35 @@
             return out;
         }
 
-        function exportAllocationCsv() {
+        // The tab only learns name/brand/category from style rows it has rendered, so a
+        // SKU outside the current filter — or one restored from a plan saved before those
+        // fields existed — would export blank. Ask the catalogue for whatever is missing.
+        async function fillMissingSkuInfo(skus) {
+            const missing = skus.filter(s => {
+                const i = allocSkuInfo[s] || {};
+                return !i.name || !i.brand || !i.category;
+            });
+            if (!missing.length) return;
+            try {
+                const r = await fetch(`${API_BASE}/stock/sku-info`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ skus: missing })
+                });
+                if (!r.ok) return;                      // export blank rather than fail
+                const { info } = await r.json();
+                Object.entries(info || {}).forEach(([sku, v]) => {
+                    const cur = allocSkuInfo[sku] || {};
+                    // only fill blanks — what the tab rendered stays authoritative
+                    allocSkuInfo[sku] = { ...cur, ...Object.fromEntries(
+                        Object.entries(v).filter(([k, val]) => val && !cur[k])) };
+                });
+                saveAllocInfo();
+            } catch (e) { /* offline or blocked — fall through with what we have */ }
+        }
+
+        async function exportAllocationCsv() {
+            if (!Object.keys(allocPlan).length) { alert('Nothing allocated yet — enter quantities first.'); return; }
+            await fillMissingSkuInfo(Object.keys(allocPlan));
             const rows = [['Variant SKU', 'Style', 'Brand', 'Category', 'Quantity', 'Location', 'From Location']];
             Object.keys(allocPlan).sort().forEach(sku => {
                 const info = allocSkuInfo[sku] || {};

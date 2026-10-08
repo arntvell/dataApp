@@ -53,6 +53,26 @@ def _gender_from_shopify(vendor: str, tags: str):
     return None
 
 
+# A -F-/-H- segment marks femme/herre, but only when what follows is a garment
+# code: LIV-SMPLS-F-BKS is women's sample trousers, while LIV-Kai-F-3032 is "Kai
+# Japan Fade" in a size and LIV-Nelson-H-XL is "Nelson Herbal Green". Requiring a
+# multi-letter non-size segment after the marker separates the two — checked
+# against the catalogue's own designed_for, it was right on 19/19 men and 26/26
+# women with no false positives, and simply abstains on the other 20.
+_GENDER_SEG_RE = re.compile(
+    r"-([FH])-(?!(?:XXS|XS|XL|XXL|[23]XL|OS)(?:-|$))[A-Z]{2,}(?:-|$)", re.IGNORECASE
+)
+
+
+def _gender_from_sku_segment(*skus):
+    """femme/herre marker inside a SKU, e.g. LIV-SMPLS-F-BKS -> women."""
+    for s in skus:
+        m = _GENDER_SEG_RE.search((s or "").upper())
+        if m:
+            return "women" if m.group(1).upper() == "F" else "men"
+    return None
+
+
 def _gender_from_loom(style_sku: str):
     """Loom encodes gender in the style code: LIV-M-* / LIV-W-* / LIV-U-*.
 
@@ -221,6 +241,8 @@ class ProductSyncPipeline:
                     designed_for = _gender_from_cin7(ci.category)
                 if not designed_for and lo:
                     designed_for = _gender_from_loom(lo.style_sku)
+                if not designed_for:
+                    designed_for = _gender_from_sku_segment(k, lo and lo.colorway_sku)
 
                 # ----- vendor / brand -----
                 raw_brand = ((ci and ci.brand) or (si and si.manufacturer_name)

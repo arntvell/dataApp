@@ -1116,7 +1116,7 @@
                         <option value="1095">Sold: last 3 years</option>
                     </select>
                     <input id="allocMinUnits" type="number" min="0" placeholder="Min units" onchange="loadAllocation()" title="Only styles holding at least this many units at the selected sources" class="px-2 py-1.5 border rounded-lg text-sm w-28">
-                    <label class="flex items-center gap-1.5 text-sm text-gray-600" title="Salgsvare, Imperfect, samples and consignment are hidden by default"><input type="checkbox" id="allocIncludeNoise" onchange="loadAllocation()"> Include sale / imperfect goods</label>
+                    <label class="flex items-center gap-1.5 text-sm text-gray-600" title="Salgsvare, Imperfect, samples and consignment are hidden by default"><input type="checkbox" id="allocIncludeNoise" onchange="loadAllocation()"> Include sale / imperfect / samples</label>
                     <label class="flex items-center gap-1.5 text-sm text-gray-600"><input type="checkbox" id="allocOnlyPlanned" onchange="renderAllocation()"> Only allocated</label>
                 </div>
                 <div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 pt-3 border-t">
@@ -4155,9 +4155,34 @@
             updateStyleBadge(gi, si);
             updateAllocSummary();
         }
+        // _computeAutoSplit yields nothing for a size with no sales anywhere, or with
+        // no warehouse units — and then drops whatever was already entered for it.
+        // "Overwrites" undersells that, so count the real losses up front and let the
+        // warning name them; silently losing hand-entered lines is hard to even notice.
+        function _autoSplitLosses(sizes) {
+            let lines = 0, units = 0, skus = 0;
+            sizes.forEach(z => {
+                const cur = allocPlan[z.sku];
+                if (!cur) return;
+                const sold = (allocData.stores || []).reduce((a, s) => a + (z.sold[s] || 0), 0);
+                if (sold > 0 && z.wh_avail > 0) return;   // recomputed, not dropped
+                skus++;
+                lines += Object.keys(cur).length;
+                units += Object.values(cur).reduce((a, b) => a + b, 0);
+            });
+            return { skus, lines, units };
+        }
+        function _lossWarning(l) {
+            return l.units
+                ? `\n\nThis REMOVES ${l.units} already-allocated units across ${l.skus} SKUs `
+                  + `(${l.lines} store lines) that have no sales history to split on.`
+                : '';
+        }
         function autoSplitBrand(gi) {
             const g = allocGroups[gi];
-            if (!confirm(`Auto-split all ${g.styles.length} ${g.brand} styles across stores by unmet demand? Overwrites current inputs for this brand.`)) return;
+            const loss = _autoSplitLosses(g.styles.flatMap(st => st.sizes));
+            if (!confirm(`Auto-split all ${g.styles.length} ${g.brand} styles across stores by unmet demand?`
+                + ` Overwrites current inputs for this brand.` + _lossWarning(loss))) return;
             g.styles.forEach((st, si) => { st.sizes.forEach(z => _computeAutoSplit(z)); updateStyleBadge(gi, si); st.sizes.forEach(z => _syncSizeInputs(z)); });
             saveAllocPlan();
             updateAllocSummary();
@@ -4174,7 +4199,9 @@
         function autoSplitAllShown() {
             if (!allocGroups || !allocGroups.length) return;
             const n = allocGroups.reduce((a, g) => a + g.styles.length, 0);
-            if (!confirm(`Auto-split all ${n} shown styles across stores by unmet demand? Overwrites current inputs for those styles.`)) return;
+            const loss = _autoSplitLosses(allocGroups.flatMap(g => g.styles.flatMap(st => st.sizes)));
+            if (!confirm(`Auto-split all ${n} shown styles across stores by unmet demand?`
+                + ` Overwrites current inputs for those styles.` + _lossWarning(loss))) return;
             allocGroups.forEach(g => g.styles.forEach(st => st.sizes.forEach(z => _computeAutoSplit(z))));
             saveAllocPlan();
             renderAllocation();

@@ -17,7 +17,7 @@ from database.models import (
     RawShopifyProduct, AllocationPlan,
 )
 from pipelines.loom_stock_sync import (
-    CLASS_MERCH, CLASS_IMPERFECT, CLASS_VINTAGE, NON_BUSINESS_CLASSES,
+    CLASS_MERCH, CLASS_IMPERFECT, CLASS_VINTAGE, CLASS_SAMPLE, NON_BUSINESS_CLASSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,13 +116,21 @@ def _class_filter(include: Optional[str] = None):
     return StockLevel.stock_class.in_(sorted(allowed))
 
 
-def _business_only():
+def _business_only(include_noise: bool = False):
     """Drop only the never-sellable classes, keeping vintage and imperfect.
 
     Used by the allocation paths, which have always planned across every sellable
     line; narrowing those to core merch would change allocation output silently.
+
+    Samples are the exception to "never sellable": they are real goods that get
+    sent to a market day, and the Allocate tab has always surfaced them behind
+    include_noise. Filtering them out in SQL would sit in front of that switch
+    and make it impossible to ever see them, so sample follows the switch.
     """
-    return StockLevel.stock_class.notin_(sorted(NON_BUSINESS_CLASSES))
+    hidden = set(NON_BUSINESS_CLASSES)
+    if include_noise:
+        hidden.discard(CLASS_SAMPLE)
+    return StockLevel.stock_class.notin_(sorted(hidden))
 
 
 def _since(days: int) -> datetime:
@@ -700,7 +708,8 @@ async def central_allocation(
     source_options = []
     src_units = {loc: 0.0 for loc in ALLOCATION_SOURCES}
     for loc, av in db.query(StockLevel.location, func.sum(StockLevel.available)).filter(
-        StockLevel.location.in_(ALLOCATION_SOURCES), StockLevel.available > 0, _business_only()
+        StockLevel.location.in_(ALLOCATION_SOURCES), StockLevel.available > 0,
+        _business_only(include_noise)
     ).group_by(StockLevel.location):
         src_units[loc] = float(av or 0)
     for loc in ALLOCATION_SOURCES:
@@ -713,7 +722,7 @@ async def central_allocation(
     wh_avail = {}
     for sku, loc, av in db.query(
         StockLevel.sku, StockLevel.location, func.sum(StockLevel.available)
-    ).filter(StockLevel.location.in_(sources), _business_only()).group_by(
+    ).filter(StockLevel.location.in_(sources), _business_only(include_noise)).group_by(
         StockLevel.sku, StockLevel.location
     ).having(func.sum(StockLevel.available) > 0):
         v = float(av or 0)

@@ -17,7 +17,8 @@ from database.models import (
     RawShopifyProduct, AllocationPlan,
 )
 from pipelines.loom_stock_sync import (
-    CLASS_MERCH, CLASS_IMPERFECT, CLASS_VINTAGE, CLASS_SAMPLE, NON_BUSINESS_CLASSES,
+    CLASS_MERCH, CLASS_IMPERFECT, CLASS_VINTAGE, CLASS_SAMPLE, CLASS_PLACEHOLDER,
+    NON_BUSINESS_CLASSES,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,14 +123,18 @@ def _business_only(include_noise: bool = False):
     Used by the allocation paths, which have always planned across every sellable
     line; narrowing those to core merch would change allocation output silently.
 
-    Samples are the exception to "never sellable": they are real goods that get
-    sent to a market day, and the Allocate tab has always surfaced them behind
-    include_noise. Filtering them out in SQL would sit in front of that switch
-    and make it impossible to ever see them, so sample follows the switch.
+    Samples and holding bins are the exception to "never sellable". Samples go out
+    to market days; the bins hold real goods a store can ask for — hangers and
+    envelopes among the unsorted and the defective. Both were reachable behind
+    include_noise before this filter existed, and a SQL filter sits in front of
+    that switch, so both follow it rather than being excluded outright.
+
+    Components and service SKUs stay excluded at every setting: a button or a
+    pickup fee is never something a store receives.
     """
     hidden = set(NON_BUSINESS_CLASSES)
     if include_noise:
-        hidden.discard(CLASS_SAMPLE)
+        hidden -= {CLASS_SAMPLE, CLASS_PLACEHOLDER}
     return StockLevel.stock_class.notin_(sorted(hidden))
 
 

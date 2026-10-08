@@ -1772,6 +1772,83 @@ async def get_revenue_by_weekday(
     return result
 
 
+# order_date is stored in UTC, so the hour has to be converted before it means
+# anything to a shop floor: a single UTC hour lands in two different local hours
+# across a DST boundary, which would smear every trading hour across two buckets.
+STORE_TZ = "Europe/Oslo"
+
+
+def _local_ts():
+    return func.timezone(STORE_TZ, SalesOrder.order_date)
+
+
+@router.get("/revenue/by-hour")
+async def get_revenue_by_hour(
+    start_date: date = Query(default=None),
+    end_date: date = Query(default=None),
+    location: str = Query(default="All", description="'All', 'Stores', 'Online', or a store name"),
+    db: Session = Depends(get_db),
+):
+    """Revenue and order count by hour of the local trading day.
+
+    Averages divide by the number of days that actually traded in the range, not
+    by calendar days, so a closed Sunday does not drag every hour down.
+    """
+    if start_date is None:
+        start_date = date.today()
+    if end_date is None:
+        end_date = start_date
+
+    combined = and_(get_date_filter(start_date, end_date), get_location_filter(location))
+
+    trading_days = db.query(
+        func.count(func.distinct(cast(_local_ts(), Date)))
+    ).filter(combined).scalar() or 0
+
+    rows = db.query(
+        func.extract("hour", _local_ts()).label("hour"),
+        SalesOrder.source_system,
+        func.sum(net_order_amount).label("revenue"),
+        func.count(SalesOrder.id).label("orders"),
+    ).filter(combined).group_by(
+        func.extract("hour", _local_ts()), SalesOrder.source_system
+    ).all()
+
+    by_hour: dict = {}
+    for r in rows:
+        h = by_hour.setdefault(int(r.hour), {"online": 0.0, "store": 0.0, "orders": 0})
+        key = "online" if r.source_system == "shopify" else "store"
+        h[key] += float(r.revenue or 0)
+        h["orders"] += int(r.orders or 0)
+
+    denom = max(trading_days, 1)
+    hours = []
+    for h in range(24):
+        v = by_hour.get(h, {"online": 0.0, "store": 0.0, "orders": 0})
+        total = v["online"] + v["store"]
+        hours.append({
+            "hour": h,
+            "label": f"{h:02d}:00",
+            "online_revenue": v["online"],
+            "store_revenue": v["store"],
+            "total_revenue": total,
+            "orders": v["orders"],
+            "avg_revenue": total / denom,
+            "avg_orders": v["orders"] / denom,
+            "avg_basket": (total / v["orders"]) if v["orders"] else 0.0,
+        })
+
+    peak = max(hours, key=lambda x: x["total_revenue"]) if any(x["total_revenue"] for x in hours) else None
+    return {
+        "hours": hours,
+        "trading_days": trading_days,
+        "timezone": STORE_TZ,
+        "total_revenue": sum(x["total_revenue"] for x in hours),
+        "total_orders": sum(x["orders"] for x in hours),
+        "peak_hour": peak["hour"] if peak else None,
+    }
+
+
 @router.get("/revenue/running-total")
 async def get_running_total(
     start_date: date = Query(default=None),

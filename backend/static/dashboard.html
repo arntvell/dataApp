@@ -283,6 +283,18 @@
                 </div>
             </div>
 
+            <!-- Revenue by Hour of Day -->
+            <div class="card lg:col-span-2">
+                <div class="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+                    <h2 class="text-xl font-semibold">Revenue by Hour of Day</h2>
+                    <span class="text-xs text-gray-400" id="hourChartNote"></span>
+                </div>
+                <p class="text-xs text-gray-400 mb-4">Average revenue per trading hour, local time. Use the location filter above to pick a single store.</p>
+                <div class="h-64">
+                    <canvas id="hourChart"></canvas>
+                </div>
+            </div>
+
         </div>
 
         <!-- Discount Analysis -->
@@ -2575,7 +2587,7 @@
 
         let trendChart = null;
         let channelChart = null;
-        let weekdayChart = null;
+        let weekdayChart = null, hourChart = null;
         let runningTotalChart = null;
         let currentTrendGroupBy = 'day';
 
@@ -2624,6 +2636,13 @@
                 const r = await fetch(`${API_BASE}/revenue/by-weekday?start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(currentSalesLocation)}`);
                 return await r.json();
             } catch (e) { console.error('Error fetching weekday revenue:', e); return []; }
+        }
+
+        async function fetchHourRevenue() {
+            try {
+                const r = await fetch(`${API_BASE}/revenue/by-hour?start_date=${currentStartDate}&end_date=${currentEndDate}&location=${encodeURIComponent(currentSalesLocation)}`);
+                return await r.json();
+            } catch (e) { console.error('Error fetching hourly revenue:', e); return null; }
         }
 
         async function fetchRunningTotal() {
@@ -3204,6 +3223,64 @@
             });
         }
 
+        function updateHourChart(d) {
+            const ctx = document.getElementById('hourChart').getContext('2d');
+            if (hourChart) hourChart.destroy();
+            const note = document.getElementById('hourChartNote');
+            if (!d || !d.hours) { if (note) note.textContent = ''; return; }
+
+            // Hours with no trade anywhere in the range are noise on a bar chart —
+            // an online-only range spans all 24, a single store spans eight. Clip to
+            // the traded span, keeping any interior quiet hour so gaps stay visible.
+            const traded = d.hours.filter(h => h.orders > 0).map(h => h.hour);
+            const lo = traded.length ? Math.min(...traded) : 0;
+            const hi = traded.length ? Math.max(...traded) : 23;
+            const rows = d.hours.slice(lo, hi + 1);
+
+            if (note) {
+                note.textContent = d.trading_days
+                    ? `${d.trading_days} trading day${d.trading_days !== 1 ? 's' : ''}`
+                      + (d.peak_hour !== null ? ` · peak ${String(d.peak_hour).padStart(2, '0')}:00` : '')
+                    : 'No sales in this period';
+            }
+
+            hourChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: rows.map(h => h.label),
+                    datasets: [
+                        { label: 'Online', data: rows.map(h => h.online_revenue / Math.max(d.trading_days, 1)),
+                          backgroundColor: '#00AEEF', borderWidth: 0, borderRadius: 4 },
+                        { label: 'Stores', data: rows.map(h => h.store_revenue / Math.max(d.trading_days, 1)),
+                          backgroundColor: '#6366f1', borderWidth: 0, borderRadius: 4 },
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, position: 'top', labels: { boxWidth: 12, padding: 16, font: { size: 12 } } },
+                        tooltip: {
+                            mode: 'index',
+                            callbacks: {
+                                label: ctx => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)} NOK`,
+                                footer: items => {
+                                    const h = rows[items[0].dataIndex];
+                                    return `Avg total: ${formatCurrency(h.avg_revenue)} NOK · `
+                                         + `${h.orders} order${h.orders !== 1 ? 's' : ''} · `
+                                         + `basket ${formatCurrency(h.avg_basket)} NOK`;
+                                },
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { stacked: true },
+                        y: { stacked: true, ticks: { callback: v => formatCurrency(v) } }
+                    }
+                }
+            });
+        }
+
         function updateRunningTotalChart(data) {
             const ctx = document.getElementById('runningTotalChart').getContext('2d');
             if (runningTotalChart) runningTotalChart.destroy();
@@ -3272,14 +3349,16 @@
         }
 
         async function refreshSalesCharts() {
-            const [daily, weekday, running, discount] = await Promise.all([
+            const [daily, weekday, hourly, running, discount] = await Promise.all([
                 fetchDailyRevenue(),
                 fetchWeekdayRevenue(),
+                fetchHourRevenue(),
                 fetchRunningTotal(),
                 fetchDiscountAnalysis(),
             ]);
             updateTrendChart(daily);
             updateWeekdayChart(weekday);
+            updateHourChart(hourly);
             updateRunningTotalChart(running);
             updateDiscountCard(discount);
             fetchAndRenderDiscountDrilldown();
@@ -3349,6 +3428,7 @@
                     if (trendChart) trendChart.resize();
                     if (channelChart) channelChart.resize();
                     if (weekdayChart) weekdayChart.resize();
+                    if (hourChart) hourChart.resize();
                     if (runningTotalChart) runningTotalChart.resize();
                 }, 50);
             }

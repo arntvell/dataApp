@@ -690,7 +690,7 @@ class AllocationPlan(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False, unique=True, index=True)
     plan = Column(JSON, nullable=False, default=dict)      # {sku: {store: qty}}
-    sku_info = Column(JSON, nullable=True)                 # {sku: {name, size, by_location}}
+    sku_info = Column(JSON, nullable=True)                 # {sku: {name, brand, category, size, by_location}}
     sources = Column(JSON, nullable=True)                  # source locations it was built from
     note = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

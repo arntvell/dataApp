@@ -3794,7 +3794,9 @@
                 const d = await (await fetch(`${API_BASE}/stock/allocation-plan?name=${encodeURIComponent(name)}`)).json();
                 if (d.detail) { alert(d.detail); return; }
                 allocPlan = d.plan || {};
-                Object.assign(allocSkuInfo, d.sku_info || {});
+                Object.entries(d.sku_info || {}).forEach(([sku, v]) => {
+                    allocSkuInfo[sku] = { ...v, ...(allocSkuInfo[sku] || {}) };
+                });
                 try { localStorage.setItem(ALLOC_PLAN_KEY, JSON.stringify(allocPlan)); } catch (e) {}
                 saveAllocInfo();
                 setAllocSavedName(name);
@@ -3951,7 +3953,8 @@
                 `${srcLabel} · ${Math.round(allocData.total_units)} units`;
             (allocData.styles || []).forEach(st => st.sizes.forEach(z => {
                 allocSizeBySku[z.sku] = z;
-                allocSkuInfo[z.sku] = { name: st.name, size: z.size, by_location: z.by_location || {} };
+                allocSkuInfo[z.sku] = { name: st.name, brand: st.brand, category: st.category,
+                                        size: z.size, by_location: z.by_location || {} };
             }));
             saveAllocInfo();
             renderAllocation();
@@ -4246,14 +4249,14 @@
         }
 
         function exportAllocationCsv() {
-            const rows = [['Variant SKU', 'Style', 'Quantity', 'Location', 'From Location']];
+            const rows = [['Variant SKU', 'Style', 'Brand', 'Category', 'Quantity', 'Location', 'From Location']];
             Object.keys(allocPlan).sort().forEach(sku => {
                 const info = allocSkuInfo[sku] || {};
                 const qs = allocPlan[sku];
                 Object.keys(qs).forEach(store => {
                     if (qs[store] > 0) {
                         _sourceLinesFor(sku, qs[store]).forEach(([from, n]) => {
-                            rows.push([sku, info.name || '', n, store, from]);
+                            rows.push([sku, info.name || '', info.brand || '', info.category || '', n, store, from]);
                         });
                     }
                 });

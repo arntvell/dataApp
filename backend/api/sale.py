@@ -2423,17 +2423,56 @@ async def sale_revert_preview(season_id: int = Query(...), db: Session = Depends
     }
 
 
-def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
+def _season_discounts(db, season):
+    """(SKUs the planner discounts in some round, the distinct pcts it used).
+    Used to tell our own markdown apart from a compare-at that was already on a product
+    for some other reason — a permanent markdown, an outlet "was" price, a manual edit."""
+    skus, pcts = set(), set()
+    for ri in range(len(season.rounds or [])):
+        for r in _included_variant_rows(db, season, ri):
+            skus.add(r["sku"].upper().strip())
+            if r["pct"]:
+                pcts.add(float(r["pct"]))
+    return skus, sorted(pcts)
+
+
+def _looks_like_our_markdown(price, compare_at, pcts):
+    """True if price is compare_at marked down by one of the season's percentages —
+    the push's own formula, so it still recognises a style excluded after being pushed."""
+    if price is None or not compare_at:
+        return False
+    return any(abs(_sale_price(compare_at, p) - round(price)) <= 1 for p in pcts)
+
+
+def _planned_skus(db, season):
+    """SKUs belonging to a style the planner has a row for. The percentage test below is
+    limited to these: a style can only have been pushed and then excluded if it was
+    curated, and restricting it keeps an unrelated product that happens to sit at a round
+    percentage off its "was" price out of the revert."""
+    parents = [p for (p,) in db.query(SalePlanItem.parent_sku).filter(
+        SalePlanItem.season_id == season.id).distinct() if p]
+    if not parents:
+        return set()
+    return {(sku or "").upper().strip() for (sku,) in db.query(ProductMaster.sku).filter(
+        ProductMaster.parent_sku.in_(parents))}
+
+
+def _run_sale_revert_job(job_id, product_ids, scope_skus, discounted_skus, planned_skus,
+                         pcts, dry_run, include_unexpected):
     """Restore price from each variant's own compareAtPrice, then clear compare-at.
-    A variant with no compare-at is not on sale (or was never pushed) and is left alone."""
+    A variant with no compare-at is not on sale (or was never pushed) and is left alone.
+
+    The scope is deliberately wider than the discounted set, so a variant can carry a
+    compare-at we did not put there. Those are classed `unexpected` and skipped unless
+    asked for — restoring one would stamp its "was" price in as the selling price."""
     job = _TAG_JOBS[job_id]
     try:
         conn = _shopify_conn()
         if conn is None:
             job.update(status="error", error="Shopify is not configured on this server.")
             return
-        done = ok = failed = restored = untouched = 0
-        failures, samples = [], []
+        done = ok = failed = restored = untouched = unexpected = 0
+        failures, samples, odd = [], [], []
         for pid in product_ids:
             try:
                 variants = conn.get_product_variants(pid)
@@ -2442,7 +2481,8 @@ def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
                 failed += 1
                 failures.append({"product_id": str(pid), "errors": [f"read failed: {e}"]})
                 job.update(done=done, ok=ok, failed=failed, restored=restored,
-                           untouched=untouched, samples=samples, failures=failures[:50])
+                           untouched=untouched, unexpected=unexpected, samples=samples,
+                           odd=odd, failures=failures[:50])
                 continue
             updates = []
             for v in variants:
@@ -2453,6 +2493,14 @@ def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
                 if not ca or ca <= 0:
                     untouched += 1  # no compare-at => not discounted by us
                     continue
+                ours = su in discounted_skus or (
+                    su in planned_skus and _looks_like_our_markdown(v.get("price"), ca, pcts))
+                if not ours:
+                    unexpected += 1
+                    if len(odd) < 50:
+                        odd.append({"sku": v.get("sku"), "price": v.get("price"), "compare_at": ca})
+                    if not include_unexpected:
+                        continue
                 updates.append({"id": v["id"], "price": str(int(round_(ca))),
                                 "compareAtPrice": None})
                 if len(samples) < 25:
@@ -2463,7 +2511,7 @@ def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
                 if updates:
                     ok += 1
                 job.update(done=done, ok=ok, failed=failed, restored=restored,
-                           untouched=untouched, samples=samples)
+                           untouched=untouched, unexpected=unexpected, samples=samples, odd=odd)
                 continue
             attempt = 0
             while True:
@@ -2472,7 +2520,7 @@ def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
                     job.update(status="error",
                                error="Shopify rejected the write — token missing 'write_products' scope.",
                                done=done, ok=ok, failed=failed, restored=restored,
-                               untouched=untouched)
+                               untouched=untouched, unexpected=unexpected, odd=odd)
                     return
                 if r.get("throttled") and attempt < 5:
                     attempt += 1
@@ -2486,10 +2534,11 @@ def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
                 failed += 1
                 failures.append({"product_id": str(pid), "errors": r.get("errors", [])})
             job.update(done=done, ok=ok, failed=failed, restored=restored,
-                       untouched=untouched, samples=samples)
+                       untouched=untouched, unexpected=unexpected, samples=samples, odd=odd)
             time.sleep(0.08)
         job.update(status="done", done=done, ok=ok, failed=failed, restored=restored,
-                   untouched=untouched, samples=samples, failures=failures[:50])
+                   untouched=untouched, unexpected=unexpected, samples=samples, odd=odd,
+                   failures=failures[:50])
     except Exception as e:
         logger.exception("Sale revert job failed")
         job.update(status="error", error=str(e))
@@ -2501,6 +2550,8 @@ async def sale_revert_start(payload: dict = Body(...), db: Session = Depends(get
     dry_run=true walks the same products and reports what it WOULD change, writing nothing."""
     season_id = payload.get("season_id")
     dry_run = bool(payload.get("dry_run", False))
+    # a compare-at we did not write is left alone unless explicitly asked for
+    include_unexpected = bool(payload.get("include_unexpected", False))
     if not season_id:
         raise HTTPException(400, "season_id is required")
     season = _season_or_404(db, season_id)
@@ -2511,18 +2562,23 @@ async def sale_revert_start(payload: dict = Body(...), db: Session = Depends(get
     product_ids = sorted({v["shopify_id"] for v in scope.values() if v["shopify_id"]})
     if not product_ids:
         raise HTTPException(400, "No Shopify products found in this season's sale plan")
+    discounted, pcts = _season_discounts(db, season)
+    planned = _planned_skus(db, season)
 
     job_id = uuid.uuid4().hex
     _TAG_JOBS[job_id] = {
         "status": "running", "action": "revert-dry-run" if dry_run else "revert-sale",
         "tag": f"whole sale · {season.name}",
         "total": len(product_ids), "done": 0, "ok": 0, "failed": 0,
-        "restored": 0, "untouched": 0, "samples": [], "failures": [], "error": None,
+        "restored": 0, "untouched": 0, "unexpected": 0,
+        "samples": [], "odd": [], "failures": [], "error": None,
     }
     threading.Thread(target=_run_sale_revert_job,
-                     args=(job_id, product_ids, scope, dry_run), daemon=True).start()
+                     args=(job_id, product_ids, scope, discounted, planned, pcts,
+                           dry_run, include_unexpected), daemon=True).start()
     return {"job_id": job_id, "total": len(product_ids),
-            "action": _TAG_JOBS[job_id]["action"], "dry_run": dry_run}
+            "action": _TAG_JOBS[job_id]["action"], "dry_run": dry_run,
+            "discount_steps": pcts}
 
 
 @router.get("/export/sitoo-revert")

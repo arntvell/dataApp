@@ -6060,6 +6060,16 @@
                 // whole-sale revert reports per-VARIANT work on top of the per-product counts
                 const isRevertAll = s.action === 'revert-sale' || s.action === 'revert-dry-run';
                 const dry = s.action === 'revert-dry-run';
+                const odd = (s.odd || []);
+                const oddHtml = (s.unexpected || 0)
+                    ? `<div class="mt-1 text-amber-700">⚠ <b>${s.unexpected}</b> variants carry a compare-at that matches no sale discount `
+                      + `— skipped, because restoring one would make its “was” price the selling price.`
+                      + `<details class="mt-1"><summary class="cursor-pointer text-blue-600 select-none">Show them ▾</summary>`
+                      + `<div class="mt-1 text-gray-600">` + odd.slice(0, 50).map(x =>
+                          `${_tagEscape(x.sku)}: now ${x.price}, compare-at ${x.compare_at}`).join('<br>')
+                      + `</div></details></div>`
+                    : (isRevertAll && s.status === 'done'
+                        ? `<div class="mt-1 text-gray-500">No unexplained compare-at prices found.</div>` : '');
                 const detail = isRevertAll
                     ? `<div class="mt-1 text-gray-600">${dry ? 'Would restore' : 'Restored'} <b>${s.restored || 0}</b> variants`
                       + ` · ${s.untouched || 0} already at full price (no compare-at).</div>`
@@ -6068,6 +6078,7 @@
                            + `<div class="mt-1 text-gray-600">` + s.samples.slice(0, 15).map(x =>
                                `${_tagEscape(x.sku)}: ${x.now} \u2192 <b>${x.back_to}</b>`).join('<br>') + `</div></details>`
                          : '')
+                      + oddHtml
                     : '';
                 if (s.status === 'running') {
                     box.innerHTML = `<div>${VERB[s.action] || 'Working'} <code class="bg-gray-100 px-1 rounded">${s.tag}</code>… ${s.done}/${s.total} (${pct}%) · ${s.failed} failed</div>`

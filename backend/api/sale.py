@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from database.config import get_db
 from database.models import (
-    ProductMaster, ParentSkuMapping, StockLevel, RawShopifyProduct,
+    ProductMaster, ParentSkuMapping, StockLevel, RawShopifyProduct, RawSitooProduct,
     SalesOrder, SalesOrderItem,
     SaleSeason, SalePlanItem, SaleVariantOverride, SaleAllocation,
     SaleTransferOverride,
@@ -2208,7 +2208,14 @@ def _run_price_job(job_id, product_ids, sku_prices, revert):
         done = ok = failed = 0
         failures = []
         for pid in product_ids:
-            variants = conn.get_product_variants(pid)
+            try:
+                variants = conn.get_product_variants(pid)
+            except Exception as e:   # one unreadable product must not sink the run
+                done += 1
+                failed += 1
+                failures.append({"product_id": str(pid), "errors": [f"read failed: {e}"]})
+                job.update(done=done, ok=ok, failed=failed)
+                continue
             updates = []
             for v in variants:
                 pr = sku_prices.get((v.get("sku") or "").upper().strip())
@@ -2331,3 +2338,226 @@ async def shopify_price_start(payload: dict = Body(...), db: Session = Depends(g
     return {"job_id": job_id, "total": len(product_ids), "action": _TAG_JOBS[job_id]["action"],
             "single": single, "tested_admin_url": tested_admin_url,
             "tested_title": title_by_id.get(product_ids[0]) if single else None}
+
+
+# ============== End the sale: put everything back to its original price ==============
+# Two things make this different from the per-round "Revert prices" button:
+#
+# 1. SCOPE. A round revert only sees variants whose pct resolves > 0 for that round under
+#    TODAY's plan. A style discounted in round 1 and later excluded, or zeroed, is still
+#    sitting in Shopify at its sale price and a round revert walks straight past it. The
+#    scope here is every parent_sku in sale_plan_items for the season, included or not.
+#    Over-including is free (regular -> regular is a no-op); under-including leaves a
+#    live discount behind.
+#
+# 2. WHERE "ORIGINAL" COMES FROM. Not product_master.price. That column is
+#    `sitoo.price or shopify.price`, and the nightly catalogue pull reads Shopify's LIVE
+#    variant price — so for the ~780 plan SKUs that exist only in Shopify it has been
+#    storing the SALE price since the sale went on. Reverting to it would stamp the
+#    discount in as the new regular. Shopify's own compareAtPrice is the original the
+#    push wrote, so the revert restores from that and is immune to the drift.
+#    Sitoo is unaffected: its moneyprice is the product base price, the sale lives in a
+#    separate pricelist, so raw.sitoo_products.price is a trustworthy original.
+
+
+def _sale_scope_parents(db, season):
+    """Every style that is, or ever was, on sale this season.
+
+    NOT just sale_plan_items: `_included_variant_rows` treats an in-stock style with no
+    plan row as included by DEFAULT, so most of the sale never had a plan row at all
+    (on prod, 750 round-5 variants sit outside sale_plan_items entirely). The superset is
+    therefore the default-included set UNION every style the plan has a row for,
+    excluded ones included — an excluded style may well have been pushed in an earlier
+    round and is still sitting there at its sale price."""
+    plan = {p.parent_sku: p for p in db.query(SalePlanItem).filter(
+        SalePlanItem.season_id == season.id)}
+    parents = {p for p in plan if p}
+    for parent, st in _aggregate_styles(db).items():
+        if st["on_hand"] <= 0:
+            continue
+        pi = plan.get(parent)
+        if pi is None or pi.included:
+            parents.add(parent)      # on sale right now, row or no row
+    return sorted(parents)
+
+
+def _sale_scope_skus(db, season):
+    """Every SKU this season's sale ever covered -> {regular, shopify_id, sitoo_id}."""
+    parents = _sale_scope_parents(db, season)
+    if not parents:
+        return {}
+    out = {}
+    for sku, shop_id, sitoo_id, price in db.query(
+        ProductMaster.sku, ProductMaster.shopify_product_id,
+        ProductMaster.sitoo_product_id, ProductMaster.price
+    ).filter(ProductMaster.parent_sku.in_(parents)):
+        out[(sku or "").upper().strip()] = {
+            "shopify_id": shop_id, "sitoo_id": sitoo_id,
+            "regular": float(price) if price is not None else None,
+        }
+    return out
+
+
+@router.get("/revert/preview")
+async def sale_revert_preview(season_id: int = Query(...), db: Session = Depends(get_db)):
+    """Read-only: how big the whole-sale revert is. Counts come from the DB; what is
+    actually discounted right now is only knowable from Shopify, so the real check is the
+    dry run (POST /revert/shopify-prices with dry_run=true), which writes nothing."""
+    season = _season_or_404(db, season_id)
+    scope = _sale_scope_skus(db, season)
+    product_ids = {v["shopify_id"] for v in scope.values() if v["shopify_id"]}
+    in_sitoo = sum(1 for v in scope.values() if v["sitoo_id"])
+    planned = db.query(func.count(SalePlanItem.id)).filter(
+        SalePlanItem.season_id == season.id).scalar() or 0
+    included = db.query(func.count(SalePlanItem.id)).filter(
+        SalePlanItem.season_id == season.id, SalePlanItem.included.is_(True)).scalar() or 0
+    base = (settings.get_connector_configs().get("shopify", {}).get("base_url") or "").rstrip("/")
+    return {
+        "season": season.name,
+        "plan_styles": planned, "included_styles": included,
+        "variants": len(scope),
+        "shopify_products": len(product_ids),
+        "no_shopify": sum(1 for v in scope.values() if not v["shopify_id"]),
+        "sitoo_variants": in_sitoo,
+        "shopify_configured": bool(base),
+    }
+
+
+def _run_sale_revert_job(job_id, product_ids, scope_skus, dry_run):
+    """Restore price from each variant's own compareAtPrice, then clear compare-at.
+    A variant with no compare-at is not on sale (or was never pushed) and is left alone."""
+    job = _TAG_JOBS[job_id]
+    try:
+        conn = _shopify_conn()
+        if conn is None:
+            job.update(status="error", error="Shopify is not configured on this server.")
+            return
+        done = ok = failed = restored = untouched = 0
+        failures, samples = [], []
+        for pid in product_ids:
+            try:
+                variants = conn.get_product_variants(pid)
+            except Exception as e:
+                done += 1
+                failed += 1
+                failures.append({"product_id": str(pid), "errors": [f"read failed: {e}"]})
+                job.update(done=done, ok=ok, failed=failed, restored=restored,
+                           untouched=untouched, samples=samples, failures=failures[:50])
+                continue
+            updates = []
+            for v in variants:
+                su = (v.get("sku") or "").upper().strip()
+                if su not in scope_skus:
+                    continue  # same product, a variant outside the sale plan
+                ca = v.get("compare_at")
+                if not ca or ca <= 0:
+                    untouched += 1  # no compare-at => not discounted by us
+                    continue
+                updates.append({"id": v["id"], "price": str(int(round_(ca))),
+                                "compareAtPrice": None})
+                if len(samples) < 25:
+                    samples.append({"sku": v.get("sku"), "now": v.get("price"), "back_to": ca})
+            done += 1
+            if not updates or dry_run:
+                restored += len(updates)
+                if updates:
+                    ok += 1
+                job.update(done=done, ok=ok, failed=failed, restored=restored,
+                           untouched=untouched, samples=samples)
+                continue
+            attempt = 0
+            while True:
+                r = conn.set_variant_prices(pid, updates)
+                if r.get("access_denied"):
+                    job.update(status="error",
+                               error="Shopify rejected the write — token missing 'write_products' scope.",
+                               done=done, ok=ok, failed=failed, restored=restored,
+                               untouched=untouched)
+                    return
+                if r.get("throttled") and attempt < 5:
+                    attempt += 1
+                    time.sleep(1.5 * attempt)
+                    continue
+                break
+            if r.get("ok"):
+                ok += 1
+                restored += len(updates)
+            else:
+                failed += 1
+                failures.append({"product_id": str(pid), "errors": r.get("errors", [])})
+            job.update(done=done, ok=ok, failed=failed, restored=restored,
+                       untouched=untouched, samples=samples)
+            time.sleep(0.08)
+        job.update(status="done", done=done, ok=ok, failed=failed, restored=restored,
+                   untouched=untouched, samples=samples, failures=failures[:50])
+    except Exception as e:
+        logger.exception("Sale revert job failed")
+        job.update(status="error", error=str(e))
+
+
+@router.post("/revert/shopify-prices")
+async def sale_revert_start(payload: dict = Body(...), db: Session = Depends(get_db)):
+    """Put every variant in the season's sale plan back to its pre-sale price on Shopify.
+    dry_run=true walks the same products and reports what it WOULD change, writing nothing."""
+    season_id = payload.get("season_id")
+    dry_run = bool(payload.get("dry_run", False))
+    if not season_id:
+        raise HTTPException(400, "season_id is required")
+    season = _season_or_404(db, season_id)
+    if _shopify_conn() is None:
+        raise HTTPException(400, "Shopify is not configured on this server")
+
+    scope = _sale_scope_skus(db, season)
+    product_ids = sorted({v["shopify_id"] for v in scope.values() if v["shopify_id"]})
+    if not product_ids:
+        raise HTTPException(400, "No Shopify products found in this season's sale plan")
+
+    job_id = uuid.uuid4().hex
+    _TAG_JOBS[job_id] = {
+        "status": "running", "action": "revert-dry-run" if dry_run else "revert-sale",
+        "tag": f"whole sale · {season.name}",
+        "total": len(product_ids), "done": 0, "ok": 0, "failed": 0,
+        "restored": 0, "untouched": 0, "samples": [], "failures": [], "error": None,
+    }
+    threading.Thread(target=_run_sale_revert_job,
+                     args=(job_id, product_ids, scope, dry_run), daemon=True).start()
+    return {"job_id": job_id, "total": len(product_ids),
+            "action": _TAG_JOBS[job_id]["action"], "dry_run": dry_run}
+
+
+@router.get("/export/sitoo-revert")
+async def export_sitoo_revert(season_id: int = Query(...), scope: str = Query("discounted"),
+                              db: Session = Depends(get_db)):
+    """Sitoo pricelist import that ENDS the sale: same layout as /export/sitoo, but
+    moneyprice is the product's base price from Sitoo itself.
+
+    scope=discounted (default) = only SKUs that resolve a discount in some round, i.e.
+    what the per-round sale CSVs actually put into the pricelist. scope=all widens to the
+    full on-sale superset. The default is deliberate: pricelist 4 is an overlay, so a row
+    written for a product that never had one lingers and would mask a later base-price
+    change. Emptying pricelist 4 in Sitoo is cleaner still if the import supports it."""
+    season = _season_or_404(db, season_id)
+    scope_map = _sale_scope_skus(db, season)
+    if scope == "all":
+        skus_up = [s for s, v in scope_map.items() if v["sitoo_id"]]
+    else:
+        discounted = set()
+        for ri in range(len(season.rounds or [])):
+            discounted |= {r["sku"].upper().strip() for r in _included_variant_rows(db, season, ri)}
+        skus_up = [s for s in discounted if scope_map.get(s, {}).get("sitoo_id")]
+    base_price = {}
+    for chunk_start in range(0, len(skus_up), 5000):
+        chunk = skus_up[chunk_start:chunk_start + 5000]
+        for sku_up, price in db.query(
+            func.upper(func.trim(RawSitooProduct.sku)), RawSitooProduct.price
+        ).filter(func.upper(func.trim(RawSitooProduct.sku)).in_(chunk)):
+            base_price[sku_up] = price
+    out = []
+    for sku_up in sorted(skus_up):
+        price = base_price.get(sku_up)
+        if price is None or float(price) <= 0:
+            continue  # no trustworthy original in Sitoo — leave the row alone
+        out.append([SITOO_PRICELIST_ID, scope_map[sku_up]["sitoo_id"], sku_up,
+                    int(round_(float(price)))])
+    return _csv_stream(["pricelistid", "productid", "sku", "moneyprice"], out, ",",
+                       f"sitoo_pricelist{SITOO_PRICELIST_ID}_REVERT.csv")

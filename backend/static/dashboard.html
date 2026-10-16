@@ -923,6 +923,17 @@
                     <span class="text-xs text-gray-400">Sitoo: use the per-round <b>Sitoo CSV</b> above (pricelist 4 import).</span>
                 </div>
                 <div id="priceResult" class="text-xs text-gray-500 mt-2"></div>
+
+                <div class="text-xs font-medium text-red-700 mb-1 pt-3 border-t border-red-200">End the sale — put <b>everything</b> back to its original price</div>
+                <div class="text-xs text-gray-500 mb-2">Covers every style in this season's plan, not one round (a style discounted early and later excluded is still on sale and a round revert misses it). Shopify originals are read back from each variant's own compare-at price, so a drifted local price can't be stamped in as the new regular. <b>Always run the dry run first.</b></div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <button onclick="previewSaleRevert()" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Scope</button>
+                    <button onclick="runSaleRevert(true)" class="px-2 py-1 text-xs border border-amber-300 text-amber-700 bg-amber-50 rounded hover:bg-amber-100">Dry run (no writes)</button>
+                    <button onclick="runSaleRevert(false)" class="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700">End sale on Shopify</button>
+                    <a href="#" onclick="downloadSitooRevert();return false;" class="px-2 py-1 text-xs border rounded hover:bg-gray-50">Sitoo revert CSV</a>
+                </div>
+                <div class="text-xs text-gray-400 mt-1">Sitoo has no write API — import the CSV over pricelist 4 to take the POS off sale. Sale <b>tags</b> stay until you clear them with “Remove tag” above.</div>
+                <div id="saleRevertResult" class="text-xs text-gray-500 mt-2"></div>
             </div>
 
             <!-- Performance (actuals) -->
@@ -6042,16 +6053,30 @@
                 try { s = await (await fetch(`${API_BASE}/sale/shopify-tag/status?job_id=${jobId}`)).json(); }
                 catch (e) { box.innerHTML = '<span class="text-red-500">Lost connection to job.</span>'; _tagPolling = false; return; }
                 const pct = s.total ? Math.round(100 * s.done / s.total) : 0;
-                const VERB = { add: 'Adding', remove: 'Removing', price: 'Repricing', revert: 'Reverting prices' };
-                const PAST = { add: 'tagged', remove: 'untagged', price: 'repriced', revert: 'reverted' };
+                const VERB = { add: 'Adding', remove: 'Removing', price: 'Repricing', revert: 'Reverting prices',
+                               'revert-sale': 'Ending the sale', 'revert-dry-run': 'Checking (no writes)' };
+                const PAST = { add: 'tagged', remove: 'untagged', price: 'repriced', revert: 'reverted',
+                               'revert-sale': 'put back to full price', 'revert-dry-run': 'checked' };
+                // whole-sale revert reports per-VARIANT work on top of the per-product counts
+                const isRevertAll = s.action === 'revert-sale' || s.action === 'revert-dry-run';
+                const dry = s.action === 'revert-dry-run';
+                const detail = isRevertAll
+                    ? `<div class="mt-1 text-gray-600">${dry ? 'Would restore' : 'Restored'} <b>${s.restored || 0}</b> variants`
+                      + ` · ${s.untouched || 0} already at full price (no compare-at).</div>`
+                      + ((s.samples && s.samples.length)
+                         ? `<details class="mt-1"><summary class="cursor-pointer text-blue-600 select-none">Show sample ${dry ? 'changes' : 'restores'} \u25be</summary>`
+                           + `<div class="mt-1 text-gray-600">` + s.samples.slice(0, 15).map(x =>
+                               `${_tagEscape(x.sku)}: ${x.now} \u2192 <b>${x.back_to}</b>`).join('<br>') + `</div></details>`
+                         : '')
+                    : '';
                 if (s.status === 'running') {
                     box.innerHTML = `<div>${VERB[s.action] || 'Working'} <code class="bg-gray-100 px-1 rounded">${s.tag}</code>… ${s.done}/${s.total} (${pct}%) · ${s.failed} failed</div>`
-                        + `<div class="h-1.5 bg-gray-200 rounded mt-1 w-64"><div class="h-1.5 bg-green-600 rounded" style="width:${pct}%"></div></div>` + extra;
+                        + `<div class="h-1.5 bg-gray-200 rounded mt-1 w-64"><div class="h-1.5 bg-green-600 rounded" style="width:${pct}%"></div></div>` + detail + extra;
                     setTimeout(poll, 1500);
                 } else if (s.status === 'done') {
                     _tagPolling = false;
                     box.innerHTML = `<div class="text-green-700">✓ Done — ${s.ok}/${s.total} products ${PAST[s.action] || 'updated'} (<code class="bg-gray-100 px-1 rounded">${s.tag}</code>).${s.failed ? ` <span class="text-red-600">${s.failed} failed.</span>` : ''}</div>`
-                        + (s.failures && s.failures.length ? `<div class="text-gray-400 mt-1 truncate">first errors: ${s.failures.slice(0, 3).map(f => f.errors && f.errors[0]).join(' · ')}</div>` : '') + extra;
+                        + (s.failures && s.failures.length ? `<div class="text-gray-400 mt-1 truncate">first errors: ${s.failures.slice(0, 3).map(f => f.errors && f.errors[0]).join(' · ')}</div>` : '') + detail + extra;
                 } else {
                     _tagPolling = false;
                     box.innerHTML = `<span class="text-red-500">${s.error || 'Job failed.'}</span>` + (s.done ? ` <span class="text-gray-400">(${s.ok}/${s.total} done before stop)</span>` : '') + extra;
@@ -6186,6 +6211,29 @@
                 ? `<div class="mt-1">Verify in Shopify: <a href="${start.tested_admin_url}" target="_blank" class="text-blue-600">${_tagEscape(start.tested_title || 'open product')}</a></div>` : '';
             _tagPolling = true;
             _pollTagJob(start.job_id, box, link);
+        }
+
+        // ---- End the sale: whole-plan revert to original prices ----
+        async function previewSaleRevert() {
+            const box = document.getElementById('saleRevertResult');
+            box.textContent = 'Checking\u2026';
+            try {
+                const d = await (await fetch(`${API_BASE}/sale/revert/preview?season_id=${saleSeason.id}`)).json();
+                const warn = d.shopify_configured ? '' : '<div class="text-amber-600 mt-1">\u26a0 Shopify isn\'t configured on this server.</div>';
+                box.innerHTML = `<div>Plan covers <b>${d.plan_styles}</b> styles (${d.included_styles} still included) = <b>${d.variants}</b> variants.</div>`
+                    + `<div>Shopify: <b>${d.shopify_products}</b> products to walk${d.no_shopify ? ` \u00b7 ${d.no_shopify} variants not in Shopify (skipped)` : ''}. Sitoo: <b>${d.sitoo_variants}</b> variants in the revert CSV.</div>`
+                    + `<div class="text-gray-400 mt-1">How many are actually still discounted is only knowable from Shopify \u2014 run the dry run.</div>` + warn;
+            } catch (e) { box.innerHTML = '<span class="text-red-500">Scope check failed.</span>'; }
+        }
+        function runSaleRevert(dryRun) {
+            const box = document.getElementById('saleRevertResult');
+            const msg = dryRun
+                ? `DRY RUN: walk every Shopify product in "${saleSeason.name}" and report what would go back to full price?\n\nThis writes nothing.`
+                : `END THE SALE on Shopify for "${saleSeason.name}"?\n\nEvery variant in the sale plan that still has a compare-at price goes back to that price, and compare-at is cleared.\n\nThis writes live prices to your store. Run the dry run first if you haven't.`;
+            _startJob(`${API_BASE}/sale/revert/shopify-prices`, { season_id: saleSeason.id, dry_run: !!dryRun }, box, msg);
+        }
+        function downloadSitooRevert() {
+            window.location = `${API_BASE}/sale/export/sitoo-revert?season_id=${saleSeason.id}`;
         }
 
         // ----- Validation & store allocation -----

@@ -821,13 +821,40 @@ class ShopifyConnector(BaseConnector):
         return ids
 
     def get_product_variants(self, product_id) -> List[Dict[str, Any]]:
-        """Variant id + sku for a product (needed to set per-variant prices)."""
-        query = ('{ product(id: "%s") { variants(first: 100) { edges { node { id sku } } } } }'
+        """Variant id + sku + current price/compare-at for a product.
+        compare_at is the pre-sale original while a sale price is live, so it is what a
+        revert restores from — the local `regular` can be stale for Shopify-only SKUs."""
+        query = ('{ product(id: "%s") { variants(first: 100) { edges { node '
+                 '{ id sku price compareAtPrice } } } } }'
                  % self.product_gid(product_id))
-        res = self._make_graphql_request(query)
+        # A throttled read used to fall through as an empty variant list, which a caller
+        # reads as "this product has nothing to change" — silently skipping it. Retry
+        # instead, and raise if it never comes back, so a bulk walk can't under-report.
+        res = None
+        for attempt in range(6):
+            res = self._make_graphql_request(query)
+            errs = res.get("errors") or []
+            throttled = any(
+                ((e.get("extensions") or {}).get("code") or "").upper() == "THROTTLED"
+                or "throttl" in (e.get("message") or "").lower() for e in errs)
+            if not throttled:
+                break
+            time.sleep(1.5 * (attempt + 1))
+        if res.get("errors"):
+            raise RuntimeError(f"Shopify variant read failed for {product_id}: "
+                               f"{[e.get('message') for e in res['errors']][:3]}")
         prod = ((res.get("data") or {}).get("product")) or {}
         edges = (prod.get("variants") or {}).get("edges", [])
-        return [{"id": e["node"]["id"], "sku": e["node"].get("sku")} for e in edges]
+
+        def _f(v):
+            try:
+                return float(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        return [{"id": e["node"]["id"], "sku": e["node"].get("sku"),
+                 "price": _f(e["node"].get("price")),
+                 "compare_at": _f(e["node"].get("compareAtPrice"))} for e in edges]
 
     def set_variant_prices(self, product_id, variant_updates: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Bulk-set price / compareAtPrice for variants of one product.
